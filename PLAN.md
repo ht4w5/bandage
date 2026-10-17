@@ -169,7 +169,7 @@ internal/domain/evaluation/ EvaluationService: prefilter → tracker update →
                             match (filter ∧ overflow) → action dispatch
 internal/domain/report/     ReportService + ReportRepository port (persistence)
 internal/app/               pipeline wiring, worker pool (flux engine style)
-internal/adapters/          ingest drivers (v0: syslog) + parsers (v0: nginx
+internal/infra/             ingest drivers (v0: syslog) + parsers (v0: nginx
                             JSON, ported from flux); db drivers (v0: sqlite
                             report repository); in-memory tracker cache
                             (sharded, TTL + LRU); HTTP API (net/http)
@@ -306,7 +306,7 @@ type Repository interface {
 
 `Query` filters by rule and/or target. Only `report` actions write
 (`Upsert`); the API reads (`List`) and deletes (`Delete`); the sweeper calls
-`DeleteExpired`. sqlite adapter in `internal/adapters` (persistence survives
+`DeleteExpired`. sqlite adapter in `internal/infra` (persistence survives
 restarts; tracker state does not — that is accepted). Schema: one row per
 (rule, target) with indexed columns `rule`, `target`, `expires_at` and a JSON
 column for the record body.
