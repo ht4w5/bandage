@@ -176,7 +176,7 @@ func (r *ReportRepository) List(ctx context.Context, q report.Query) ([]bandage.
 
 // Delete removes reports matching the query regardless of expiry and
 // returns the number of deleted rows. At least one filter is required
-// (ErrUnfiltered otherwise): dismissal is never delete-all.
+// (ErrUnfiltered otherwise): deletion is never delete-all.
 func (r *ReportRepository) Delete(ctx context.Context, q report.Query) (int, error) {
 	var (
 		query string

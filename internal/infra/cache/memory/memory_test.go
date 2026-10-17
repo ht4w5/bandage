@@ -217,36 +217,36 @@ func TestStoreNoTTLEntrySurvivesSweeps(t *testing.T) {
 // The statistics counters: gets and sets count lookups and writes,
 // misses count lookups without a live entry, evictions count entries
 // removed by the entry cap, size counts entries (TTL removals are not
-// evictions).
+// evictions), and the entry cap is reported with them.
 func TestStoreStatisticsCounters(t *testing.T) {
 	clock := newTestClock(time.Time{})
 	s := newStore(2, 1, clock.Now, testLogger(&bytes.Buffer{}))
 
-	if st := s.Statistics(); st != (track.Statistics{}) {
-		t.Fatalf("initial statistics = %+v, want zero", st)
+	if st := s.Statistics(); st != (track.Statistics{EntryCap: 2}) {
+		t.Fatalf("initial statistics = %+v, want zero counters with entry cap 2", st)
 	}
 
 	update(t, s, "rule-one", "a", time.Hour, 1) // new entry
-	if st := s.Statistics(); st != (track.Statistics{Gets: 1, Sets: 1, Misses: 1, Size: 1}) {
-		t.Errorf("after 1st update = %+v, want {1 1 1 0 1}", st)
+	if st := s.Statistics(); st != (track.Statistics{Gets: 1, Sets: 1, Misses: 1, Size: 1, EntryCap: 2}) {
+		t.Errorf("after 1st update = %+v, want {1 1 1 0 1 2}", st)
 	}
 	update(t, s, "rule-one", "a", time.Hour, 1) // live entry
-	if st := s.Statistics(); st != (track.Statistics{Gets: 2, Sets: 2, Misses: 1, Size: 1}) {
-		t.Errorf("after 2nd update = %+v, want {2 2 1 0 1}", st)
+	if st := s.Statistics(); st != (track.Statistics{Gets: 2, Sets: 2, Misses: 1, Size: 1, EntryCap: 2}) {
+		t.Errorf("after 2nd update = %+v, want {2 2 1 0 1 2}", st)
 	}
 	update(t, s, "rule-one", "b", time.Hour, 1) // new entry
-	if st := s.Statistics(); st != (track.Statistics{Gets: 3, Sets: 3, Misses: 2, Size: 2}) {
-		t.Errorf("after 3rd update = %+v, want {3 3 2 0 2}", st)
+	if st := s.Statistics(); st != (track.Statistics{Gets: 3, Sets: 3, Misses: 2, Size: 2, EntryCap: 2}) {
+		t.Errorf("after 3rd update = %+v, want {3 3 2 0 2 2}", st)
 	}
 	update(t, s, "rule-one", "c", time.Hour, 1) // new entry, caps out a
-	if st := s.Statistics(); st != (track.Statistics{Gets: 4, Sets: 4, Misses: 3, Evictions: 1, Size: 2}) {
-		t.Errorf("after 4th update = %+v, want {4 4 3 1 2}", st)
+	if st := s.Statistics(); st != (track.Statistics{Gets: 4, Sets: 4, Misses: 3, Evictions: 1, Size: 2, EntryCap: 2}) {
+		t.Errorf("after 4th update = %+v, want {4 4 3 1 2 2}", st)
 	}
 
 	clock.Advance(2 * time.Hour)
 	s.SweepExpired()
-	if st := s.Statistics(); st != (track.Statistics{Gets: 4, Sets: 4, Misses: 3, Evictions: 1}) {
-		t.Errorf("after sweep = %+v, want {4 4 3 1 0}", st)
+	if st := s.Statistics(); st != (track.Statistics{Gets: 4, Sets: 4, Misses: 3, Evictions: 1, EntryCap: 2}) {
+		t.Errorf("after sweep = %+v, want {4 4 3 1 0 2}", st)
 	}
 }
 

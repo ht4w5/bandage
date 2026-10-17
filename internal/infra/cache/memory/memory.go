@@ -35,6 +35,7 @@ const defaultShards = 256
 type Store struct {
 	shards   []shard
 	perShard int
+	entryCap int64
 	now      func() time.Time
 	logger   zerolog.Logger
 
@@ -79,6 +80,7 @@ func newStore(maxEntries, shards int, now func() time.Time, logger zerolog.Logge
 	s := &Store{
 		shards:   make([]shard, shards),
 		perShard: maxEntries / shards,
+		entryCap: int64(maxEntries),
 		now:      now,
 		logger:   logger,
 	}
@@ -154,8 +156,9 @@ func (s *Store) SweepExpired() {
 // Statistics returns the operational counters (flux's Statistics
 // precedent): Gets and Sets count Update lookups and writes, Misses
 // counts lookups that found no live entry (absent or TTL-expired),
-// Evictions counts evictions, and Size is the current entry count
-// (expired entries count until lazily dropped or swept).
+// Evictions counts evictions, Size is the current entry count (expired
+// entries count until lazily removed or swept), and EntryCap is the
+// configured entry cap the store is bounded to.
 func (s *Store) Statistics() track.Statistics {
 	var size int64
 	for i := range s.shards {
@@ -170,6 +173,7 @@ func (s *Store) Statistics() track.Statistics {
 		Misses:    s.misses.Load(),
 		Evictions: s.evictions.Load(),
 		Size:      size,
+		EntryCap:  s.entryCap,
 	}
 }
 

@@ -43,10 +43,11 @@ type EventParser interface {
 	Parse(line []byte) (bandage.Event, error)
 }
 
-// counters is the drop accounting logged periodically (DECISIONS §6).
-// It and its accessor are unexported: the only readers are the periodic
-// statistics log and in-package tests — no exported API exists solely
-// for tests.
+// counters is the drop accounting behind the pipeline block: logged
+// periodically and served in /stats (DECISIONS §6, ADR 0006). It and
+// its accessor are unexported: the only readers are the Daemon's Stats
+// snapshot and in-package tests — no exported API exists solely for
+// tests.
 type counters struct {
 	Received int64 // raw lines received from the wire
 	Parsed   int64 // lines parsed into events
@@ -116,6 +117,7 @@ type Daemon struct {
 
 	lines     chan string
 	processed *progress
+	startedAt time.Time
 	received  atomic.Int64
 	parsed    atomic.Int64
 	dropped   atomic.Int64
@@ -173,7 +175,7 @@ func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
 		processed: newProgress(),
 		stopSweep: make(chan struct{}),
 	}
-	d.apiSrv = &http.Server{Handler: httpapi.New(repo, o.now)}
+	d.apiSrv = &http.Server{Handler: httpapi.New(repo, d, o.now)}
 	return d, nil
 }
 
@@ -187,6 +189,7 @@ func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
 // Shutdown, never an abort of in-flight work (spec: Daemon context).
 func (d *Daemon) Start(lifetime context.Context) error {
 	d.ctx, d.cancel = context.WithCancel(context.WithoutCancel(lifetime))
+	d.startedAt = d.now()
 	// The startup record names the running build: the log stream itself
 	// identifies what is deployed (spec story 14).
 	d.logger.Info().
@@ -258,13 +261,7 @@ func (d *Daemon) sweep() {
 			return
 		case <-t.C:
 			d.cache.SweepExpired()
-			cs := d.cache.Statistics()
-			s := d.stats()
-			d.logger.Info().
-				Int64("received", s.Received).Int64("parsed", s.Parsed).Int64("dropped", s.Dropped).
-				Int64("cache_gets", cs.Gets).Int64("cache_sets", cs.Sets).Int64("cache_misses", cs.Misses).
-				Int64("cache_evictions", cs.Evictions).Int64("cache_size", cs.Size).
-				Msg("statistics")
+			d.logStatistics()
 			n, err := d.sweepOnce(d.ctx)
 			if err != nil {
 				d.logger.Error().Err(err).Msg("sweep expired reports")
@@ -275,6 +272,20 @@ func (d *Daemon) sweep() {
 			}
 		}
 	}
+}
+
+// logStatistics emits the periodic statistics record (DECISIONS §6):
+// drop accounting and cache statistics under their long-standing field
+// names. It renders from the same Stats snapshot /stats serves, so the
+// two always agree; the sweep ticker calls it at the internal cadence
+// and tests drive it directly (like sweepOnce), never by sleeping.
+func (d *Daemon) logStatistics() {
+	s := d.Stats()
+	d.logger.Info().
+		Int64("received", s.Pipeline.Received).Int64("parsed", s.Pipeline.Parsed).Int64("dropped", s.Pipeline.Dropped).
+		Int64("cache_gets", s.TrackerCache.Gets).Int64("cache_sets", s.TrackerCache.Sets).Int64("cache_misses", s.TrackerCache.Misses).
+		Int64("cache_evictions", s.TrackerCache.Evictions).Int64("cache_size", s.TrackerCache.Size).
+		Msg("statistics")
 }
 
 // sweepOnce runs one sweeper pass: it deletes expired reports at the
@@ -348,6 +359,42 @@ func (d *Daemon) stats() counters {
 		Received: d.received.Load(),
 		Parsed:   d.parsed.Load(),
 		Dropped:  d.dropped.Load(),
+	}
+}
+
+// Stats assembles the /stats snapshot (httpapi.StatsSource, satisfied
+// structurally): the build identity module, the cumulative pipeline
+// counters and the tracker cache statistics, all since start. The
+// periodic statistics log line renders from the same snapshot, so its
+// counters always agree with /stats.
+func (d *Daemon) Stats() httpapi.Stats {
+	c := d.stats()
+	cs := d.cache.Statistics()
+	return httpapi.Stats{
+		StartedAt: d.startedAt,
+		Build: httpapi.Build{
+			Name:      identity.Name,
+			Version:   identity.Version(),
+			Commit:    identity.Commit(),
+			BuildDate: identity.BuildDate(),
+			Dirty:     identity.Dirty(),
+			GoVersion: identity.GoVersion(),
+			Platform:  identity.Platform(),
+		},
+		Pipeline: httpapi.Pipeline{
+			Workers:  d.workers,
+			Received: c.Received,
+			Parsed:   c.Parsed,
+			Dropped:  c.Dropped,
+		},
+		TrackerCache: httpapi.TrackerCache{
+			Gets:      cs.Gets,
+			Sets:      cs.Sets,
+			Misses:    cs.Misses,
+			Evictions: cs.Evictions,
+			Size:      cs.Size,
+			EntryCap:  cs.EntryCap,
+		},
 	}
 }
 

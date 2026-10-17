@@ -406,6 +406,77 @@ func (d *testDaemon) getReports(t *testing.T, query url.Values) reportDoc {
 	return doc
 }
 
+// statsDoc is the /stats document decoded loosely into a generic map:
+// the shape is human-facing and unversioned (ADR 0006), so tests assert
+// 200 and the counter values that must be reflected, never
+// field-for-field equality.
+type statsDoc map[string]any
+
+// getStats issues GET /stats and returns the raw body plus the decoded
+// document.
+func (d *testDaemon) getStats(t *testing.T) ([]byte, statsDoc) {
+	t.Helper()
+	resp, err := apiClient.Get("http://" + d.apiAddr() + "/stats")
+	if err != nil {
+		t.Fatalf("GET /stats: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /stats status = %d, want 200 (body %q)", resp.StatusCode, body)
+	}
+	var doc statsDoc
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("GET /stats: bad JSON %q: %v", body, err)
+	}
+	return body, doc
+}
+
+// statsNum reads one numeric field out of a /stats block.
+func statsNum(t *testing.T, doc statsDoc, block, field string) float64 {
+	t.Helper()
+	b, ok := doc[block].(map[string]any)
+	if !ok {
+		t.Fatalf("/stats has no %q block: %v", block, doc)
+	}
+	v, ok := b[field].(float64)
+	if !ok {
+		t.Fatalf("/stats %q has no numeric %q: %v", block, field, b)
+	}
+	return v
+}
+
+// statsStr reads one string field out of a /stats block.
+func statsStr(t *testing.T, doc statsDoc, block, field string) string {
+	t.Helper()
+	b, ok := doc[block].(map[string]any)
+	if !ok {
+		t.Fatalf("/stats has no %q block: %v", block, doc)
+	}
+	v, ok := b[field].(string)
+	if !ok {
+		t.Fatalf("/stats %q has no string %q: %v", block, field, b)
+	}
+	return v
+}
+
+// statsBool reads one boolean field out of a /stats block.
+func statsBool(t *testing.T, doc statsDoc, block, field string) bool {
+	t.Helper()
+	b, ok := doc[block].(map[string]any)
+	if !ok {
+		t.Fatalf("/stats has no %q block: %v", block, doc)
+	}
+	v, ok := b[field].(bool)
+	if !ok {
+		t.Fatalf("/stats %q has no boolean %q: %v", block, field, b)
+	}
+	return v
+}
+
 const bandwidthRules = `
 version: 0
 chains:
@@ -662,8 +733,177 @@ chains:
 	}
 }
 
-// GET /ping is liveness; nothing else is exposed.
-func TestE2EAPIPingOnly(t *testing.T) {
+// GET /stats (ticket 05, ADR 0006) answers on the report listener
+// with the build identity and cumulative-since-start counters: the
+// build block mirrors the identity module, the pipeline block counts
+// lines received/parsed/dropped, and the tracker cache block shows
+// gets, sets, misses, evictions, size and the entry cap. The snapshot
+// is self-describing (generation timestamp, uptime, worker count) and
+// explicitly human-facing: indented JSON with no format version.
+func TestE2EStatsBuildAndCumulativeCounters(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	d := startTestDaemonCfg(t, clock, "unixgram", ":memory:", bandwidthRules, func(c *Config) {
+		c.Pipeline.Workers = 3
+	})
+
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 12000))
+	d.send("this is not json")
+	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 8000))
+	d.waitProcessed(t, 3)
+	clock.Advance(90 * time.Second)
+
+	body, doc := d.getStats(t)
+	if !bytes.HasPrefix(body, []byte("{\n  \"")) {
+		t.Errorf("/stats body = %q, want indented JSON", body)
+	}
+	if _, ok := doc["version"]; ok {
+		t.Errorf("/stats carries a format version %v, want none (human-facing, unversioned)", doc["version"])
+	}
+	if got := doc["generated_at"]; got != "2025-10-17T18:01:30Z" {
+		t.Errorf("generated_at = %v, want %q", got, "2025-10-17T18:01:30Z")
+	}
+	if got := doc["uptime"]; got != "1m30s" {
+		t.Errorf("uptime = %v, want %q", got, "1m30s")
+	}
+
+	// The build block mirrors the identity module (the test binary is
+	// not linker-injected, so the values are the identity defaults).
+	for _, f := range []struct{ field, want string }{
+		{"name", identity.Name},
+		{"version", identity.Version()},
+		{"commit", identity.Commit()},
+		{"build_date", identity.BuildDate()},
+		{"go_version", identity.GoVersion()},
+		{"platform", identity.Platform()},
+	} {
+		if got := statsStr(t, doc, "build", f.field); got != f.want {
+			t.Errorf("build.%s = %q, want %q", f.field, got, f.want)
+		}
+	}
+	if got := statsBool(t, doc, "build", "dirty"); got != identity.Dirty() {
+		t.Errorf("build.dirty = %v, want %v", got, identity.Dirty())
+	}
+
+	// The pipeline block: the resolved worker count and exact line
+	// accounting (spec story 17) under the worker pool.
+	for _, f := range []struct {
+		field string
+		want  float64
+	}{
+		{"workers", 3},
+		{"received", 3},
+		{"parsed", 2},
+		{"dropped", 1},
+	} {
+		if got := statsNum(t, doc, "pipeline", f.field); got != f.want {
+			t.Errorf("pipeline.%s = %v, want %v", f.field, got, f.want)
+		}
+	}
+
+	// The tracker cache block: each parsed event updated the shared
+	// store twice (file-size record + tracker bucket) — two first-time
+	// misses, four gets and four sets — and both records are live.
+	for _, f := range []struct {
+		field string
+		want  float64
+	}{
+		{"gets", 4},
+		{"sets", 4},
+		{"misses", 2},
+		{"evictions", 0},
+		{"size", 2},
+		{"entry_cap", 65536},
+	} {
+		if got := statsNum(t, doc, "tracker_cache", f.field); got != f.want {
+			t.Errorf("tracker_cache.%s = %v, want %v", f.field, got, f.want)
+		}
+	}
+}
+
+// The periodic statistics log line keeps its cadence and its fields,
+// and its counters agree with /stats: both render the same snapshot, so
+// the log trail and a poll can never tell different stories (spec
+// stories 22 and 27). The record is driven at the sweep's per-tick
+// entry point (like sweepOnce) — never by sleeping.
+func TestE2EStatisticsLogAgreesWithStats(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	d := startTestDaemon(t, clock, "unixgram", ":memory:", bandwidthRules)
+
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 12000))
+	d.send("this is not json")
+	d.waitProcessed(t, 2)
+	d.logStatistics()
+
+	_, doc := d.getStats(t)
+	recs := d.logs.withMessage("statistics")
+	if len(recs) != 1 {
+		t.Fatalf("statistics records = %d, want 1", len(recs))
+	}
+	// attrInto fails on a missing field, so asserting every value also
+	// asserts that the line keeps its long-standing fields.
+	for _, f := range []struct{ key, block, field string }{
+		{"received", "pipeline", "received"},
+		{"parsed", "pipeline", "parsed"},
+		{"dropped", "pipeline", "dropped"},
+		{"cache_gets", "tracker_cache", "gets"},
+		{"cache_sets", "tracker_cache", "sets"},
+		{"cache_misses", "tracker_cache", "misses"},
+		{"cache_evictions", "tracker_cache", "evictions"},
+		{"cache_size", "tracker_cache", "size"},
+	} {
+		var v int64
+		attrInto(t, recs[0], f.key, &v)
+		if want := statsNum(t, doc, f.block, f.field); float64(v) != want {
+			t.Errorf("statistics log %s = %d, /stats %s.%s = %v, want the same counter", f.key, v, f.block, f.field, want)
+		}
+	}
+}
+
+// Evictions surface in /stats' tracker cache block: the counter counts
+// the same events the eviction log records (spec story 23 — Evictions
+// resetting tracker state are visible without scraping logs).
+func TestE2EStatsCountsEvictions(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	rules := `
+version: 0
+chains:
+  - name: api
+    rules:
+      - id: bursty-api
+        tracker: {track: rate, leak: 0, volume: 2}
+        actions: [{report: {reason: api-rate-overflow, ttl: 1h}}]
+`
+	// max_entries 1: the file-size record and the tracker bucket share
+	// one slot, so inserting the bucket evicts the record — one logged,
+	// counted eviction.
+	d := startTestDaemonCfg(t, clock, "unixgram", ":memory:", rules, func(c *Config) {
+		c.Cache.MaxEntries = 1
+	})
+
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/api", 200, 0))
+	d.waitProcessed(t, 1)
+
+	_, doc := d.getStats(t)
+	for _, f := range []struct {
+		field string
+		want  float64
+	}{
+		{"evictions", 1},
+		{"size", 1},
+		{"entry_cap", 1},
+	} {
+		if got := statsNum(t, doc, "tracker_cache", f.field); got != f.want {
+			t.Errorf("tracker_cache.%s = %v, want %v", f.field, got, f.want)
+		}
+	}
+	if evictions := d.logs.withMessage("tracker cache eviction"); len(evictions) != 1 {
+		t.Errorf("eviction logs = %v, want 1 (logged and counted together)", evictions)
+	}
+}
+
+// GET /ping is liveness; nothing else is exposed beyond the report API
+// and the /stats snapshot (ADR 0006).
+func TestE2EAPIPingAndUnknownPaths(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", bandwidthRules)
 
@@ -931,11 +1171,11 @@ chains:
 	}
 }
 
-// Dismissal is not silence: DELETE /reports leaves tracker state
-// untouched, so a report whose condition persists returns on the next
-// trigger — with a fresh identity and a tracker reading that kept
-// accumulating across the dismissal.
-func TestE2EDismissIsNotSilence(t *testing.T) {
+// Deleting reports does not touch tracker state: a Target that still
+// overflows is reported again on the next trigger — with a fresh
+// identity and a tracker reading that kept accumulating across the
+// deletion (ticket 05; the API docs say it plainly).
+func TestE2EDeleteDoesNotTouchTrackerState(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
 version: 0
@@ -956,10 +1196,10 @@ chains:
 	}
 
 	if _, n := d.del(t, url.Values{"rule": {"sticky"}}); n != 1 {
-		t.Fatalf("dismiss count = %d, want 1", n)
+		t.Fatalf("delete count = %d, want 1", n)
 	}
 	if doc := d.getReports(t, nil); len(doc.Reports) != 0 {
-		t.Fatalf("after dismiss: %+v, want none", doc.Reports)
+		t.Fatalf("after delete: %+v, want none", doc.Reports)
 	}
 
 	// The condition persists: the next trigger brings the report back.
@@ -972,10 +1212,10 @@ chains:
 	}
 	r := doc.Reports[0]
 	if r.CreatedAt != "2025-10-17T18:10:00Z" {
-		t.Errorf("created_at = %q, want a fresh %q (dismissed report is gone)", r.CreatedAt, "2025-10-17T18:10:00Z")
+		t.Errorf("created_at = %q, want a fresh %q (deleted report is gone)", r.CreatedAt, "2025-10-17T18:10:00Z")
 	}
 	if r.Tracker.Value != 300 {
-		t.Errorf("tracker value = %v, want 300 (dismissal touched no tracker state)", r.Tracker.Value)
+		t.Errorf("tracker value = %v, want 300 (deletion touched no tracker state)", r.Tracker.Value)
 	}
 	if r.Sample.Time != eventTime2At {
 		t.Errorf("sample time = %q, want %q", r.Sample.Time, eventTime2At)
@@ -1019,10 +1259,10 @@ chains:
 	if doc := d.getReports(t, nil); len(doc.Reports) != 1 || doc.Reports[0].Rule != "rule-two" {
 		t.Fatalf("after 90m: %+v, want only rule-two", doc.Reports)
 	}
-	// ...but they are still in storage until swept: dismissal counts
+	// ...but they are still in storage until swept: deletion counts
 	// them like any other row.
 	if _, n := d.del(t, url.Values{"rule": {"rule-three"}}); n != 1 {
-		t.Errorf("dismiss of an expired row = %d, want 1 (still stored pre-sweep)", n)
+		t.Errorf("delete of an expired row = %d, want 1 (still stored pre-sweep)", n)
 	}
 
 	// One sweeper pass at the injected clock deletes expired rows only.
@@ -1030,10 +1270,10 @@ chains:
 		t.Fatalf("sweepOnce: %v", err)
 	}
 	if _, n := d.del(t, url.Values{"rule": {"rule-one"}}); n != 0 {
-		t.Errorf("dismiss after sweep = %d, want 0 (row swept away)", n)
+		t.Errorf("delete after sweep = %d, want 0 (row swept away)", n)
 	}
 	if _, n := d.del(t, url.Values{"rule": {"rule-two"}}); n != 1 {
-		t.Errorf("dismiss of a live row = %d, want 1 (sweeper leaves it)", n)
+		t.Errorf("delete of a live row = %d, want 1 (sweeper leaves it)", n)
 	}
 }
 
