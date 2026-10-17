@@ -30,7 +30,7 @@ const (
 // in the track module; only the replay tracker configures one.
 type VolumeMethod interface {
 	Volume(sizeBytes float64) float64
-	// String renders the method for the -check plan.
+	// String renders the method for the --test plan.
 	String() string
 }
 
@@ -66,7 +66,7 @@ func (c *TrackerConfig) VolumeFor(sizeBytes float64) float64 {
 	return c.Volume
 }
 
-// VolumeDesc renders the volume configuration for the -check plan: the
+// VolumeDesc renders the volume configuration for the --test plan: the
 // volume method's description or the constant volume.
 func (c *TrackerConfig) VolumeDesc() string {
 	if c.VolumeMethod != nil {
@@ -129,7 +129,7 @@ type Action struct {
 }
 
 // ActionVisitor handles one action variant. The evaluation dispatcher
-// and the -check describer both walk action lists through Action.Accept,
+// and the --test describer both walk action lists through Action.Accept,
 // so the five-case action vocabulary has a single dispatch point.
 type ActionVisitor interface {
 	VisitReport(*ReportAction) error
@@ -170,7 +170,7 @@ type Matcher interface {
 type Rule struct {
 	ID string
 	// FilterSource is the effective filter expression as written
-	// ("any" when omitted), kept for the -check plan print.
+	// ("any" when omitted), kept for the --test plan print.
 	FilterSource string
 	Filter       Matcher
 	Tracker      *TrackerConfig

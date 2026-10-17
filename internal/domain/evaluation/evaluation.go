@@ -114,7 +114,7 @@ func (s *Service) runChain(ctx context.Context, ci int, event *bandage.Event) er
 // runActions runs a matching rule's full action list in order: the
 // actions always all run, and terminality applies only after the list.
 // Every action walks through Action.Accept — the single dispatch point
-// shared with the -check describer.
+// shared with the --test describer.
 func (s *Service) runActions(ctx context.Context, m matchContext) error {
 	dispatch := actionDispatch{svc: s, ctx: ctx, m: m}
 	for _, action := range m.rule.Actions {

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/identity"
 )
 
 // Primary seam (spec: Testing Decisions): the assembled daemon — real
@@ -1701,5 +1702,32 @@ chains:
 	}
 	if r.Sample.Path != "/small.iso" || r.Sample.Size != 100 {
 		t.Errorf("sample = %+v, want /small.iso with enriched size 100", r.Sample)
+	}
+}
+
+// The daemon's startup log record carries the build identity fields —
+// name, version, commit and build date (spec story 14, ticket 02) — so
+// the log stream itself identifies the running build. The test binary is
+// not linker-injected, so the values are the identity module's defaults.
+func TestStartupLogCarriesBuildIdentity(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	d := startTestDaemon(t, clock, "unixgram", ":memory:", bandwidthRules)
+
+	recs := d.logs.withMessage("starting")
+	if len(recs) != 1 {
+		t.Fatalf("starting records = %d, want 1", len(recs))
+	}
+	attrs := recs[0].Attrs
+	if attrs["name"] != identity.Name {
+		t.Errorf("name = %v, want %q", attrs["name"], identity.Name)
+	}
+	if attrs["version"] != identity.Version() {
+		t.Errorf("version = %v, want %q", attrs["version"], identity.Version())
+	}
+	if attrs["commit"] != identity.Commit() {
+		t.Errorf("commit = %v, want %q", attrs["commit"], identity.Commit())
+	}
+	if attrs["build_date"] != identity.BuildDate() {
+		t.Errorf("build_date = %v, want %q", attrs["build_date"], identity.BuildDate())
 	}
 }

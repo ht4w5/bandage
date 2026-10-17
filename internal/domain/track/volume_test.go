@@ -79,7 +79,7 @@ func TestStepVolume(t *testing.T) {
 	}
 }
 
-// String renders the method for the -check plan.
+// String renders the method for the --test plan.
 func TestVolumeMethodString(t *testing.T) {
 	tests := []struct {
 		m    interface{ String() string }

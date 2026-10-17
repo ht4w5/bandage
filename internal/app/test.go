@@ -6,12 +6,13 @@ import (
 	"strings"
 
 	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/identity"
 )
 
-// Check validates the config and rules files and returns the validated
-// plan (bandage -check): chains → rules with filter, tracker config and
+// Test validates the config and rules files and returns the validated
+// plan (bandage --test): chains → rules with filter, tracker config and
 // actions. It opens no sockets and ingests nothing.
-func Check(configPath, rulesPath string) (string, error) {
+func Test(configPath, rulesPath string) (string, error) {
 	cfg, err := LoadConfig(configPath)
 	if err != nil {
 		return "", err
@@ -25,6 +26,8 @@ func Check(configPath, rulesPath string) (string, error) {
 
 func planText(cfg Config, chains []bandage.Chain) string {
 	var b strings.Builder
+	// The plan opens with the build identity header (spec story 6).
+	fmt.Fprintf(&b, "%s\n", identity.Header())
 	fmt.Fprintf(&b, "config: ingest syslog/%s %s %s\n", cfg.Ingest.Parser, cfg.Ingest.Syslog.Network, cfg.Ingest.Syslog.Listen)
 	fmt.Fprintf(&b, "config: db %s %s\n", cfg.DB.Driver, cfg.DB.SQLite.Path)
 	fmt.Fprintf(&b, "config: api %s\n", cfg.API.Listen)
@@ -56,7 +59,7 @@ func planText(cfg Config, chains []bandage.Chain) string {
 	return b.String()
 }
 
-// actionDescriber is the -check side of Action.Accept: it appends one
+// actionDescriber is the --test side of Action.Accept: it appends one
 // action line to the validated plan.
 type actionDescriber struct {
 	b *strings.Builder
