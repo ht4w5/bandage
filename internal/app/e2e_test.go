@@ -160,7 +160,7 @@ func startTestDaemonCfg(t *testing.T, clock *testClock, network, dbPath, rulesYA
 		t.Fatalf("ParseRules error: %v", err)
 	}
 	logs := &logCapture{}
-	d, err := New(cfg, chains, WithClock(clock.Now), WithLogger(slog.New(logs)))
+	d, err := New(cfg, chains, WithClock(clock.Now), withLogger(slog.New(logs)))
 	if err != nil {
 		t.Fatalf("New error: %v", err)
 	}
@@ -247,8 +247,8 @@ func (d *testDaemon) waitProcessed(t *testing.T, n int64) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := d.WaitProcessed(ctx, n); err != nil {
-		t.Fatalf("WaitProcessed(%d): %v", n, err)
+	if err := d.Daemon.waitProcessed(ctx, n); err != nil {
+		t.Fatalf("waitProcessed(%d): %v", n, err)
 	}
 }
 
@@ -293,7 +293,7 @@ type reportDoc struct {
 // status and the {"deleted": n} count.
 func (d *testDaemon) del(t *testing.T, query url.Values) (int, int) {
 	t.Helper()
-	u := "http://" + d.APIAddr() + "/reports"
+	u := "http://" + d.apiAddr() + "/reports"
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
@@ -324,7 +324,7 @@ func (d *testDaemon) del(t *testing.T, query url.Values) (int, int) {
 
 func (d *testDaemon) get(t *testing.T, path string, query url.Values) (int, reportDoc) {
 	t.Helper()
-	u := "http://" + d.APIAddr() + path
+	u := "http://" + d.apiAddr() + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
@@ -499,7 +499,7 @@ func TestE2EMalformedLinesDroppedAndCounted(t *testing.T) {
 	if doc := d.getReports(t, nil); len(doc.Reports) != 0 {
 		t.Errorf("dropped lines produced reports %+v, want none", doc.Reports)
 	}
-	stats := d.Stats()
+	stats := d.stats()
 	if stats.Dropped != 2 {
 		t.Errorf("stats dropped = %d, want 2", stats.Dropped)
 	}
@@ -616,7 +616,7 @@ func TestE2EAPIPingOnly(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", bandwidthRules)
 
-	resp, err := apiClient.Get("http://" + d.APIAddr() + "/ping")
+	resp, err := apiClient.Get("http://" + d.apiAddr() + "/ping")
 	if err != nil {
 		t.Fatalf("GET /ping: %v", err)
 	}
@@ -627,7 +627,7 @@ func TestE2EAPIPingOnly(t *testing.T) {
 	}
 
 	for _, path := range []string{"/", "/metrics", "/debug", "/reports/1"} {
-		resp, err := apiClient.Get("http://" + d.APIAddr() + path)
+		resp, err := apiClient.Get("http://" + d.apiAddr() + path)
 		if err != nil {
 			t.Fatalf("GET %s: %v", path, err)
 		}

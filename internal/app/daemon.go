@@ -40,9 +40,11 @@ type EventParser interface {
 	Parse(line []byte) (bandage.Event, error)
 }
 
-// Stats is the drop accounting surfaced by the daemon and logged
-// periodically (DECISIONS §6).
-type Stats struct {
+// counters is the drop accounting logged periodically (DECISIONS §6).
+// It and its accessor are unexported: the only readers are the periodic
+// statistics log and in-package tests — no exported API exists solely
+// for tests.
+type counters struct {
 	Received int64 // raw lines received from the wire
 	Parsed   int64 // lines parsed into events
 	Dropped  int64 // malformed or invalid lines dropped
@@ -61,8 +63,11 @@ func WithClock(now func() time.Time) Option {
 	return func(o *options) { o.now = now }
 }
 
-// WithLogger sets the daemon logger.
-func WithLogger(l *slog.Logger) Option {
+// withLogger sets the daemon logger. The daemon's logging is the
+// contract for capped drops and log actions, so tests capture it; the
+// binary configures the default logger before wiring — the option is
+// unexported like every test-only seam.
+func withLogger(l *slog.Logger) Option {
 	return func(o *options) { o.logger = l }
 }
 
@@ -101,7 +106,7 @@ type Daemon struct {
 func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
 	var o options
 	WithClock(time.Now)(&o)
-	WithLogger(slog.Default())(&o)
+	withLogger(slog.Default())(&o)
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -199,8 +204,8 @@ func (d *Daemon) sweep() {
 			return
 		case <-t.C:
 			d.cache.SweepExpired()
-			s := d.Stats()
 			cs := d.cache.Statistics()
+			s := d.stats()
 			d.logger.Info("statistics",
 				"received", s.Received, "parsed", s.Parsed, "dropped", s.Dropped,
 				"cache_gets", cs.Gets, "cache_sets", cs.Sets, "cache_misses", cs.Misses,
@@ -243,23 +248,25 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 	return d.shutdown
 }
 
-// APIAddr is the bound API listen address (host:port).
-func (d *Daemon) APIAddr() string {
+// apiAddr is the bound API listen address (host:port), read by
+// in-package tests through the HTTP API.
+func (d *Daemon) apiAddr() string {
 	if d.apiLn == nil {
 		return ""
 	}
 	return d.apiLn.Addr().String()
 }
 
-// WaitProcessed blocks until n raw lines have been fully processed
-// (parsed and evaluated, or dropped) or ctx is done.
-func (d *Daemon) WaitProcessed(ctx context.Context, n int64) error {
+// waitProcessed blocks until n raw lines have been fully processed
+// (parsed and evaluated, or dropped) or ctx is done. It is the in-package
+// test driver for the pipeline; the binary never waits on it.
+func (d *Daemon) waitProcessed(ctx context.Context, n int64) error {
 	return d.processed.wait(ctx, n)
 }
 
-// Stats returns the drop accounting counters.
-func (d *Daemon) Stats() Stats {
-	return Stats{
+// stats returns the drop accounting counters.
+func (d *Daemon) stats() counters {
+	return counters{
 		Received: d.received.Load(),
 		Parsed:   d.parsed.Load(),
 		Dropped:  d.dropped.Load(),
