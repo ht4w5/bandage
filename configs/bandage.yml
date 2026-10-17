@@ -1,0 +1,20 @@
+# bandage daemon configuration.
+# Strictly decoded: unknown keys and invalid values abort startup.
+
+ingest:
+  driver: syslog               # driver-keyed; more drivers later
+  syslog:
+    network: unixgram          # tcp | udp | unixgram
+    listen: /run/bandage/log.sock
+  parser: nginx                # nginx JSON (flux log format)
+
+db:
+  driver: sqlite               # driver-keyed; more stores later
+  sqlite:
+    path: /var/lib/bandage/reports.db
+
+cache:
+  max_entries: 65536           # total entry cap across shards (default 65536)
+
+api:
+  listen: 127.0.0.1:8080
