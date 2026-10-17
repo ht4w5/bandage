@@ -1476,3 +1476,95 @@ chains:
 		t.Errorf("?target=203.0.113.7/32: %+v, want 0", doc.Reports)
 	}
 }
+
+// File-size enrichment is per path with a warm-up gate (period 5,
+// minSamples 5 — DECISIONS §3): the replay tracker is blind until a
+// path's estimate warms, then accumulates transferred fractions of the
+// estimated size per (Target, path) and reports the computed volume with
+// the enriched sample size.
+func TestE2EReplayWarmUpBlindThenReports(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	rules := `
+version: 0
+chains:
+  - name: download-abuse
+    rules:
+      - id: iso-replay
+        tracker: {track: replay, leak: 0, volume: 2}
+        actions: [{report: {reason: iso-replay, ttl: 1h}}]
+`
+	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
+
+	// Warm-up (the first 4 of 5 samples): the size estimate is unknown,
+	// so every event is skipped entirely. Volume 2 would overflow on the
+	// second transfer had anything accumulated.
+	for i := 0; i < 4; i++ {
+		d.send(nginxLine(fmt.Sprintf("%d", 1734345934+i), "203.0.113.7", "GET", "/releases/24.04.iso", 200, 1000))
+	}
+	d.waitProcessed(t, 4)
+	if doc := d.getReports(t, nil); len(doc.Reports) != 0 {
+		t.Fatalf("reports during warm-up = %+v, want none (replay is blind until the estimate warms)", doc.Reports)
+	}
+
+	// Samples 5..7 are enriched (size 1000): each full transfer adds
+	// fraction 1, and value 3 > volume 2 overflows on the third.
+	for i := 4; i < 7; i++ {
+		d.send(nginxLine(fmt.Sprintf("%d", 1734345934+i), "203.0.113.7", "GET", "/releases/24.04.iso", 200, 1000))
+	}
+	d.waitProcessed(t, 7)
+	doc := d.getReports(t, nil)
+	if len(doc.Reports) != 1 {
+		t.Fatalf("reports after warm-up = %+v, want 1", doc.Reports)
+	}
+	r := doc.Reports[0]
+	if r.Tracker.Track != "replay" || r.Tracker.Value != 3 || r.Tracker.Leak != 0 || r.Tracker.Volume != 2 {
+		t.Errorf("tracker = %+v, want {replay 3 0 2} (value, leak and volume at trigger)", r.Tracker)
+	}
+	if r.Sample.Size != 1000 || r.Sample.Sent != 1000 {
+		t.Errorf("sample = %+v, want the triggering transfer with enriched size 1000", r.Sample)
+	}
+}
+
+// The volume method scales tolerance with file size at trigger time and
+// replay state stays separated per (Target, path): a small file (1
+// tolerated equivalent) overflows while a big file of the same target
+// (3 tolerated equivalents) with the same accumulated fractions does
+// not.
+func TestE2EReplayVolumeMethodScalesTolerance(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	rules := `
+version: 0
+chains:
+  - name: download-abuse
+    rules:
+      - id: iso-replay
+        tracker:
+          track: replay
+          leak: 0
+          volume: {method: step, threshold: 1000, volume_low: 1, volume_high: 3}
+        actions: [{report: {reason: iso-replay, ttl: 1h}}]
+`
+	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
+
+	// Interleave small (100 B) and big (10 000 B) transfers of two paths
+	// from one client: each path warms and accumulates on its own.
+	for i := 0; i < 6; i++ {
+		d.send(nginxLine(fmt.Sprintf("%d", 1734345934+2*i), "203.0.113.7", "GET", "/small.iso", 200, 100))
+		d.send(nginxLine(fmt.Sprintf("%d", 1734345935+2*i), "203.0.113.7", "GET", "/big.iso", 200, 10000))
+	}
+	d.waitProcessed(t, 12)
+
+	doc := d.getReports(t, nil)
+	if len(doc.Reports) != 1 {
+		t.Fatalf("reports = %+v, want exactly the small file's (the big file stays under its tolerance)", doc.Reports)
+	}
+	r := doc.Reports[0]
+	// The small file's samples 5 and 6 add fraction 1 each: value 2
+	// overflows its volume 1 — the step method's volume_low at size 100.
+	if r.Tracker.Track != "replay" || r.Tracker.Value != 2 || r.Tracker.Volume != 1 {
+		t.Errorf("tracker = %+v, want {replay 2 0 1} (volume_low at size 100)", r.Tracker)
+	}
+	if r.Sample.Path != "/small.iso" || r.Sample.Size != 100 {
+		t.Errorf("sample = %+v, want /small.iso with enriched size 100", r.Sample)
+	}
+}

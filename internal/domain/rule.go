@@ -2,6 +2,7 @@ package bandage
 
 import (
 	"log/slog"
+	"strconv"
 	"time"
 )
 
@@ -14,22 +15,62 @@ const (
 	// TrackBandwidth accumulates sent bytes (flux BYTE-BUCKET).
 	TrackBandwidth TrackKind = "bandwidth"
 	// TrackReplay accumulates the transferred fraction of an estimated
-	// file size (flux FILE-RATIO-BUCKET). Not supported in format
-	// version 0 as loaded by this ticket.
+	// file size (flux FILE-RATIO-BUCKET). Its state is keyed per
+	// (Target, path) and its volume may scale with the file size through
+	// a VolumeMethod.
 	TrackReplay TrackKind = "replay"
 )
+
+// VolumeMethod computes a tracker's tolerated volume from the estimated
+// file size in bytes: the replay tracker's volume is "tolerated download
+// equivalents" scaling with object size (PLAN §1; DECISIONS §8). The
+// implementations (constant, clamped-linear, inverse-square, step) live
+// in the track module; only the replay tracker configures one.
+type VolumeMethod interface {
+	Volume(sizeBytes float64) float64
+	// String renders the method for the -check plan.
+	String() string
+}
 
 // TrackerConfig is a rule's leaky-bucket tracker: explicit leak and
 // volume with the cache-entry TTL derived as volume/leak.
 type TrackerConfig struct {
-	Kind   TrackKind
-	Leak   float64
+	Kind TrackKind
+	Leak float64
+	// Volume is the constant volume: request counts for rate, bytes for
+	// bandwidth, tolerated download equivalents for a plain scalar
+	// replay volume.
 	Volume float64
-	// TTL is the tracker cache entry TTL derived at build (volume/leak).
+	// VolumeMethod computes the replay volume from the estimated file
+	// size instead of the constant Volume; nil for rate and bandwidth
+	// and for a scalar replay volume.
+	VolumeMethod VolumeMethod
+	// TTL is the cache-entry TTL derived at build (volume/leak) for rate
+	// and bandwidth. Replay derives it per event from the volume-method
+	// output (DECISIONS §8) and leaves this zero.
 	TTL time.Duration
 	// TargetPrefix is the tracker's target aggregation, defaulted at
 	// build (DefaultTargetPrefix).
 	TargetPrefix TargetPrefix
+}
+
+// VolumeFor returns the tolerated volume for an estimated file size in
+// bytes: the volume method's output when configured, the constant
+// volume otherwise.
+func (c *TrackerConfig) VolumeFor(sizeBytes float64) float64 {
+	if c.VolumeMethod != nil {
+		return c.VolumeMethod.Volume(sizeBytes)
+	}
+	return c.Volume
+}
+
+// VolumeDesc renders the volume configuration for the -check plan: the
+// volume method's description or the constant volume.
+func (c *TrackerConfig) VolumeDesc() string {
+	if c.VolumeMethod != nil {
+		return c.VolumeMethod.String()
+	}
+	return strconv.FormatFloat(c.Volume, 'f', -1, 64)
 }
 
 // ReportAction upserts a report for the tracker's target on match. It is

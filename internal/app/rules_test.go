@@ -314,7 +314,6 @@ chains:
 		// Tracker parsing and validation.
 		{name: "missing track", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {leak: 1, volume: 2}\n", wantErr: "track"},
 		{name: "unknown tracker kind", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: freq, leak: 1, volume: 2}\n", wantErr: "unknown tracker kind"},
-		{name: "replay not supported yet", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: replay, leak: 0.1, volume: 2}\n", wantErr: "not supported yet"},
 		{name: "missing leak", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, volume: 2}\n", wantErr: "tracker.leak"},
 		{name: "missing volume", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1}\n", wantErr: "tracker.volume"},
 		{name: "zero volume", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 0}\n", wantErr: "tracker.volume"},
@@ -324,7 +323,7 @@ chains:
 		{name: "bandwidth quantities accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: bandwidth, leak: 1MB/s, volume: 100GB}\n        actions: [{report: {reason: x, ttl: 7d}}]\n"},
 		{name: "bandwidth zero leak accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: bandwidth, leak: 0, volume: 1KB}\n"},
 		{name: "bad quantity names rule and field", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: my-rule\n        tracker: {track: bandwidth, leak: 1, volume: 1q}\n", wantErr: `rule "my-rule": tracker.volume`},
-		{name: "volume block rejected for now", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker:\n          track: bandwidth\n          leak: 1\n          volume: {method: constant, value: 5}\n", wantErr: "tracker.volume"},
+		{name: "volume method on bandwidth rejected", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker:\n          track: bandwidth\n          leak: 1\n          volume: {method: constant, value: 5}\n", wantErr: "volume methods are replay-only"},
 
 		// Target aggregation (target_prefix).
 		// Target aggregation (target_prefix).
@@ -840,5 +839,307 @@ chains:
 	want := `rule "typo": filter: 1:14: class must be within [1, 5]`
 	if !strings.Contains(err.Error(), want) {
 		t.Errorf("error %q does not contain %q", err, want)
+	}
+}
+
+// The replay tracker (track: replay): a plain scalar volume is the
+// constant method, and the volume-method block configures tolerance as a
+// function of file size (DECISIONS §8). Replay leak is a
+// fraction-per-second number; its cache TTL is derived per event, so the
+// build-time TTL stays zero.
+func TestParseRulesReplayVolumeMethods(t *testing.T) {
+	tests := []struct {
+		name     string
+		volume   string
+		wantDesc string // volume description in the -check plan
+		size     float64
+		wantVol  float64 // VolumeFor(size)
+	}{
+		{
+			name:     "scalar volume is constant",
+			volume:   "volume: 5",
+			wantDesc: "5",
+			size:     1e9,
+			wantVol:  5,
+		},
+		{
+			name:     "constant block",
+			volume:   "volume: {method: constant, value: 5}",
+			wantDesc: "constant(value=5)",
+			size:     123,
+			wantVol:  5,
+		},
+		{
+			name:     "clamped-linear (PLAN §1 example)",
+			volume:   "volume: {method: clamped-linear, intercept: 5, slope: -1, min: 2, max: 5}",
+			wantDesc: "clamped-linear(intercept=5 slope=-1 min=2 max=5)",
+			size:     1e9,
+			wantVol:  4,
+		},
+		{
+			name:     "inverse-square pivot in bytes",
+			volume:   "volume: {method: inverse-square, base: 1, pivot: 1GB}",
+			wantDesc: "inverse-square(base=1 pivot=1000000000)",
+			size:     2e9,
+			wantVol:  1.25,
+		},
+		{
+			name:     "step threshold in bytes",
+			volume:   "volume: {method: step, threshold: 1GB, volume_low: 2, volume_high: 5}",
+			wantDesc: "step(threshold=1000000000 volume_low=2 volume_high=5)",
+			size:     1e9,
+			wantVol:  5,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			yaml := "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker:\n          track: replay\n          leak: 0.1\n          " + tt.volume
+			chains, err := ParseRules([]byte(yaml))
+			if err != nil {
+				t.Fatalf("ParseRules error: %v", err)
+			}
+			cfg := chains[0].Rules[0].Tracker
+			if cfg == nil || cfg.Kind != bandage.TrackReplay {
+				t.Fatalf("tracker = %+v, want replay", cfg)
+			}
+			if cfg.Leak != 0.1 {
+				t.Errorf("leak = %v, want 0.1", cfg.Leak)
+			}
+			if got := cfg.VolumeDesc(); got != tt.wantDesc {
+				t.Errorf("volume method = %q, want %q", got, tt.wantDesc)
+			}
+			if got := cfg.VolumeFor(tt.size); got != tt.wantVol {
+				t.Errorf("VolumeFor(%g) = %v, want %v", tt.size, got, tt.wantVol)
+			}
+			if cfg.TTL != 0 {
+				t.Errorf("ttl = %v, want 0 (replay derives its TTL per event)", cfg.TTL)
+			}
+			if cfg.TargetPrefix != bandage.DefaultTargetPrefix {
+				t.Errorf("target_prefix = %+v, want default", cfg.TargetPrefix)
+			}
+		})
+	}
+}
+
+// Load-time validation of tracker volume configuration (spec: user
+// story 21): a volume method is replay-only and each method validates
+// its own parameters. Failing and passing cases.
+func TestParseRulesVolumeValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		tracker string
+		wantErr string
+	}{
+		{
+			name:    "volume method on rate rejected",
+			tracker: "track: rate\n          leak: 1\n          volume: {method: constant, value: 2}",
+			wantErr: "volume methods are replay-only",
+		},
+		{
+			name:    "volume method on bandwidth rejected",
+			tracker: "track: bandwidth\n          leak: 1\n          volume: {method: step, threshold: 1GB, volume_low: 1, volume_high: 2}",
+			wantErr: "volume methods are replay-only",
+		},
+		{
+			name:    "non-scalar volume on rate rejected",
+			tracker: "track: rate\n          leak: 1\n          volume: [1, 2]",
+			wantErr: "volume methods are replay-only",
+		},
+		{
+			name:    "non-scalar volume on bandwidth rejected",
+			tracker: "track: bandwidth\n          leak: 1MB\n          volume: [1MB]",
+			wantErr: "volume methods are replay-only",
+		},
+		{
+			name:    "rate scalar volume accepted",
+			tracker: "track: rate\n          leak: 1\n          volume: 2",
+		},
+		{
+			name:    "bandwidth byte volume accepted",
+			tracker: "track: bandwidth\n          leak: 1MB/s\n          volume: 100GB",
+		},
+		{
+			name:    "replay scalar volume accepted",
+			tracker: "track: replay\n          leak: 0.1\n          volume: 5",
+		},
+		{
+			name:    "replay byte quantity volume rejected",
+			tracker: "track: replay\n          leak: 0.1\n          volume: 1GB",
+			wantErr: "tracker.volume: invalid quantity",
+		},
+		{
+			name:    "replay byte quantity leak rejected",
+			tracker: "track: replay\n          leak: 1MB/s\n          volume: 5",
+			wantErr: "tracker.leak: invalid quantity",
+		},
+		{
+			name:    "replay zero scalar volume rejected",
+			tracker: "track: replay\n          leak: 0.1\n          volume: 0",
+			wantErr: "tracker.volume: must be positive",
+		},
+		{
+			name:    "unknown volume method rejected",
+			tracker: "track: replay\n          leak: 0.1\n          volume: {method: warp, value: 2}",
+			wantErr: "unknown volume method",
+		},
+		{
+			name:    "volume block without method rejected",
+			tracker: "track: replay\n          leak: 0.1\n          volume: {value: 2}",
+			wantErr: "volume.method: required",
+		},
+		{
+			name:    "unknown key in volume block rejected",
+			tracker: "track: replay\n          leak: 0.1\n          volume: {method: constant, value: 2, extra: 3}",
+			wantErr: "unknown key",
+		},
+		{
+			name:    "constant without value rejected",
+			tracker: "track: replay\n          leak: 0.1\n          volume: {method: constant}",
+			wantErr: "volume.value: required",
+		},
+		{
+			name:    "constant zero value rejected",
+			tracker: "track: replay\n          leak: 0.1\n          volume: {method: constant, value: 0}",
+			wantErr: "volume.value: must be positive",
+		},
+		{
+			name:    "clamped-linear accepted (PLAN §1 example)",
+			tracker: "track: replay\n          leak: 0.1\n          volume: {method: clamped-linear, intercept: 5, slope: -1, min: 2, max: 5}",
+		},
+		{
+			name:    "clamped-linear max below min rejected",
+			tracker: "track: replay\n          leak: 0.1\n          volume: {method: clamped-linear, intercept: 5, slope: -1, min: 5, max: 2}",
+			wantErr: "volume.max: must be >= min",
+		},
+		{
+			name:    "clamped-linear missing slope rejected",
+			tracker: "track: replay\n          leak: 0.1\n          volume: {method: clamped-linear, intercept: 5, min: 2, max: 5}",
+			wantErr: "volume.slope: required",
+		},
+		{
+			name:    "clamped-linear non-number rejected",
+			tracker: "track: replay\n          leak: 0.1\n          volume: {method: clamped-linear, intercept: 5, slope: fast, min: 2, max: 5}",
+			wantErr: "volume.slope: invalid number",
+		},
+		{
+			name:    "clamped-linear negative min rejected",
+			tracker: "track: replay\n          leak: 0.1\n          volume: {method: clamped-linear, intercept: 5, slope: -1, min: -1, max: 5}",
+			wantErr: "volume.min: must be non-negative",
+		},
+		{
+			name:    "inverse-square accepted",
+			tracker: "track: replay\n          leak: 0\n          volume: {method: inverse-square, base: 1, pivot: 1GB}",
+		},
+		{
+			name:    "inverse-square missing pivot rejected",
+			tracker: "track: replay\n          leak: 0.1\n          volume: {method: inverse-square, base: 1}",
+			wantErr: "volume.pivot: required",
+		},
+		{
+			name:    "inverse-square pivot not a size rejected",
+			tracker: "track: replay\n          leak: 0.1\n          volume: {method: inverse-square, base: 1, pivot: big}",
+			wantErr: "volume.pivot: invalid quantity",
+		},
+		{
+			name:    "inverse-square zero pivot rejected",
+			tracker: "track: replay\n          leak: 0.1\n          volume: {method: inverse-square, base: 1, pivot: 0}",
+			wantErr: "volume.pivot: must be positive",
+		},
+		{
+			name:    "inverse-square negative base rejected",
+			tracker: "track: replay\n          leak: 0.1\n          volume: {method: inverse-square, base: -1, pivot: 1GB}",
+			wantErr: "volume.base: must be non-negative",
+		},
+		{
+			name:    "step accepted",
+			tracker: "track: replay\n          leak: 0.1\n          volume: {method: step, threshold: 1GB, volume_low: 2, volume_high: 5}",
+		},
+		{
+			name:    "step missing threshold rejected",
+			tracker: "track: replay\n          leak: 0.1\n          volume: {method: step, volume_low: 2, volume_high: 5}",
+			wantErr: "volume.threshold: required",
+		},
+		{
+			name:    "step zero threshold rejected",
+			tracker: "track: replay\n          leak: 0.1\n          volume: {method: step, threshold: 0, volume_low: 2, volume_high: 5}",
+			wantErr: "volume.threshold: must be positive",
+		},
+		{
+			name:    "step negative volume_low rejected",
+			tracker: "track: replay\n          leak: 0.1\n          volume: {method: step, threshold: 1GB, volume_low: -1, volume_high: 5}",
+			wantErr: "volume.volume_low: must be non-negative",
+		},
+		{
+			name:    "step missing volume_high rejected",
+			tracker: "track: replay\n          leak: 0.1\n          volume: {method: step, threshold: 1GB, volume_low: 2}",
+			wantErr: "volume.volume_high: required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			yaml := "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker:\n          " + tt.tracker + "\n        actions: [{report: {reason: x, ttl: 1h}}]"
+			_, err := ParseRules([]byte(yaml))
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ParseRules error: %v, want success", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("ParseRules succeeded, want error containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q does not contain %q", err, tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), `rule "r"`) {
+				t.Errorf("error %q does not name the rule", err)
+			}
+		})
+	}
+}
+
+// The -check plan shows the replay tracker's configuration: the volume
+// method (or scalar) and its per-event TTL derivation.
+func TestCheckShowsReplayVolumeMethod(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "bandage.yml")
+	rulesPath := filepath.Join(dir, "rules.yml")
+	if err := os.WriteFile(cfgPath, []byte(validConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rulesPath, []byte(`
+version: 0
+chains:
+  - name: download-abuse
+    rules:
+      - id: iso-replay
+        tracker:
+          track: replay
+          leak: 0.1
+          volume:
+            method: clamped-linear
+            intercept: 5
+            slope: -1
+            min: 2
+            max: 5
+        actions: [{report: {reason: iso-replay, ttl: 24h}}]
+      - id: small-replay
+        tracker: {track: replay, leak: 0, volume: 5}
+        actions: [{report: {reason: small-replay, ttl: 24h}}]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := Check(cfgPath, rulesPath)
+	if err != nil {
+		t.Fatalf("Check error: %v", err)
+	}
+	for _, want := range []string{
+		"tracker: replay leak=0.1 volume=clamped-linear(intercept=5 slope=-1 min=2 max=5) ttl=per-event",
+		"tracker: replay leak=0 volume=5 ttl=per-event",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Errorf("plan does not contain %q:\n%s", want, plan)
+		}
 	}
 }

@@ -37,8 +37,14 @@ func planText(cfg Config, chains []bandage.Chain) string {
 			if rule.Tracker == nil {
 				fmt.Fprintf(&b, "    tracker: none\n")
 			} else {
+				// Replay derives its cache TTL per event from the volume
+				// method output (DECISIONS §8).
+				ttl := rule.Tracker.TTL.String()
+				if rule.Tracker.Kind == bandage.TrackReplay {
+					ttl = "per-event"
+				}
 				fmt.Fprintf(&b, "    tracker: %s leak=%s volume=%s ttl=%s\n",
-					rule.Tracker.Kind, fmtFloat(rule.Tracker.Leak), fmtFloat(rule.Tracker.Volume), rule.Tracker.TTL)
+					rule.Tracker.Kind, fmtFloat(rule.Tracker.Leak), rule.Tracker.VolumeDesc(), ttl)
 			}
 			for _, action := range rule.Actions {
 				switch {
