@@ -60,6 +60,8 @@ func (r *stubRepo) List(context.Context, report.Query) ([]bandage.Report, error)
 	return nil, nil
 }
 
+func (r *stubRepo) Delete(context.Context, report.Query) (int, error) { return 0, nil }
+
 func (r *stubRepo) DeleteExpired(context.Context, time.Time) (int, error) { return 0, nil }
 
 // harness assembles a service around one replay rule and exposes the
