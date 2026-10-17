@@ -155,7 +155,9 @@ Log format: one nginx JSON object per syslog message, using flux's log format
 ## 3. Domain model (webjail DDD, webjail language)
 
 ```
-cmd/bandage/                main + flags (config path, log level)
+cmd/bandage/                run(args) seam: pflag CLI with shorthands
+                            (-c config, -r rules, -t test, -l log level,
+                            -w workers, -v version, -h help)
 internal/domain/            package bandage: Event (§2), Report, Rule/Chain
                             value types
 internal/domain/filter/     webjail filter language: Parse, Filter.Match(*Event),
@@ -169,6 +171,9 @@ internal/domain/evaluation/ EvaluationService: prefilter → tracker update →
                             match (filter ∧ overflow) → action dispatch
 internal/domain/report/     ReportService + ReportRepository port (persistence)
 internal/app/               pipeline wiring, worker pool (flux engine style)
+internal/identity/          build identity: linker-injected version, commit,
+                            build date, dirty flag (-v output, startup log
+                            record, --test plan header)
 internal/adapters/          ingest drivers (v0: syslog) + parsers (v0: nginx
                             JSON, ported from flux); db drivers (v0: sqlite
                             report repository); in-memory tracker cache
@@ -379,12 +384,14 @@ No `/v1` prefix, no debug endpoints. The API never writes reports; only
   (`^[a-z0-9][a-z0-9_-]*$`), non-positive `ttl`, `report` on a tracker-less
   rule, out-of-range `target_prefix` (ipv4 ≤ 32, ipv6 ≤ 64).
 - No hot reload in v0: config and rules changes take effect on restart.
-- `bandage -check` prints the validated chain plan and exits without
-  ingesting.
+- `bandage -t` (`--test`) prints the validated chain plan, headed by the
+  build identity header, and exits without ingesting. Command-line
+  overrides follow flag > config > default precedence (`-l` log level,
+  `-w` workers); an unknown flag prints the error plus usage and exits 2.
 
 ## 9. Milestones
 
-- **M0** — Skeleton: domain types, strict config load, flags, `-check` stub.
+- **M0** — Skeleton: domain types, strict config load, flags, `--test` stub.
 - **M1** — Filter port + rule validation + chain/action model; golden tests
   over `configs/rules.yml`.
 - **M2** — Realtime core: syslog ingest + nginx parser (ported from flux),

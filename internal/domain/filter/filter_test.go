@@ -200,7 +200,7 @@ func TestConstructorValidation(t *testing.T) {
 	}
 }
 
-// ParseError stays a *ParseError through the public API (the -check
+// ParseError stays a *ParseError through the public API (the --test
 // surface relies on errors.As).
 func TestParseErrorType(t *testing.T) {
 	_, err := Parse("bogus")

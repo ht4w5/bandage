@@ -20,6 +20,7 @@ import (
 	"github.com/HT4w5/bandage/internal/domain/enrichment"
 	"github.com/HT4w5/bandage/internal/domain/evaluation"
 	"github.com/HT4w5/bandage/internal/domain/report"
+	"github.com/HT4w5/bandage/internal/identity"
 )
 
 // sweepInterval is the internal cadence of the tracker cache expiry
@@ -143,6 +144,14 @@ func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
 // Start opens the ingest and API listeners and starts the pipeline. The
 // single pipeline goroutine is the worker seam (flux-engine style).
 func (d *Daemon) Start() error {
+	// The startup record names the running build: the log stream itself
+	// identifies what is deployed (spec story 14).
+	d.logger.Info("starting",
+		"name", identity.Name,
+		"version", identity.Version(),
+		"commit", identity.Commit(),
+		"build_date", identity.BuildDate(),
+	)
 	d.src = syslog.New(d.cfg.Ingest.Syslog.Network, d.cfg.Ingest.Syslog.Listen, d.lines, d.logger)
 	if err := d.src.Start(); err != nil {
 		return err

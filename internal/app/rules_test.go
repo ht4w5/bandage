@@ -9,10 +9,11 @@ import (
 	"time"
 
 	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/identity"
 )
 
 // The rules file (format version 0) and its load-time validation: this is
-// the -check validation surface, so every rule gets a failing and a
+// the --test validation surface, so every rule gets a failing and a
 // passing case.
 const validRules = `
 version: 0
@@ -508,7 +509,7 @@ chains:
 	}
 }
 
-func TestCheckPrintsValidatedPlan(t *testing.T) {
+func TestPrintsValidatedPlan(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "bandage.yml")
 	rulesPath := filepath.Join(dir, "rules.yml")
@@ -519,9 +520,15 @@ func TestCheckPrintsValidatedPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plan, err := Check(cfgPath, rulesPath)
+	plan, err := Test(cfgPath, rulesPath)
 	if err != nil {
-		t.Fatalf("Check error: %v", err)
+		t.Fatalf("Test error: %v", err)
+	}
+	// The --test plan output opens with the build identity header
+	// (spec story 6, ticket 02): the operator knows which build
+	// produced the plan.
+	if !strings.HasPrefix(plan, identity.Header()+"\n") {
+		t.Errorf("plan does not open with the identity header %q:\n%s", identity.Header(), plan)
 	}
 	for _, want := range []string{
 		"ingest syslog/nginx unixgram /run/bandage/log.sock",
@@ -544,7 +551,7 @@ func TestCheckPrintsValidatedPlan(t *testing.T) {
 	}
 }
 
-func TestCheckFailsOnBadRules(t *testing.T) {
+func TestFailsOnBadRules(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "bandage.yml")
 	rulesPath := filepath.Join(dir, "rules.yml")
@@ -554,13 +561,13 @@ func TestCheckFailsOnBadRules(t *testing.T) {
 	if err := os.WriteFile(rulesPath, []byte("version: 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Check(cfgPath, rulesPath); err == nil {
-		t.Fatal("Check succeeded, want error")
+	if _, err := Test(cfgPath, rulesPath); err == nil {
+		t.Fatal("Test succeeded, want error")
 	}
 }
 
-// The -check plan shows every action of every rule (DECISIONS §9).
-func TestCheckShowsActionsInPlan(t *testing.T) {
+// The --test plan shows every action of every rule (DECISIONS §9).
+func TestShowsActionsInPlan(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "bandage.yml")
 	rulesPath := filepath.Join(dir, "rules.yml")
@@ -571,9 +578,9 @@ func TestCheckShowsActionsInPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plan, err := Check(cfgPath, rulesPath)
+	plan, err := Test(cfgPath, rulesPath)
 	if err != nil {
-		t.Fatalf("Check error: %v", err)
+		t.Fatalf("Test error: %v", err)
 	}
 	for _, want := range []string{
 		"chain routing",
@@ -593,9 +600,9 @@ func TestCheckShowsActionsInPlan(t *testing.T) {
 	}
 }
 
-// The -check command rejects unsound goto/jump graphs and accepts DAGs:
+// The --test command rejects unsound goto/jump graphs and accepts DAGs:
 // failing and passing cases on the CLI validation surface.
-func TestCheckValidatesChainGraph(t *testing.T) {
+func TestValidatesChainGraph(t *testing.T) {
 	tests := []struct {
 		name    string
 		rules   string
@@ -661,15 +668,15 @@ chains:
 			if err := os.WriteFile(rulesPath, []byte(tt.rules), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			_, err := Check(cfgPath, rulesPath)
+			_, err := Test(cfgPath, rulesPath)
 			if tt.wantErr == "" {
 				if err != nil {
-					t.Fatalf("Check error: %v", err)
+					t.Fatalf("Test error: %v", err)
 				}
 				return
 			}
 			if err == nil {
-				t.Fatalf("Check succeeded, want error containing %q", tt.wantErr)
+				t.Fatalf("Test succeeded, want error containing %q", tt.wantErr)
 			}
 			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("error %q does not contain %q", err, tt.wantErr)
@@ -719,7 +726,7 @@ func TestLoadRulesFromFile(t *testing.T) {
 }
 
 // Filter expressions on rules: syntax and value errors reject the rules
-// file with filter: L:C positions (the -check contract); valid filters
+// file with filter: L:C positions (the --test contract); valid filters
 // select events at the rule level.
 func TestParseRulesFilterErrors(t *testing.T) {
 	const doc = `version: 0
@@ -777,9 +784,9 @@ chains:
 	}
 }
 
-// The -check plan prints each rule's filter source expression (the
+// The --test plan prints each rule's filter source expression (the
 // effective one: "any" where the rule omits it).
-func TestCheckPrintsFilterSource(t *testing.T) {
+func TestPrintsFilterSource(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "bandage.yml")
 	rulesPath := filepath.Join(dir, "rules.yml")
@@ -797,9 +804,9 @@ chains:
 		t.Fatal(err)
 	}
 
-	plan, err := Check(cfgPath, rulesPath)
+	plan, err := Test(cfgPath, rulesPath)
 	if err != nil {
-		t.Fatalf("Check error: %v", err)
+		t.Fatalf("Test error: %v", err)
 	}
 	for _, want := range []string{
 		"rule selected",
@@ -813,9 +820,9 @@ chains:
 	}
 }
 
-// Unparseable filters reject the rules file at load: -check reports
+// Unparseable filters reject the rules file at load: --test reports
 // filter: L:C with the rule id and no sockets open.
-func TestCheckReportsFilterErrorPosition(t *testing.T) {
+func TestReportsFilterErrorPosition(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "bandage.yml")
 	rulesPath := filepath.Join(dir, "rules.yml")
@@ -832,9 +839,9 @@ chains:
 		t.Fatal(err)
 	}
 
-	_, err := Check(cfgPath, rulesPath)
+	_, err := Test(cfgPath, rulesPath)
 	if err == nil {
-		t.Fatal("Check succeeded, want error")
+		t.Fatal("Test succeeded, want error")
 	}
 	want := `rule "typo": filter: 1:14: class must be within [1, 5]`
 	if !strings.Contains(err.Error(), want) {
@@ -851,7 +858,7 @@ func TestParseRulesReplayVolumeMethods(t *testing.T) {
 	tests := []struct {
 		name     string
 		volume   string
-		wantDesc string // volume description in the -check plan
+		wantDesc string // volume description in the --test plan
 		size     float64
 		wantVol  float64 // VolumeFor(size)
 	}{
@@ -1098,9 +1105,9 @@ func TestParseRulesVolumeValidation(t *testing.T) {
 	}
 }
 
-// The -check plan shows the replay tracker's configuration: the volume
+// The --test plan shows the replay tracker's configuration: the volume
 // method (or scalar) and its per-event TTL derivation.
-func TestCheckShowsReplayVolumeMethod(t *testing.T) {
+func TestShowsReplayVolumeMethod(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "bandage.yml")
 	rulesPath := filepath.Join(dir, "rules.yml")
@@ -1130,9 +1137,9 @@ chains:
 		t.Fatal(err)
 	}
 
-	plan, err := Check(cfgPath, rulesPath)
+	plan, err := Test(cfgPath, rulesPath)
 	if err != nil {
-		t.Fatalf("Check error: %v", err)
+		t.Fatalf("Test error: %v", err)
 	}
 	for _, want := range []string{
 		"tracker: replay leak=0.1 volume=clamped-linear(intercept=5 slope=-1 min=2 max=5) ttl=per-event",
