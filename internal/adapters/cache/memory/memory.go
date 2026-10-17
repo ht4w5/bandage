@@ -2,7 +2,9 @@
 // with per-key atomic updates and sliding TTL expiry (enforced lazily on
 // access plus a periodic sweep), bounded by a global entry cap enforced
 // by per-shard LRU eviction. Every capped drop is logged with its
-// tracker namespace and Target and counted in statistics.
+// tracker namespace and the true Target (and path, where the key has
+// one) decoded from the domain's key convention, and counted in
+// statistics.
 package memory
 
 import (
@@ -15,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	bandage "github.com/HT4w5/bandage/internal/domain"
 	"github.com/HT4w5/bandage/internal/domain/track"
 )
 
@@ -92,8 +95,9 @@ func newStore(maxEntries, shards int, now func() time.Time, logger *slog.Logger)
 // it. An expired entry is treated as absent (lazy expiry): the record
 // restarts from zero. Inserting over the cap drops the shard's
 // least-recently-used entry — a capped drop, logged with its tracker
-// namespace and Target and counted in statistics. fn runs under the
-// shard lock and must not perform I/O or use ctx.
+// namespace and true Target (and path where present) and counted in
+// statistics. fn runs under the shard lock and must not perform I/O or
+// use ctx.
 func (s *Store) Update(ctx context.Context, ns, key string, ttl time.Duration, fn func(*track.Record)) (track.Record, error) {
 	if fn == nil {
 		return track.Record{}, errors.New("memory: update fn must not be nil")
@@ -179,15 +183,35 @@ func (s *Store) shardFor(fullKey string) *shard {
 }
 
 // evictLocked drops least-recently-used entries until the shard is
-// within its budget of the entry cap. Called under the shard lock.
+// within its budget of the entry cap. Every capped drop is logged with
+// its tracker namespace and true Target (story 41: every capped drop is
+// logged; ticket 07: with its tracker namespace and Target) and counted
+// in statistics. Called under the shard lock.
 func (s *Store) evictLocked(sh *shard) {
 	for sh.l.Len() > s.perShard {
 		el := sh.l.Back()
 		e := el.Value.(*entry)
 		sh.remove(el)
 		s.evictions.Add(1)
-		s.logger.Warn("tracker cache capped drop", "namespace", e.ns, "target", e.key)
+		s.logger.Warn("tracker cache capped drop", dropAttrs(e)...)
 	}
+}
+
+// dropAttrs renders a capped drop's identity per the domain's key
+// convention: namespace plus the true Target decoded from the key —
+// never the raw key — and the path for per-(Target, path) keys. The
+// filesize namespace has no Target: its keys are paths and log as their
+// own case.
+func dropAttrs(e *entry) []any {
+	if e.ns == bandage.FilesizeNamespace {
+		return []any{"namespace", e.ns, "path", e.key}
+	}
+	target, path := bandage.SplitTrackerKey(e.key)
+	attrs := []any{"namespace", e.ns, "target", target}
+	if path != "" {
+		attrs = append(attrs, "path", path)
+	}
+	return attrs
 }
 
 func (sh *shard) remove(el *list.Element) {

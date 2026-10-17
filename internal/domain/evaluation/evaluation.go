@@ -147,8 +147,10 @@ func (s *Service) updateTracker(ctx context.Context, rule *bandage.Rule, event *
 	volume := cfg.Volume
 	ttl := cfg.TTL
 	// The key is the Target: the source address aggregated to the
-	// tracker's prefix, so sources in one prefix share tracker state.
-	key := cfg.Target(event.RemoteAddr).String()
+	// tracker's prefix, so sources in one prefix share tracker state
+	// (the domain's key convention).
+	target := cfg.Target(event.RemoteAddr).String()
+	key := bandage.TrackerKey(target)
 	switch cfg.Kind {
 	case bandage.TrackBandwidth:
 		increment = float64(event.SentBytes)
@@ -168,9 +170,10 @@ func (s *Service) updateTracker(ctx context.Context, rule *bandage.Rule, event *
 		// re-derived from it per event.
 		volume = cfg.VolumeFor(size)
 		ttl = bandage.TTL(cfg.Leak, volume)
-		// Replay state is keyed per (Target, path): the target prefix
-		// string and the path joined with "\x00" (DECISIONS §9).
-		key += "\x00" + event.Path
+		// Replay state is keyed per (Target, path): the domain's key
+		// convention joins the target prefix string and the path with
+		// KeySep (DECISIONS §9).
+		key = bandage.ReplayTrackerKey(target, event.Path)
 	}
 	rec, err := s.cache.Update(ctx, rule.ID, key, ttl, func(r *bandage.Record) {
 		r.Accumulate(increment, cfg.Leak, event.Time.Unix())

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	bandage "github.com/HT4w5/bandage/internal/domain"
 	"github.com/HT4w5/bandage/internal/domain/track"
 )
 
@@ -77,7 +78,8 @@ func TestStoreCapEvictsLeastRecentlyUsed(t *testing.T) {
 
 // Every capped drop is logged with its tracker namespace and Target and
 // counted in statistics (spec: capped drops are the one place where log
-// text IS the contract).
+// text IS the contract — story 41: "every capped drop is logged"; ticket
+// 07: "with its tracker namespace and Target").
 func TestStoreCappedDropLoggedWithNamespaceAndTarget(t *testing.T) {
 	buf := &bytes.Buffer{}
 	s := newStore(1, 1, newTestClock(time.Time{}).Now, testLogger(buf))
@@ -94,6 +96,53 @@ func TestStoreCappedDropLoggedWithNamespaceAndTarget(t *testing.T) {
 	}
 	if st := s.Statistics(); st.Evictions != 1 {
 		t.Errorf("evictions = %d, want 1 (capped drop counted)", st.Evictions)
+	}
+}
+
+// The logged Target is the true Target split from the key convention —
+// never the raw cache key — and per-(Target, path) keys carry their path
+// as its own attribute (story 41 / ticket 07: the drop log must name the
+// tracker namespace and Target).
+func TestStoreCappedDropLogsTrueTargetAndPath(t *testing.T) {
+	buf := &bytes.Buffer{}
+	s := newStore(1, 1, newTestClock(time.Time{}).Now, testLogger(buf))
+
+	update(t, s, "iso-replay", bandage.ReplayTrackerKey("203.0.113.7/32", "/big.iso"), time.Hour, 1)
+	update(t, s, "iso-replay", bandage.ReplayTrackerKey("203.0.113.8/32", "/big.iso"), time.Hour, 1) // caps
+
+	logs := buf.String()
+	if !strings.Contains(logs, "namespace=iso-replay") {
+		t.Errorf("capped drop log missing tracker namespace:\n%s", logs)
+	}
+	if !strings.Contains(logs, "target=203.0.113.7/32") {
+		t.Errorf("capped drop log missing the true Target:\n%s", logs)
+	}
+	if !strings.Contains(logs, "path=/big.iso") {
+		t.Errorf("capped drop log missing the path:\n%s", logs)
+	}
+	if strings.Contains(logs, "203.0.113.7/32\x00/big.iso") {
+		t.Errorf("capped drop log leaks the raw composite key:\n%s", logs)
+	}
+}
+
+// The filesize namespace has no Target: its capped drops are their own
+// case, logging the path (the key) instead of inventing a Target.
+func TestStoreCappedDropFilesizeLogsPathOnly(t *testing.T) {
+	buf := &bytes.Buffer{}
+	s := newStore(1, 1, newTestClock(time.Time{}).Now, testLogger(buf))
+
+	update(t, s, bandage.FilesizeNamespace, "/a", 0, 1)
+	update(t, s, bandage.FilesizeNamespace, "/b", 0, 1) // caps
+
+	logs := buf.String()
+	if !strings.Contains(logs, "namespace=filesize") {
+		t.Errorf("capped drop log missing the filesize namespace:\n%s", logs)
+	}
+	if !strings.Contains(logs, "path=/a") {
+		t.Errorf("capped drop log missing the path:\n%s", logs)
+	}
+	if strings.Contains(logs, "target=") {
+		t.Errorf("filesize capped drop log invents a Target:\n%s", logs)
 	}
 }
 
@@ -148,12 +197,12 @@ func TestStoreNoTTLEntrySurvivesSweeps(t *testing.T) {
 	clock := newTestClock(time.Time{})
 	s := newStore(4, 1, clock.Now, testLogger(&bytes.Buffer{}))
 
-	update(t, s, "filesize", "/releases/24.04.iso", 0, 0.5)
+	update(t, s, bandage.FilesizeNamespace, "/releases/24.04.iso", 0, 0.5)
 	clock.Advance(48 * time.Hour)
 	s.SweepExpired()
 	s.SweepExpired()
 
-	rec := update(t, s, "filesize", "/releases/24.04.iso", 0, 0.25)
+	rec := update(t, s, bandage.FilesizeNamespace, "/releases/24.04.iso", 0, 0.25)
 	if rec.Value != 0.75 {
 		t.Errorf("no-TTL record = %v, want 0.75 (never expired, never reset)", rec.Value)
 	}

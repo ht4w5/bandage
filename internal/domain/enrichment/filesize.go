@@ -27,9 +27,9 @@ type FilesizeRecord struct {
 // Update atomically applies fn to the record for path (a zero-valued
 // record if none exists) and returns it afterwards. fn runs under the
 // store's per-path lock, so it must not perform I/O or use ctx. The
-// in-memory adapter serves this from the shared tracker store under
-// namespace "filesize" without TTL (state is memory-only and cold after
-// restart — ADR 0002).
+// in-memory adapter serves this from the shared tracker store under the
+// reserved bandage.FilesizeNamespace without TTL (state is memory-only
+// and cold after restart — ADR 0002).
 type FilesizeCache interface {
 	Update(ctx context.Context, path string, fn func(*FilesizeRecord)) (FilesizeRecord, error)
 }

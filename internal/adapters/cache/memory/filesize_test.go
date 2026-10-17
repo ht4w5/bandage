@@ -9,8 +9,8 @@ import (
 	"github.com/HT4w5/bandage/internal/domain/enrichment"
 )
 
-// The Filesize adapter shares the tracker store under namespace
-// "filesize" without TTL and round-trips records exactly.
+// The Filesize adapter shares the tracker store under the reserved
+// bandage.FilesizeNamespace without TTL and round-trips records exactly.
 func TestFilesizeUpdateRoundTrip(t *testing.T) {
 	store := New(16, time.Now, testLogger(&bytes.Buffer{}))
 	cache := NewFilesize(store)
