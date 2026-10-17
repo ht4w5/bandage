@@ -454,64 +454,93 @@ func volumeSize(id, key string, node *yaml.Node) (float64, error) {
 	return v, nil
 }
 
+// actionForms is the single source of truth for the action vocabulary
+// of format version 0 (DECISIONS §9): one entry per action name, mapping
+// to its options parser. A parser receives a nil node for the bare form
+// (`- stop`) and returns "wants options" when the action requires
+// options; an action that takes none rejects options.
+var actionForms = map[string]func(id, name string, val *yaml.Node) (bandage.Action, error){
+	"report": parseReportAction,
+	"log":    parseLogAction,
+	"goto":   parseChainAction,
+	"jump":   parseChainAction,
+	"stop":   parseStopAction,
+}
+
 // parseAction parses one action item (DECISIONS §9): `- stop`,
 // `- goto: <chain>`, `- jump: <chain>`, `- log: "level,message"`, or
 // `- report: {reason, ttl}`.
 func parseAction(id string, node *yaml.Node) (bandage.Action, error) {
 	switch node.Kind {
 	case yaml.ScalarNode:
-		if node.Value == "stop" {
-			return bandage.Action{Stop: true}, nil
+		parse := actionForms[node.Value]
+		if parse == nil {
+			return bandage.Action{}, fmt.Errorf("rules: rule %q: unknown action %q", id, node.Value)
 		}
-		if knownActions[node.Value] {
-			return bandage.Action{}, fmt.Errorf("rules: rule %q: action %q: wants options", id, node.Value)
-		}
-		return bandage.Action{}, fmt.Errorf("rules: rule %q: unknown action %q", id, node.Value)
+		return parse(id, node.Value, nil)
 	case yaml.MappingNode:
 		if len(node.Content) != 2 {
 			return bandage.Action{}, fmt.Errorf("rules: rule %q: action must be a single name with options", id)
 		}
 		name, val := node.Content[0].Value, node.Content[1]
-		switch name {
-		case "report":
-			var raw rawReportAction
-			for i := 0; i < len(val.Content); i += 2 {
-				switch key := val.Content[i].Value; key {
-				case "reason", "ttl":
-				default:
-					return bandage.Action{}, fmt.Errorf("rules: rule %q: action report: unknown key %q", id, key)
-				}
-			}
-			if err := val.Decode(&raw); err != nil {
-				return bandage.Action{}, fmt.Errorf("rules: rule %q: action report: %w", id, err)
-			}
-			if !reasonRe.MatchString(raw.Reason) {
-				return bandage.Action{}, fmt.Errorf("rules: rule %q: action report: reason: %q is not a valid slug (want %s)",
-					id, raw.Reason, reasonRe.String())
-			}
-			ttl, err := parseTTL(raw.TTL)
-			if err != nil {
-				return bandage.Action{}, fmt.Errorf("rules: rule %q: action report: report.ttl: %w", id, err)
-			}
-			return bandage.Action{Report: &bandage.ReportAction{Reason: raw.Reason, TTL: ttl}}, nil
-		case "log":
-			return parseLogAction(id, val)
-		case "goto", "jump":
-			return parseChainAction(id, name, val)
-		case "stop":
-			return bandage.Action{}, fmt.Errorf("rules: rule %q: action stop takes no options", id)
-		default:
+		parse := actionForms[name]
+		if parse == nil {
 			return bandage.Action{}, fmt.Errorf("rules: rule %q: unknown action %q", id, name)
 		}
+		return parse(id, name, val)
 	default:
 		return bandage.Action{}, fmt.Errorf("rules: rule %q: action must be a name or a name with options", id)
 	}
+}
+
+// wantsOptions is the bare-form error for actions that take options.
+func wantsOptions(id, name string) error {
+	return fmt.Errorf("rules: rule %q: action %q: wants options", id, name)
+}
+
+// parseStopAction parses `- stop`: the one bare action; it takes no
+// options.
+func parseStopAction(id, name string, val *yaml.Node) (bandage.Action, error) {
+	if val != nil {
+		return bandage.Action{}, fmt.Errorf("rules: rule %q: action stop takes no options", id)
+	}
+	return bandage.Action{Stop: true}, nil
+}
+
+// parseReportAction parses `- report: {reason, ttl}`.
+func parseReportAction(id, name string, val *yaml.Node) (bandage.Action, error) {
+	if val == nil {
+		return bandage.Action{}, wantsOptions(id, name)
+	}
+	var raw rawReportAction
+	for i := 0; i < len(val.Content); i += 2 {
+		switch key := val.Content[i].Value; key {
+		case "reason", "ttl":
+		default:
+			return bandage.Action{}, fmt.Errorf("rules: rule %q: action report: unknown key %q", id, key)
+		}
+	}
+	if err := val.Decode(&raw); err != nil {
+		return bandage.Action{}, fmt.Errorf("rules: rule %q: action report: %w", id, err)
+	}
+	if !reasonRe.MatchString(raw.Reason) {
+		return bandage.Action{}, fmt.Errorf("rules: rule %q: action report: reason: %q is not a valid slug (want %s)",
+			id, raw.Reason, reasonRe.String())
+	}
+	ttl, err := parseTTL(raw.TTL)
+	if err != nil {
+		return bandage.Action{}, fmt.Errorf("rules: rule %q: action report: report.ttl: %w", id, err)
+	}
+	return bandage.Action{Report: &bandage.ReportAction{Reason: raw.Reason, TTL: ttl}}, nil
 }
 
 // parseChainAction parses `goto: <chain>` and `jump: <chain>`. The
 // target's existence and the graph's acyclicity are validated after all
 // chains are built (see validateChainGraph).
 func parseChainAction(id, name string, val *yaml.Node) (bandage.Action, error) {
+	if val == nil {
+		return bandage.Action{}, wantsOptions(id, name)
+	}
 	var target string
 	if err := val.Decode(&target); err != nil || target == "" {
 		return bandage.Action{}, fmt.Errorf("rules: rule %q: action %s: wants a chain name", id, name)
@@ -526,7 +555,10 @@ func parseChainAction(id, name string, val *yaml.Node) (bandage.Action, error) {
 // two comma-separated arguments — a debug/info/warn/error level (the
 // shared bandage.ParseLevel) and a message. The event and the rule's
 // tracker reading are logged beside the message at evaluation time.
-func parseLogAction(id string, val *yaml.Node) (bandage.Action, error) {
+func parseLogAction(id, name string, val *yaml.Node) (bandage.Action, error) {
+	if val == nil {
+		return bandage.Action{}, wantsOptions(id, name)
+	}
 	if val.Kind != yaml.ScalarNode {
 		return bandage.Action{}, fmt.Errorf("rules: rule %q: action log: wants a \"level,message\" string", id)
 	}
@@ -540,9 +572,6 @@ func parseLogAction(id string, val *yaml.Node) (bandage.Action, error) {
 	}
 	return bandage.Action{Log: &bandage.LogAction{Level: level, Message: args[1]}}, nil
 }
-
-// knownActions is the full action vocabulary of format version 0.
-var knownActions = map[string]bool{"report": true, "log": true, "goto": true, "jump": true, "stop": true}
 
 // parseTTL parses a report ttl: Go duration strings plus "d" for days
 // (7d, 24h, 30m). It must be positive.
