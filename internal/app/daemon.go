@@ -21,7 +21,8 @@ import (
 	"github.com/HT4w5/bandage/internal/domain/report"
 )
 
-// sweepInterval is the internal cadence of the expired-report sweeper.
+// sweepInterval is the internal cadence of the expired-report sweeper
+// and the periodic statistics log.
 const sweepInterval = time.Minute
 
 // EventParser is the parser port beside its consumer: one raw log line in,
@@ -166,7 +167,8 @@ func (d *Daemon) runPipeline() {
 	}
 }
 
-// sweep periodically deletes expired reports.
+// sweep periodically deletes expired reports and logs the periodic
+// statistics line (drop accounting, DECISIONS §6).
 func (d *Daemon) sweep() {
 	defer d.wg.Done()
 	t := time.NewTicker(sweepInterval)
@@ -176,6 +178,8 @@ func (d *Daemon) sweep() {
 		case <-d.stopSweep:
 			return
 		case <-t.C:
+			s := d.Stats()
+			d.logger.Info("statistics", "received", s.Received, "parsed", s.Parsed, "dropped", s.Dropped)
 			n, err := d.repo.DeleteExpired(context.Background(), d.now())
 			if err != nil {
 				d.logger.Error("sweep expired reports", "error", err)
