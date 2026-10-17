@@ -5,7 +5,6 @@ package evaluation
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"math"
 	"time"
 
@@ -29,6 +28,20 @@ type ReportSink interface {
 	Trigger(ctx context.Context, rec bandage.Report) error
 }
 
+// Logger is the log action's logging port, declared beside its one
+// consumer (ADR 0005). It carries the domain's four levels only — a
+// rule can never reach zerolog's fatal/panic or exit the process. The
+// zerolog implementation lives in the app wiring.
+type Logger interface {
+	Log(level bandage.Level, msg string, fields map[string]any)
+}
+
+// nopLogger discards every record — the Service's default when no
+// Logger is wired.
+type nopLogger struct{}
+
+func (nopLogger) Log(bandage.Level, string, map[string]any) {}
+
 // Service evaluates events against the loaded chains.
 //
 // A rule matches when its filter accepts the event and its tracker (if
@@ -43,12 +56,12 @@ type Service struct {
 	cache   TrackerCache
 	reports ReportSink
 	now     func() time.Time
-	logger  *slog.Logger
+	logger  Logger
 }
 
-func NewService(chains []bandage.Chain, cache TrackerCache, reports ReportSink, now func() time.Time, logger *slog.Logger) *Service {
+func NewService(chains []bandage.Chain, cache TrackerCache, reports ReportSink, now func() time.Time, logger Logger) *Service {
 	if logger == nil {
-		logger = slog.Default()
+		logger = nopLogger{}
 	}
 	byName := make(map[string]int, len(chains))
 	for i, chain := range chains {
@@ -139,12 +152,15 @@ func (d *actionDispatch) VisitReport(a *bandage.ReportAction) error {
 
 func (d *actionDispatch) VisitLog(a *bandage.LogAction) error {
 	// flux's log action: the level and message name the record; the
-	// event and the rule's tracker reading are logged with it (PLAN §1).
-	d.svc.logger.Log(d.ctx, a.Level, a.Message,
-		"rule", d.m.rule.ID,
-		"event", d.m.event,
-		"tracker", d.m.reading,
-	)
+	// rule, its Target, the event and the rule's tracker reading are
+	// logged with it (PLAN §1). The level is one of the domain's four —
+	// fatal/panic are unreachable (ADR 0005).
+	d.svc.logger.Log(a.Level, a.Message, map[string]any{
+		"rule":    d.m.rule.ID,
+		"target":  d.m.target(),
+		"event":   d.m.event,
+		"tracker": d.m.reading,
+	})
 	return nil
 }
 

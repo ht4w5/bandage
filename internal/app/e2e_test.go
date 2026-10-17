@@ -1,11 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rs/zerolog"
 
 	bandage "github.com/HT4w5/bandage/internal/domain"
 	"github.com/HT4w5/bandage/internal/identity"
@@ -70,35 +72,76 @@ type testDaemon struct {
 	logs *logCapture
 }
 
-// logCapture is a concurrency-safe slog.Handler that records every
-// record's level, message and attributes for assertions.
+// logCapture is a concurrency-safe zerolog writer that records every
+// record's level, message and fields for assertions — the daemon seam's
+// log capture (spec: Log capture), reworked from a stdlib slog handler
+// to a zerolog writer capturing decoded fields.
 type logCapture struct {
 	mu   sync.Mutex
+	buf  []byte
 	recs []capturedLog
 }
 
 type capturedLog struct {
-	Level   slog.Level
+	Level   zerolog.Level
 	Message string
 	Attrs   map[string]any
 }
 
-func (c *logCapture) Enabled(context.Context, slog.Level) bool { return true }
-
-func (c *logCapture) Handle(_ context.Context, r slog.Record) error {
-	attrs := make(map[string]any, r.NumAttrs())
-	r.Attrs(func(a slog.Attr) bool {
-		attrs[a.Key] = a.Value.Any()
-		return true
-	})
+// Write collects the JSON log records (one per line) and decodes each
+// into a capturedLog.
+func (c *logCapture) Write(p []byte) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.recs = append(c.recs, capturedLog{Level: r.Level, Message: r.Message, Attrs: attrs})
-	return nil
+	c.buf = append(c.buf, p...)
+	for {
+		i := bytes.IndexByte(c.buf, '\n')
+		if i < 0 {
+			break
+		}
+		line := c.buf[:i]
+		c.buf = c.buf[i+1:]
+		if len(line) == 0 {
+			continue
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(line, &raw); err != nil {
+			return 0, fmt.Errorf("logCapture: decode record: %w", err)
+		}
+		rec := capturedLog{Attrs: make(map[string]any, len(raw))}
+		for k, v := range raw {
+			switch k {
+			case zerolog.LevelFieldName:
+				if s, ok := v.(string); ok {
+					rec.Level, _ = zerolog.ParseLevel(s)
+				}
+			case zerolog.MessageFieldName:
+				rec.Message, _ = v.(string)
+			default:
+				rec.Attrs[k] = v
+			}
+		}
+		c.recs = append(c.recs, rec)
+	}
+	return len(p), nil
 }
 
-func (c *logCapture) WithAttrs([]slog.Attr) slog.Handler { return c }
-func (c *logCapture) WithGroup(string) slog.Handler      { return c }
+// attrInto decodes a captured field into v through its JSON encoding:
+// typed values survive the record's JSON round trip.
+func attrInto(t *testing.T, rec capturedLog, key string, v any) {
+	t.Helper()
+	raw, ok := rec.Attrs[key]
+	if !ok {
+		t.Fatalf("record %q has no %q field: %+v", rec.Message, key, rec.Attrs)
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("marshal %q field %q: %v", rec.Message, key, err)
+	}
+	if err := json.Unmarshal(b, v); err != nil {
+		t.Fatalf("unmarshal %q field %q: %v", rec.Message, key, err)
+	}
+}
 
 // withMessage returns the captured records with the given message.
 func (c *logCapture) withMessage(msg string) []capturedLog {
@@ -130,8 +173,10 @@ func startTestDaemon(t *testing.T, clock *testClock, network, dbPath, rulesYAML 
 }
 
 // startTestDaemonCfg is startTestDaemon with a config mutation hook for
-// tests that need a non-default knob (e.g. a small cache entry cap).
-func startTestDaemonCfg(t *testing.T, clock *testClock, network, dbPath, rulesYAML string, mutate func(*Config)) *testDaemon {
+// tests that need a non-default knob (e.g. a small cache entry cap) and
+// trailing daemon options applied last (e.g. a differently leveled
+// logger).
+func startTestDaemonCfg(t *testing.T, clock *testClock, network, dbPath, rulesYAML string, mutate func(*Config), extra ...Option) *testDaemon {
 	t.Helper()
 	listen := filepath.Join(t.TempDir(), "log.sock")
 	switch network {
@@ -161,7 +206,8 @@ func startTestDaemonCfg(t *testing.T, clock *testClock, network, dbPath, rulesYA
 		t.Fatalf("ParseRules error: %v", err)
 	}
 	logs := &logCapture{}
-	d, err := New(cfg, chains, WithClock(clock.Now), withLogger(slog.New(logs)))
+	opts := append([]Option{WithClock(clock.Now), WithLogger(zerolog.New(logs))}, extra...)
+	d, err := New(cfg, chains, opts...)
 	if err != nil {
 		t.Fatalf("New error: %v", err)
 	}
@@ -720,7 +766,7 @@ chains:
 	// record in the other: FNV-1a of "bursty-api\x00203.0.113.7/32" and
 	// "bursty-api\x00203.0.113.9/32" (the store keys) agree mod 2 and
 	// "filesize\x00/api" differs. Then an event for another target caps
-	// the cache and drops the previous bucket (logged and counted by
+	// the cache and evicts the previous bucket (logged and counted by
 	// the store).
 	d := startTestDaemonCfg(t, clock, "unixgram", ":memory:", rules, func(c *Config) {
 		c.Cache.MaxEntries = 2
@@ -737,18 +783,18 @@ chains:
 	}
 
 	// One event for another target caps the cache: 203.0.113.7's bucket
-	// is dropped and restarts from zero on its next event, so that event
+	// is evicted and restarts from zero on its next event, so that event
 	// must not Match — the report stays untouched.
 	clock.Advance(10 * time.Minute)
 	d.send(nginxLine(eventTime2, "203.0.113.9", "GET", "/api", 200, 0))
 	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/api", 200, 0))
 	d.waitProcessed(t, 5)
-	// The capped drop of the old bucket is logged with its tracker
+	// The eviction of the old bucket is logged with its tracker
 	// namespace and Target (ticket 07): nothing resets silently.
-	if drops := d.logs.withMessage("tracker cache capped drop"); !slices.ContainsFunc(drops, func(r capturedLog) bool {
+	if evictions := d.logs.withMessage("tracker cache eviction"); !slices.ContainsFunc(evictions, func(r capturedLog) bool {
 		return r.Attrs["namespace"] == "bursty-api" && r.Attrs["target"] == "203.0.113.7/32"
 	}) {
-		t.Errorf("capped drop log for bursty-api/203.0.113.7/32 missing in %v", drops)
+		t.Errorf("eviction log for bursty-api/203.0.113.7/32 missing in %v", evictions)
 	}
 	doc = d.getReports(t, nil)
 	if len(doc.Reports) != 1 || doc.Reports[0].UpdatedAt != wallBase || doc.Reports[0].Tracker.Value != 3 {
@@ -1267,9 +1313,10 @@ chains:
 	}
 }
 
-// log actions log the Event and the rule's tracker reading at the Match
-// (PLAN §1), in flux's "level,message" shape: the level and message name
-// the record, the event and the trigger-time reading are attached.
+// log actions log the rule, its Target, the Event and the rule's
+// tracker reading at the Match (PLAN §1), in flux's "level,message"
+// shape: the level and message name the record, the fields are
+// attached.
 func TestE2ELogActionLogsEventAndTrackerReading(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -1290,7 +1337,7 @@ chains:
 	d.waitProcessed(t, 1)
 
 	wantTime := time.Unix(1734345934, 123000000) // eventTime1 as parsed
-	checkLog := func(msg string, level slog.Level, wantTracker bandage.TrackerReading) {
+	checkLog := func(msg string, level zerolog.Level, wantRule, wantTarget string, wantTracker bandage.TrackerReading) {
 		t.Helper()
 		recs := d.logs.withMessage(msg)
 		if len(recs) != 1 {
@@ -1300,18 +1347,20 @@ chains:
 		if rec.Level != level {
 			t.Errorf("%q level = %v, want %v", msg, rec.Level, level)
 		}
-		ev, ok := rec.Attrs["event"].(*bandage.Event)
-		if !ok {
-			t.Fatalf("%q event attr = %#v (%T), want *bandage.Event", msg, rec.Attrs["event"], rec.Attrs["event"])
+		if rec.Attrs["rule"] != wantRule {
+			t.Errorf("%q rule = %v, want %q", msg, rec.Attrs["rule"], wantRule)
 		}
+		if rec.Attrs["target"] != wantTarget {
+			t.Errorf("%q target = %v, want %q", msg, rec.Attrs["target"], wantTarget)
+		}
+		var ev bandage.Event
+		attrInto(t, rec, "event", &ev)
 		if ev.RemoteAddr.String() != "203.0.113.7" || ev.Method != "GET" || ev.Path != "/big" ||
 			ev.Status != 200 || ev.SentBytes != 150 || !ev.Time.Equal(wantTime) {
 			t.Errorf("%q logged event = %+v, want the parsed /big event", msg, ev)
 		}
-		tracker, ok := rec.Attrs["tracker"].(bandage.TrackerReading)
-		if !ok {
-			t.Fatalf("%q tracker attr = %#v (%T), want bandage.TrackerReading", msg, rec.Attrs["tracker"], rec.Attrs["tracker"])
-		}
+		var tracker bandage.TrackerReading
+		attrInto(t, rec, "tracker", &tracker)
 		if tracker != wantTracker {
 			t.Errorf("%q tracker reading = %+v, want %+v", msg, tracker, wantTracker)
 		}
@@ -1333,9 +1382,78 @@ chains:
 	}
 
 	// A tracker-less rule matches on filter alone and logs an empty
-	// reading; the tracker rule logs the trigger-time reading.
-	checkLog("SEEN:", slog.LevelDebug, bandage.TrackerReading{})
-	checkLog("OVERFLOW:", slog.LevelInfo, reportReading)
+	// reading; the tracker rule logs the trigger-time reading. The
+	// Target is the report's Target — the event's source aggregated to
+	// the tracker's prefix; the tracker-less rule uses the default
+	// per-address aggregation (203.0.113.7 → 203.0.113.7/32).
+	checkLog("SEEN:", zerolog.DebugLevel, "seen", "203.0.113.7/32", bandage.TrackerReading{})
+	checkLog("OVERFLOW:", zerolog.InfoLevel, "overflow", "203.0.113.7/32", reportReading)
+}
+
+// Level filtering is observable (spec: level filtering): a daemon
+// logger built from a configured level keeps records at or above it and
+// drops the rest — the domain's four words map onto the real levels.
+func TestE2ELevelFilteringDropsRecordsBelowConfiguredLevel(t *testing.T) {
+	rules := `
+version: 0
+chains:
+  - name: levels
+    rules:
+      - id: debug-log
+        actions: [{log: "debug,DEBUG-MARK:"}]
+      - id: info-log
+        actions: [{log: "info,INFO-MARK:"}]
+      - id: warn-log
+        actions: [{log: "warn,WARN-MARK:"}]
+`
+	tests := []struct {
+		level bandage.Level
+		want  []string
+		gone  []string
+	}{
+		{level: bandage.LevelInfo, want: []string{"INFO-MARK:", "WARN-MARK:"}, gone: []string{"DEBUG-MARK:"}},
+		{level: bandage.LevelWarn, want: []string{"WARN-MARK:"}, gone: []string{"DEBUG-MARK:", "INFO-MARK:"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.level.String(), func(t *testing.T) {
+			clock := newTestClock(mustTime(t, wallBase))
+			buf := &syncBuffer{}
+			d := startTestDaemonCfg(t, clock, "unixgram", ":memory:", rules, nil, WithLogger(NewLogger(buf, tt.level)))
+			d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
+			d.waitProcessed(t, 1)
+
+			out := buf.String()
+			for _, msg := range tt.gone {
+				if strings.Contains(out, msg) {
+					t.Errorf("%q record present below the configured %s level:\n%s", msg, tt.level, out)
+				}
+			}
+			for _, msg := range tt.want {
+				if !strings.Contains(out, msg) {
+					t.Errorf("%q record absent at the configured %s level:\n%s", msg, tt.level, out)
+				}
+			}
+		})
+	}
+}
+
+// syncBuffer is a concurrency-safe log sink for tests that assert on
+// the rendered output: the daemon logs from several goroutines.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
 
 // Chains are traversed in file order and rules within a chain in order;

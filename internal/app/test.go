@@ -71,7 +71,7 @@ func (d actionDescriber) VisitReport(a *bandage.ReportAction) error {
 }
 
 func (d actionDescriber) VisitLog(a *bandage.LogAction) error {
-	fmt.Fprintf(d.b, "    action log level=%s message=%q\n", strings.ToLower(a.Level.String()), a.Message)
+	fmt.Fprintf(d.b, "    action log level=%s message=%q\n", a.Level, a.Message)
 	return nil
 }
 

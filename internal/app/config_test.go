@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	bandage "github.com/HT4w5/bandage/internal/domain"
 )
 
 // The config surface (PLAN §3) is strictly decoded before any socket
@@ -68,6 +70,38 @@ api: {listen: "127.0.0.1:8080"}
 	if cfg.Cache.MaxEntries != 65536 {
 		t.Errorf("cache.max_entries = %d, want default 65536", cfg.Cache.MaxEntries)
 	}
+	if cfg.Log.Level != bandage.LevelInfo {
+		t.Errorf("log.level = %q, want default %q", cfg.Log.Level, bandage.LevelInfo)
+	}
+}
+
+// log.level accepts exactly the four level words (default info), shared
+// with the one level parser; the strict load rejects any other value
+// before any socket opens (spec: Config surface; stories 10, 13).
+func TestParseConfigLogLevel(t *testing.T) {
+	valid := strings.Replace(validConfig, "api:", "log:\n  level: %s\n\napi:", 1)
+	for _, level := range []string{"debug", "info", "warn", "error"} {
+		t.Run(level, func(t *testing.T) {
+			cfg, err := ParseConfig([]byte(strings.Replace(valid, "%s", level, 1)))
+			if err != nil {
+				t.Fatalf("ParseConfig error: %v", err)
+			}
+			if cfg.Log.Level != bandage.Level(level) {
+				t.Errorf("log.level = %q, want %q", cfg.Log.Level, level)
+			}
+		})
+	}
+	for _, level := range []string{"trace", "fatal", "panic", "warning", "INFO2"} {
+		t.Run("rejects "+level, func(t *testing.T) {
+			_, err := ParseConfig([]byte(strings.Replace(valid, "%s", level, 1)))
+			if err == nil {
+				t.Fatalf("ParseConfig succeeded, want %q rejected", level)
+			}
+			if !strings.Contains(err.Error(), "log.level") {
+				t.Errorf("error %q does not contain %q", err, "log.level")
+			}
+		})
+	}
 }
 
 func TestParseConfigErrors(t *testing.T) {
@@ -82,6 +116,7 @@ func TestParseConfigErrors(t *testing.T) {
 		{name: "unknown db key", yaml: strings.Replace(validConfig, "    path: /var/lib/bandage/reports.db", "    path: /var/lib/bandage/reports.db\n    extra: x", 1), wantErr: "extra"},
 		{name: "unknown cache key", yaml: strings.Replace(validConfig, "  max_entries: 65536", "  max_entries: 65536\n  shards: 8", 1), wantErr: "shards"},
 		{name: "unknown api key", yaml: strings.Replace(validConfig, "  listen: 127.0.0.1:8080", "  listen: 127.0.0.1:8080\n  metrics: true", 1), wantErr: "metrics"},
+		{name: "unknown log key", yaml: strings.Replace(validConfig, "api:", "log:\n  verbosity: 1\n\napi:", 1), wantErr: "verbosity"},
 		{name: "missing ingest driver", yaml: strings.Replace(validConfig, "  driver: syslog\n", "", 1), wantErr: "ingest.driver"},
 		{name: "unknown ingest driver", yaml: strings.Replace(validConfig, "driver: syslog", "driver: kafka", 1), wantErr: "ingest driver"},
 		{name: "missing parser", yaml: strings.Replace(validConfig, "  parser: nginx\n", "", 1), wantErr: "ingest.parser"},
