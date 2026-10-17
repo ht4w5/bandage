@@ -33,8 +33,7 @@ func planText(cfg Config, chains []bandage.Chain) string {
 		fmt.Fprintf(&b, "chain %s\n", chain.Name)
 		for _, rule := range chain.Rules {
 			fmt.Fprintf(&b, "  rule %s\n", rule.ID)
-			// Format version 0 has exactly one filter ("any").
-			fmt.Fprintf(&b, "    filter: any\n")
+			fmt.Fprintf(&b, "    filter: %s\n", rule.FilterSource)
 			if rule.Tracker == nil {
 				fmt.Fprintf(&b, "    tracker: none\n")
 			} else {

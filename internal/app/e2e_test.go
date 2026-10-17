@@ -95,6 +95,13 @@ func startTestDaemon(t *testing.T, clock *testClock, network, dbPath, rulesYAML 
 		t.Fatalf("Start error: %v", err)
 	}
 	t.Cleanup(func() {
+		// Close pooled HTTP connections before shutting down: the shared
+		// client can leave a connection that was accepted but never used,
+		// and http.Server.Shutdown waits on those until the peer closes
+		// them (golang/go#22682).
+		if tr, ok := http.DefaultTransport.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := d.Shutdown(ctx); err != nil {
@@ -588,4 +595,73 @@ func mustTime(t *testing.T, s string) time.Time {
 		t.Fatal(err)
 	}
 	return tm
+}
+
+// A rule's filter gates its tracker: non-matching events neither
+// accumulate nor decay it and never match the rule.
+func TestE2EFilterGatesTracker(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	rules := `
+version: 0
+chains:
+  - name: gated
+    rules:
+      - id: gated-egress
+        filter: 'path prefix "/releases" and method GET'
+        tracker: {track: bandwidth, leak: 1, volume: 20}
+        actions: [{report: {reason: gated-overflow, ttl: 24h}}]
+`
+	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
+
+	// Non-matching traffic alone must not overflow the tracker, even at
+	// sizes that would (500 > 20).
+	d.send(nginxLine("1734345900", "203.0.113.7", "GET", "/api/data", 200, 500))
+	d.send(nginxLine("1734345901", "203.0.113.7", "POST", "/releases/24.04.iso", 200, 500))
+	d.waitProcessed(t, 2)
+	if doc := d.getReports(t, nil); len(doc.Reports) != 0 {
+		t.Fatalf("reports after non-matching traffic = %+v, want none", doc.Reports)
+	}
+
+	// Matching events see only their own contributions. Two events at the
+	// same second accumulate 10 + 10 = 20 (no overflow at volume 20); the
+	// non-matching 500-byte event far in the future must neither
+	// accumulate nor move LastUpdate; the third matching event at t+2
+	// then decays 2s and overflows: 20 + 10 − 2 = 28 > 20. Had the
+	// non-matching event touched the tracker it would have drained it to
+	// zero and its later LastUpdate would suppress decay on the
+	// out-of-order third event (increment only → 10), never overflowing.
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/releases/24.04.iso", 200, 10))
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/releases/24.04.iso", 200, 10))
+	d.send(nginxLine("1734345984.123", "203.0.113.7", "GET", "/api/data", 200, 500))
+	d.send(nginxLine("1734345936.123", "203.0.113.7", "GET", "/releases/24.04.iso", 200, 10))
+	d.waitProcessed(t, 6)
+
+	doc := d.getReports(t, nil)
+	if len(doc.Reports) != 1 {
+		t.Fatalf("reports = %+v, want exactly one (the gated rule)", doc.Reports)
+	}
+	r := doc.Reports[0]
+	if r.Rule != "gated-egress" || r.Reason != "gated-overflow" {
+		t.Errorf("provenance = %q/%q", r.Rule, r.Reason)
+	}
+	if r.Tracker.Value != 28 {
+		t.Errorf("tracker value = %v, want 28 (non-matching events must not accumulate or decay)", r.Tracker.Value)
+	}
+	if r.Sample.Path != "/releases/24.04.iso" {
+		t.Errorf("sample path = %q, want the matching event", r.Sample.Path)
+	}
+
+	// Once the tracker overflows, non-matching events still never match:
+	// this one would re-trigger the report and bump updated_at if the
+	// filter did not gate.
+	clock.Advance(time.Hour)
+	d.send(nginxLine("1734345936.123", "203.0.113.7", "POST", "/releases/24.04.iso", 200, 500))
+	d.waitProcessed(t, 7)
+	doc = d.getReports(t, nil)
+	if len(doc.Reports) != 1 {
+		t.Fatalf("reports = %+v, want exactly one", doc.Reports)
+	}
+	if doc.Reports[0].UpdatedAt != wallBase {
+		t.Errorf("updated_at = %q, want %q (non-matching events must never match)", doc.Reports[0].UpdatedAt, wallBase)
+	}
 }
