@@ -180,7 +180,7 @@ func (d *Daemon) sweep() {
 		case <-t.C:
 			s := d.Stats()
 			d.logger.Info("statistics", "received", s.Received, "parsed", s.Parsed, "dropped", s.Dropped)
-			n, err := d.repo.DeleteExpired(context.Background(), d.now())
+			n, err := d.sweepOnce(context.Background())
 			if err != nil {
 				d.logger.Error("sweep expired reports", "error", err)
 				continue
@@ -190,6 +190,14 @@ func (d *Daemon) sweep() {
 			}
 		}
 	}
+}
+
+// sweepOnce runs one sweeper pass: it deletes expired reports at the
+// injected wall clock and returns the number of deleted rows. The
+// periodic sweeper calls it once per tick; tests drive a pass directly,
+// so expiry behavior needs no sleeping.
+func (d *Daemon) sweepOnce(ctx context.Context) (int, error) {
+	return d.repo.DeleteExpired(ctx, d.now())
 }
 
 // Shutdown drains the pipeline and closes every resource. Idempotent.

@@ -171,6 +171,38 @@ func (r *ReportRepository) List(ctx context.Context, q report.Query) ([]bandage.
 	return out, nil
 }
 
+// Delete removes reports matching the query regardless of expiry and
+// returns the number of deleted rows. At least one filter is required
+// (ErrUnfiltered otherwise): dismissal is never delete-all.
+func (r *ReportRepository) Delete(ctx context.Context, q report.Query) (int, error) {
+	var (
+		query string
+		args  []any
+	)
+	switch {
+	case q.Rule != "" && q.Target != "":
+		query = `DELETE FROM reports WHERE rule = ? AND target = ?`
+		args = []any{q.Rule, q.Target}
+	case q.Rule != "":
+		query = `DELETE FROM reports WHERE rule = ?`
+		args = []any{q.Rule}
+	case q.Target != "":
+		query = `DELETE FROM reports WHERE target = ?`
+		args = []any{q.Target}
+	default:
+		return 0, fmt.Errorf("sqlite: delete: %w", report.ErrUnfiltered)
+	}
+	res, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: delete: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: delete: %w", err)
+	}
+	return int(n), nil
+}
+
 // DeleteExpired deletes rows whose expires_at has passed.
 func (r *ReportRepository) DeleteExpired(ctx context.Context, now time.Time) (int, error) {
 	res, err := r.db.ExecContext(ctx, `DELETE FROM reports WHERE expires_at <= ?`, now.UnixNano())
