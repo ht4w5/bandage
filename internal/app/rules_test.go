@@ -294,10 +294,157 @@ chains:
 		{name: "bad quantity names rule and field", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: my-rule\n        tracker: {track: bandwidth, leak: 1, volume: 1q}\n", wantErr: `rule "my-rule": tracker.volume`},
 		{name: "volume block rejected for now", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker:\n          track: bandwidth\n          leak: 1\n          volume: {method: constant, value: 5}\n", wantErr: "tracker.volume"},
 
-		// Actions.
+		// Actions (report, log, goto, jump, stop) and their YAML shapes
+		// (DECISIONS §9).
 		{name: "unknown action rejected", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2}\n        actions: [{ban: 15m}]\n", wantErr: "unknown action"},
-		{name: "goto not supported yet", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{goto: b}]\n", wantErr: "not supported yet"},
-		{name: "stop not supported yet", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [stop]\n", wantErr: "not supported yet"},
+		{name: "stop accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [stop]\n"},
+		{
+			name: "goto accepted and resolves target",
+			yaml: `
+version: 0
+chains:
+  - name: a
+    rules:
+      - id: r
+        actions: [{goto: b}]
+  - name: b
+    rules:
+      - id: s
+        actions: [stop]
+`,
+		},
+		{
+			name: "jump accepted and resolves forward target",
+			yaml: `
+version: 0
+chains:
+  - name: a
+    rules:
+      - id: r
+        actions: [{jump: later}]
+  - name: later
+    rules:
+      - id: s
+        actions: [stop]
+`,
+		},
+		{name: "log accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{log: \"debug,ROUTE:\"}]\n"},
+		{name: "routing and logging actions without tracker accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{log: \"info,seen\"}, {goto: b}]\n  - name: b\n    rules:\n      - id: s\n        actions: [stop]\n"},
+		{name: "stop with options rejected", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{stop: true}]\n", wantErr: "stop"},
+		{name: "goto as scalar without options rejected", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [goto]\n", wantErr: "goto"},
+		{name: "goto without target rejected", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{goto: \"\"}]\n", wantErr: "goto"},
+		{name: "goto mapping target rejected", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{goto: {chain: b}}]\n", wantErr: "goto"},
+		{name: "jump without target rejected", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{jump: null}]\n", wantErr: "jump"},
+		{name: "log non-string rejected", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{log: [debug, x]}]\n", wantErr: "level,message"},
+		{name: "log wrong arg count rejected", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{log: debug}]\n", wantErr: "level,message"},
+		{name: "log bad level rejected", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{log: \"verbose,x\"}]\n", wantErr: "level"},
+
+		// The goto/jump chain graph: unique chain names, resolvable
+		// targets, acyclic (a DAG — shared target chains are allowed).
+		{
+			name: "duplicate chain names rejected",
+			yaml: `
+version: 0
+chains:
+  - name: dup
+    rules:
+      - id: r
+        actions: [stop]
+  - name: dup
+    rules:
+      - id: s
+        actions: [stop]
+`,
+			wantErr: "duplicate chain name",
+		},
+		{
+			name: "goto dangling target rejected",
+			yaml: `
+version: 0
+chains:
+  - name: a
+    rules:
+      - id: r
+        actions: [{goto: nowhere}]
+`,
+			wantErr: "nonexistent chain",
+		},
+		{
+			name: "jump dangling target rejected",
+			yaml: `
+version: 0
+chains:
+  - name: a
+    rules:
+      - id: r
+        actions: [{jump: nowhere}]
+`,
+			wantErr: "nonexistent chain",
+		},
+		{
+			name: "goto self cycle rejected",
+			yaml: `
+version: 0
+chains:
+  - name: a
+    rules:
+      - id: r
+        actions: [{goto: a}]
+`,
+			wantErr: "cycle",
+		},
+		{
+			name: "goto jump cycle rejected",
+			yaml: `
+version: 0
+chains:
+  - name: a
+    rules:
+      - id: r
+        actions: [{jump: b}]
+  - name: b
+    rules:
+      - id: s
+        actions: [{goto: a}]
+`,
+			wantErr: "cycle",
+		},
+		{
+			name: "jump self cycle rejected",
+			yaml: `
+version: 0
+chains:
+  - name: a
+    rules:
+      - id: r
+        actions: [{jump: a}]
+`,
+			wantErr: "cycle",
+		},
+		{
+			name: "shared target chain accepted as a DAG",
+			yaml: `
+version: 0
+chains:
+  - name: one
+    rules:
+      - id: r
+        actions: [{goto: shared}]
+  - name: two
+    rules:
+      - id: s
+        actions: [{jump: shared}]
+  - name: shared
+    rules:
+      - id: t
+        actions: [{goto: sink}]
+  - name: sink
+    rules:
+      - id: u
+        actions: [stop]
+`,
+		},
+
 		{name: "report without reason", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2}\n        actions: [{report: {ttl: 1h}}]\n", wantErr: "reason"},
 		{name: "report with unknown key", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2}\n        actions: [{report: {reason: x, ttl: 1h, ban: 15m}}]\n", wantErr: "ban"},
 	}
@@ -370,6 +517,151 @@ func TestCheckFailsOnBadRules(t *testing.T) {
 		t.Fatal("Check succeeded, want error")
 	}
 }
+
+// The -check plan shows every action of every rule (DECISIONS §9).
+func TestCheckShowsActionsInPlan(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "bandage.yml")
+	rulesPath := filepath.Join(dir, "rules.yml")
+	if err := os.WriteFile(cfgPath, []byte(validConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rulesPath, []byte(routingRules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := Check(cfgPath, rulesPath)
+	if err != nil {
+		t.Fatalf("Check error: %v", err)
+	}
+	for _, want := range []string{
+		"chain routing",
+		"rule route-downloads",
+		"action log level=debug message=\"ROUTE:\"",
+		"action jump target=download-abuse",
+		"action stop",
+		"chain download-abuse",
+		"rule sustained-iso-egress",
+		"action goto target=sink",
+		"action report reason=iso-egress-overflow ttl=168h0m0s",
+		"action stop",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Errorf("plan does not contain %q:\n%s", want, plan)
+		}
+	}
+}
+
+// The -check command rejects unsound goto/jump graphs and accepts DAGs:
+// failing and passing cases on the CLI validation surface.
+func TestCheckValidatesChainGraph(t *testing.T) {
+	tests := []struct {
+		name    string
+		rules   string
+		wantErr string
+	}{
+		{
+			name: "cyclic rules file rejected",
+			rules: `
+version: 0
+chains:
+  - name: a
+    rules:
+      - id: r
+        actions: [{jump: b}]
+  - name: b
+    rules:
+      - id: s
+        actions: [{goto: a}]
+`,
+			wantErr: "cycle",
+		},
+		{
+			name: "dangling goto target rejected",
+			rules: `
+version: 0
+chains:
+  - name: a
+    rules:
+      - id: r
+        actions: [{goto: nowhere}]
+`,
+			wantErr: "nonexistent chain",
+		},
+		{
+			name: "duplicate chain names rejected",
+			rules: `
+version: 0
+chains:
+  - name: dup
+    rules:
+      - id: r
+        actions: [stop]
+  - name: dup
+    rules:
+      - id: s
+        actions: [stop]
+`,
+			wantErr: "duplicate chain name",
+		},
+		{
+			name:  "acyclic dispatch DAG accepted",
+			rules: routingRules,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "bandage.yml")
+			rulesPath := filepath.Join(dir, "rules.yml")
+			if err := os.WriteFile(cfgPath, []byte(validConfig), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(rulesPath, []byte(tt.rules), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Check(cfgPath, rulesPath)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Check error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Check succeeded, want error containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q does not contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// routingRules is a dispatch DAG (several chains reaching one topic
+// chain) exercising the full action vocabulary.
+const routingRules = `
+version: 0
+chains:
+  - name: routing
+    rules:
+      - id: route-downloads
+        actions:
+          - log: "debug,ROUTE:"
+          - jump: download-abuse
+      - id: skip-health
+        actions: [stop]
+  - name: download-abuse
+    rules:
+      - id: sustained-iso-egress
+        tracker: {track: bandwidth, leak: 1MB, volume: 100GB}
+        actions:
+          - goto: sink
+          - report: {reason: iso-egress-overflow, ttl: 7d}
+  - name: sink
+    rules:
+      - id: terminal
+        actions: [stop]
+`
 
 func TestLoadRulesFromFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "rules.yml")
