@@ -5,13 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	bandage "github.com/HT4w5/bandage/internal/domain"
 )
 
 // Primary seam (spec: Testing Decisions): the assembled daemon — real
@@ -55,10 +60,67 @@ func nginxLine(t, client, method, path string, status int, sent int64) string {
 		t, client, method, path, status, sent)
 }
 
-// testDaemon bundles a running daemon with a raw-line sender.
+// testDaemon bundles a running daemon with a raw-line sender and the
+// captured log records (log actions are observable through the daemon's
+// injectable logger).
 type testDaemon struct {
 	*Daemon
 	send func(line string)
+	logs *logCapture
+}
+
+// logCapture is a concurrency-safe slog.Handler that records every
+// record's level, message and attributes for assertions.
+type logCapture struct {
+	mu   sync.Mutex
+	recs []capturedLog
+}
+
+type capturedLog struct {
+	Level   slog.Level
+	Message string
+	Attrs   map[string]any
+}
+
+func (c *logCapture) Enabled(context.Context, slog.Level) bool { return true }
+
+func (c *logCapture) Handle(_ context.Context, r slog.Record) error {
+	attrs := make(map[string]any, r.NumAttrs())
+	r.Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value.Any()
+		return true
+	})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.recs = append(c.recs, capturedLog{Level: r.Level, Message: r.Message, Attrs: attrs})
+	return nil
+}
+
+func (c *logCapture) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c *logCapture) WithGroup(string) slog.Handler      { return c }
+
+// withMessage returns the captured records with the given message.
+func (c *logCapture) withMessage(msg string) []capturedLog {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []capturedLog
+	for _, r := range c.recs {
+		if r.Message == msg {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// messages returns the captured record messages in emission order.
+func (c *logCapture) messages() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]string, 0, len(c.recs))
+	for _, r := range c.recs {
+		out = append(out, r.Message)
+	}
+	return out
 }
 
 func startTestDaemon(t *testing.T, clock *testClock, network, dbPath, rulesYAML string) *testDaemon {
@@ -87,7 +149,8 @@ func startTestDaemon(t *testing.T, clock *testClock, network, dbPath, rulesYAML 
 	if err != nil {
 		t.Fatalf("ParseRules error: %v", err)
 	}
-	d, err := New(cfg, chains, WithClock(clock.Now))
+	logs := &logCapture{}
+	d, err := New(cfg, chains, WithClock(clock.Now), WithLogger(slog.New(logs)))
 	if err != nil {
 		t.Fatalf("New error: %v", err)
 	}
@@ -109,7 +172,7 @@ func startTestDaemon(t *testing.T, clock *testClock, network, dbPath, rulesYAML 
 		}
 	})
 
-	td := &testDaemon{Daemon: d}
+	td := &testDaemon{Daemon: d, logs: logs}
 	var conn net.Conn
 	var err2 error
 	switch network {
@@ -425,17 +488,20 @@ chains:
 }
 
 // GET /reports filters by ?rule= and ?target= and never returns expired
-// reports.
+// reports. Two chains report on one event: a chain's first terminal
+// match ends it, so one event reports from one rule per chain.
 func TestE2EReportFiltersAndExpiry(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
 version: 0
 chains:
-  - name: abuse
+  - name: abuse-one
     rules:
       - id: rule-one
         tracker: {track: bandwidth, leak: 0, volume: 100}
         actions: [{report: {reason: one, ttl: 1h}}]
+  - name: abuse-two
+    rules:
       - id: rule-two
         filter: any
         tracker: {track: bandwidth, leak: 0, volume: 100}
@@ -663,5 +729,308 @@ chains:
 	}
 	if doc.Reports[0].UpdatedAt != wallBase {
 		t.Errorf("updated_at = %q, want %q (non-matching events must never match)", doc.Reports[0].UpdatedAt, wallBase)
+	}
+}
+
+// goto runs the target chain and then ends the current chain (DECISIONS
+// §1: flux's buildStmtGoto is buggy and behaves as jump — this test
+// cannot pass with that port). The topic chain's rule overflows only on
+// its second traversal of one event (rate leak=0 volume=1): the report
+// after a single event proves goto ran the target chain, and the missing
+// after-goto report proves goto ended the routing chain.
+func TestE2EGotoRunsTargetAndEndsCurrentChain(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	rules := `
+version: 0
+chains:
+  - name: routing
+    rules:
+      - id: route-to-topic
+        actions: [{goto: topic}]
+      - id: after-goto
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions: [{report: {reason: after-goto, ttl: 1h}}]
+  - name: topic
+    rules:
+      - id: topic-hit
+        tracker: {track: rate, leak: 0, volume: 1}
+        actions: [{report: {reason: topic-hit, ttl: 1h}}]
+`
+	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
+	d.waitProcessed(t, 1)
+
+	doc := d.getReports(t, nil)
+	if len(doc.Reports) != 1 {
+		t.Fatalf("reports = %+v, want exactly the topic-hit report (after-goto must not fire)", doc.Reports)
+	}
+	r := doc.Reports[0]
+	if r.Rule != "topic-hit" || r.Reason != "topic-hit" {
+		t.Errorf("report = %q/%q, want topic-hit/topic-hit", r.Rule, r.Reason)
+	}
+	if r.Tracker.Value != 2 {
+		// One increment from the goto-entered traversal and one from
+		// the chain's own top-level traversal.
+		t.Errorf("tracker value = %v, want 2 (goto runs the target chain)", r.Tracker.Value)
+	}
+}
+
+// jump runs the target chain and then resumes the current chain: the
+// rule after the jump still runs on the same event.
+func TestE2EJumpRunsTargetAndResumesCurrentChain(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	rules := `
+version: 0
+chains:
+  - name: routing
+    rules:
+      - id: route-to-topic
+        actions: [{jump: topic}]
+      - id: after-jump
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions: [{report: {reason: after-jump, ttl: 1h}}]
+  - name: topic
+    rules:
+      - id: topic-hit
+        tracker: {track: rate, leak: 0, volume: 1}
+        actions: [{report: {reason: topic-hit, ttl: 1h}}]
+`
+	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
+	d.waitProcessed(t, 1)
+
+	doc := d.getReports(t, nil)
+	got := make(map[string]bool, len(doc.Reports))
+	for _, r := range doc.Reports {
+		got[r.Rule] = true
+	}
+	if len(doc.Reports) != 2 || !got["after-jump"] || !got["topic-hit"] {
+		t.Fatalf("reports = %+v, want after-jump (resumed) and topic-hit (jumped)", doc.Reports)
+	}
+}
+
+// Rules within a chain run in order and the first match of a terminal
+// rule ends the chain: later rules are skipped even when they would
+// match, while a non-terminal match (log/jump only) lets traversal
+// continue to the next rule.
+func TestE2EFirstMatchPerChainEndsTraversal(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	rules := `
+version: 0
+chains:
+  - name: order
+    rules:
+      - id: first-hit
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions: [{report: {reason: first-hit, ttl: 1h}}]
+      - id: second-hit
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions: [{report: {reason: second-hit, ttl: 1h}}]
+  - name: continue
+    rules:
+      - id: non-terminal
+        actions: [{log: "debug,CONT:"}]
+      - id: after-non-terminal
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions: [{report: {reason: after-non-terminal, ttl: 1h}}]
+`
+	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
+	d.waitProcessed(t, 1)
+
+	doc := d.getReports(t, nil)
+	got := make(map[string]bool, len(doc.Reports))
+	for _, r := range doc.Reports {
+		got[r.Rule] = true
+	}
+	if len(doc.Reports) != 2 || !got["first-hit"] || !got["after-non-terminal"] {
+		t.Fatalf("reports = %+v, want first-hit and after-non-terminal (second-hit skipped)", doc.Reports)
+	}
+}
+
+// stop ends traversal of its chain only: other chains are still
+// evaluated for the same event.
+func TestE2EStopEndsChainWithoutStoppingOtherChains(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	rules := `
+version: 0
+chains:
+  - name: halt
+    rules:
+      - id: stop-here
+        actions: [stop]
+      - id: after-stop
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions: [{report: {reason: after-stop, ttl: 1h}}]
+  - name: topic
+    rules:
+      - id: topic-hit
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions: [{report: {reason: topic-hit, ttl: 1h}}]
+`
+	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
+	d.waitProcessed(t, 1)
+
+	doc := d.getReports(t, nil)
+	if len(doc.Reports) != 1 || doc.Reports[0].Rule != "topic-hit" {
+		t.Fatalf("reports = %+v, want only topic-hit (stop ends its chain, not the others)", doc.Reports)
+	}
+}
+
+// log actions log the Event and the rule's tracker reading at the Match
+// (PLAN §1), in flux's "level,message" shape: the level and message name
+// the record, the event and the trigger-time reading are attached.
+func TestE2ELogActionLogsEventAndTrackerReading(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	rules := `
+version: 0
+chains:
+  - name: debugging
+    rules:
+      - id: seen
+        actions: [{log: "debug,SEEN:"}]
+      - id: overflow
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions:
+          - log: "info,OVERFLOW:"
+          - report: {reason: overflow, ttl: 1h}
+`
+	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
+	d.waitProcessed(t, 1)
+
+	wantTime := time.Unix(1734345934, 123000000) // eventTime1 as parsed
+	checkLog := func(msg string, level slog.Level, wantTracker bandage.TrackerReading) {
+		t.Helper()
+		recs := d.logs.withMessage(msg)
+		if len(recs) != 1 {
+			t.Fatalf("%q records = %+v, want exactly 1", msg, recs)
+		}
+		rec := recs[0]
+		if rec.Level != level {
+			t.Errorf("%q level = %v, want %v", msg, rec.Level, level)
+		}
+		ev, ok := rec.Attrs["event"].(*bandage.Event)
+		if !ok {
+			t.Fatalf("%q event attr = %#v (%T), want *bandage.Event", msg, rec.Attrs["event"], rec.Attrs["event"])
+		}
+		if ev.RemoteAddr.String() != "203.0.113.7" || ev.Method != "GET" || ev.Path != "/big" ||
+			ev.Status != 200 || ev.SentBytes != 150 || !ev.Time.Equal(wantTime) {
+			t.Errorf("%q logged event = %+v, want the parsed /big event", msg, ev)
+		}
+		tracker, ok := rec.Attrs["tracker"].(bandage.TrackerReading)
+		if !ok {
+			t.Fatalf("%q tracker attr = %#v (%T), want bandage.TrackerReading", msg, rec.Attrs["tracker"], rec.Attrs["tracker"])
+		}
+		if tracker != wantTracker {
+			t.Errorf("%q tracker reading = %+v, want %+v", msg, tracker, wantTracker)
+		}
+	}
+
+	// A tracker-less rule matches on filter alone and logs an empty
+	// reading; the tracker rule logs the reading at its Match.
+	checkLog("SEEN:", slog.LevelDebug, bandage.TrackerReading{})
+	checkLog("OVERFLOW:", slog.LevelInfo, bandage.TrackerReading{Track: "bandwidth", Value: 150, Volume: 100})
+}
+
+// Chains are traversed in file order and rules within a chain in order;
+// goto runs its target chain at the point of dispatch and then ends the
+// current chain (its later rules skipped), while later chains are still
+// evaluated for the event. The log markers make the traversal order
+// observable.
+func TestE2EChainFileOrderAndFirstMatchSemantics(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	rules := `
+version: 0
+chains:
+  - name: alpha
+    rules:
+      - id: a1
+        actions: [{log: "debug,MARK:A1"}]
+      - id: a2
+        actions: [{log: "debug,MARK:A2"}, {goto: gamma}]
+      - id: a3
+        actions: [{log: "debug,MARK:A3"}]
+  - name: beta
+    rules:
+      - id: b1
+        actions: [{log: "debug,MARK:B1"}]
+  - name: gamma
+    rules:
+      - id: g1
+        actions: [{log: "debug,MARK:G1"}]
+`
+	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
+	d.waitProcessed(t, 1)
+
+	var got []string
+	for _, msg := range d.logs.messages() {
+		if strings.HasPrefix(msg, "MARK:") {
+			got = append(got, msg)
+		}
+	}
+	// a1 logs A1 and (non-terminal) traversal continues; a2 logs A2,
+	// runs gamma at the dispatch point (G1), and is terminal so a3
+	// never logs; beta runs next (B1); gamma's own file-order
+	// traversal logs G1 again.
+	want := []string{"MARK:A1", "MARK:A2", "MARK:G1", "MARK:B1", "MARK:G1"}
+	if !slices.Equal(got, want) {
+		t.Errorf("log order = %v, want %v (file order, rule order, dispatch, termination)", got, want)
+	}
+}
+
+// A terminal rule runs its FULL action list before ending its chain
+// (spec: Actions and control flow): goto runs the target chain mid-list,
+// the report after it still fires, and only then does the chain end.
+func TestE2EFullActionListRunsBeforeTerminality(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	rules := `
+version: 0
+chains:
+  - name: dispatch
+    rules:
+      - id: route
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions:
+          - goto: topic
+          - report: {reason: routed, ttl: 1h}
+      - id: after
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions: [{report: {reason: after, ttl: 1h}}]
+  - name: topic
+    rules:
+      - id: topic-hit
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions: [{report: {reason: topic-hit, ttl: 1h}}]
+`
+	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
+	d.waitProcessed(t, 1)
+
+	doc := d.getReports(t, nil)
+	byRule := make(map[string]reportEntry, len(doc.Reports))
+	for _, r := range doc.Reports {
+		byRule[r.Rule] = r
+	}
+	if len(doc.Reports) != 2 {
+		t.Fatalf("reports = %+v, want exactly routed and topic-hit", doc.Reports)
+	}
+	if r, ok := byRule["route"]; !ok || r.Reason != "routed" {
+		t.Errorf("reports = %+v, want route/routed (the report after goto still runs)", doc.Reports)
+	}
+	if _, ok := byRule["after"]; ok {
+		t.Errorf("reports = %+v, want no after (goto ends its chain)", doc.Reports)
+	}
+	topic, ok := byRule["topic-hit"]
+	if !ok {
+		t.Fatalf("reports = %+v, want topic-hit (goto runs the target chain)", doc.Reports)
+	}
+	// The topic chain ran twice for the one event — once at the goto
+	// dispatch and once at its own file-order traversal — so its
+	// tracker accumulated 2×150 bytes.
+	if topic.Tracker.Value != 300 {
+		t.Errorf("topic-hit tracker value = %v, want 300 (dispatch plus file-order traversal)", topic.Tracker.Value)
 	}
 }

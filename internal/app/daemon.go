@@ -110,7 +110,7 @@ func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
 		parser:    nginxparser.New(),
 		repo:      repo,
 		cache:     cache,
-		eval:      evaluation.NewService(chains, cache, reports, o.now),
+		eval:      evaluation.NewService(chains, cache, reports, o.now, o.logger),
 		lines:     make(chan string),
 		processed: newProgress(),
 		stopSweep: make(chan struct{}),

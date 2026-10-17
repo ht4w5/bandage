@@ -41,8 +41,17 @@ func planText(cfg Config, chains []bandage.Chain) string {
 					rule.Tracker.Kind, fmtFloat(rule.Tracker.Leak), fmtFloat(rule.Tracker.Volume), rule.Tracker.TTL)
 			}
 			for _, action := range rule.Actions {
-				if action.Report != nil {
+				switch {
+				case action.Report != nil:
 					fmt.Fprintf(&b, "    action report reason=%s ttl=%s\n", action.Report.Reason, action.Report.TTL)
+				case action.Log != nil:
+					fmt.Fprintf(&b, "    action log level=%s message=%q\n", strings.ToLower(action.Log.Level.String()), action.Log.Message)
+				case action.Goto != "":
+					fmt.Fprintf(&b, "    action goto target=%s\n", action.Goto)
+				case action.Jump != "":
+					fmt.Fprintf(&b, "    action jump target=%s\n", action.Jump)
+				case action.Stop:
+					fmt.Fprintf(&b, "    action stop\n")
 				}
 			}
 		}

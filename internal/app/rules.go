@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"regexp"
 	"strconv"
@@ -113,6 +114,9 @@ func ParseRules(data []byte) ([]bandage.Chain, error) {
 			return nil, err
 		}
 		chains = append(chains, chain)
+	}
+	if err := validateChainGraph(chains); err != nil {
+		return nil, err
 	}
 	return chains, nil
 }
@@ -246,58 +250,104 @@ func parseTrackerQuantity(id, field string, node *yaml.Node, kind bandage.TrackK
 	return v, nil
 }
 
-// parseAction parses one action item. Only "report" executes in this
-// ticket; the other action names are recognized and rejected gracefully
-// until the chains/actions ticket lands.
+// parseAction parses one action item (DECISIONS §9): `- stop`,
+// `- goto: <chain>`, `- jump: <chain>`, `- log: "level,message"`, or
+// `- report: {reason, ttl}`.
 func parseAction(id string, node *yaml.Node) (bandage.Action, error) {
 	switch node.Kind {
 	case yaml.ScalarNode:
-		return bandage.Action{}, unsupportedAction(id, node.Value)
+		if node.Value == "stop" {
+			return bandage.Action{Stop: true}, nil
+		}
+		if knownActions[node.Value] {
+			return bandage.Action{}, fmt.Errorf("rules: rule %q: action %q: wants options", id, node.Value)
+		}
+		return bandage.Action{}, fmt.Errorf("rules: rule %q: unknown action %q", id, node.Value)
 	case yaml.MappingNode:
 		if len(node.Content) != 2 {
 			return bandage.Action{}, fmt.Errorf("rules: rule %q: action must be a single name with options", id)
 		}
 		name, val := node.Content[0].Value, node.Content[1]
-		if name != "report" {
-			if isKnownAction(name) {
-				return bandage.Action{}, unsupportedAction(id, name)
+		switch name {
+		case "report":
+			var raw rawReportAction
+			for i := 0; i < len(val.Content); i += 2 {
+				switch key := val.Content[i].Value; key {
+				case "reason", "ttl":
+				default:
+					return bandage.Action{}, fmt.Errorf("rules: rule %q: action report: unknown key %q", id, key)
+				}
 			}
+			if err := val.Decode(&raw); err != nil {
+				return bandage.Action{}, fmt.Errorf("rules: rule %q: action report: %w", id, err)
+			}
+			if !reasonRe.MatchString(raw.Reason) {
+				return bandage.Action{}, fmt.Errorf("rules: rule %q: action report: reason: %q is not a valid slug (want %s)",
+					id, raw.Reason, reasonRe.String())
+			}
+			ttl, err := parseTTL(raw.TTL)
+			if err != nil {
+				return bandage.Action{}, fmt.Errorf("rules: rule %q: action report: report.ttl: %w", id, err)
+			}
+			return bandage.Action{Report: &bandage.ReportAction{Reason: raw.Reason, TTL: ttl}}, nil
+		case "log":
+			return parseLogAction(id, val)
+		case "goto", "jump":
+			return parseChainAction(id, name, val)
+		case "stop":
+			return bandage.Action{}, fmt.Errorf("rules: rule %q: action stop takes no options", id)
+		default:
 			return bandage.Action{}, fmt.Errorf("rules: rule %q: unknown action %q", id, name)
 		}
-
-		var raw rawReportAction
-		for i := 0; i < len(val.Content); i += 2 {
-			switch key := val.Content[i].Value; key {
-			case "reason", "ttl":
-			default:
-				return bandage.Action{}, fmt.Errorf("rules: rule %q: action report: unknown key %q", id, key)
-			}
-		}
-		if err := val.Decode(&raw); err != nil {
-			return bandage.Action{}, fmt.Errorf("rules: rule %q: action report: %w", id, err)
-		}
-		if !reasonRe.MatchString(raw.Reason) {
-			return bandage.Action{}, fmt.Errorf("rules: rule %q: action report: reason: %q is not a valid slug (want %s)",
-				id, raw.Reason, reasonRe.String())
-		}
-		ttl, err := parseTTL(raw.TTL)
-		if err != nil {
-			return bandage.Action{}, fmt.Errorf("rules: rule %q: action report: report.ttl: %w", id, err)
-		}
-		return bandage.Action{Report: &bandage.ReportAction{Reason: raw.Reason, TTL: ttl}}, nil
 	default:
 		return bandage.Action{}, fmt.Errorf("rules: rule %q: action must be a name or a name with options", id)
 	}
 }
 
-// known-but-unsupported actions (later tickets).
-var knownActions = map[string]bool{"report": true, "log": true, "goto": true, "jump": true, "stop": true}
-
-func isKnownAction(name string) bool { return knownActions[name] }
-
-func unsupportedAction(id, name string) error {
-	return fmt.Errorf("rules: rule %q: action %q is not supported yet", id, name)
+// parseChainAction parses `goto: <chain>` and `jump: <chain>`. The
+// target's existence and the graph's acyclicity are validated after all
+// chains are built (see validateChainGraph).
+func parseChainAction(id, name string, val *yaml.Node) (bandage.Action, error) {
+	var target string
+	if err := val.Decode(&target); err != nil || target == "" {
+		return bandage.Action{}, fmt.Errorf("rules: rule %q: action %s: wants a chain name", id, name)
+	}
+	if name == "goto" {
+		return bandage.Action{Goto: target}, nil
+	}
+	return bandage.Action{Jump: target}, nil
 }
+
+// parseLogAction parses `log: "level,message"` (flux's shape): exactly
+// two comma-separated arguments — a debug/info/warn/error level and a
+// message. The event and the rule's tracker reading are logged beside
+// the message at evaluation time.
+func parseLogAction(id string, val *yaml.Node) (bandage.Action, error) {
+	if val.Kind != yaml.ScalarNode {
+		return bandage.Action{}, fmt.Errorf("rules: rule %q: action log: wants a \"level,message\" string", id)
+	}
+	args := strings.Split(val.Value, ",")
+	if len(args) != 2 {
+		return bandage.Action{}, fmt.Errorf("rules: rule %q: action log: wants \"level,message\", got %q", id, val.Value)
+	}
+	var level slog.Level
+	switch strings.ToLower(args[0]) {
+	case "debug":
+		level = slog.LevelDebug
+	case "info":
+		level = slog.LevelInfo
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		return bandage.Action{}, fmt.Errorf("rules: rule %q: action log: unknown level %q (want debug, info, warn or error)", id, args[0])
+	}
+	return bandage.Action{Log: &bandage.LogAction{Level: level, Message: args[1]}}, nil
+}
+
+// knownActions is the full action vocabulary of format version 0.
+var knownActions = map[string]bool{"report": true, "log": true, "goto": true, "jump": true, "stop": true}
 
 // parseTTL parses a report ttl: Go duration strings plus "d" for days
 // (7d, 24h, 30m). It must be positive.
