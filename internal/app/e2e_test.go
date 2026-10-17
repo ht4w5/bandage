@@ -1316,17 +1316,31 @@ chains:
 		}
 	}
 
+	// Log content is contractual here (spec story 18: a log action
+	// "logs the event and the tracker reading" — Testing Decisions:
+	// never assert log text except where logging is the contract).
+	doc := d.getReports(t, nil)
+	if len(doc.Reports) != 1 {
+		t.Fatalf("reports = %+v, want the overflow rule's report", doc.Reports)
+	}
+	// The trigger-time reading is report evidence (story 34): the log
+	// record's reading must equal it — kind, leak and volume shaped by
+	// the rule's config — and never a hand-computed bucket value.
+	reportReading := doc.Reports[0].Tracker
+	if reportReading.Track != "bandwidth" || reportReading.Leak != 0 || reportReading.Volume != 100 {
+		t.Errorf("report reading shape = %+v, want {bandwidth 0 100} from the rule's config", reportReading)
+	}
+
 	// A tracker-less rule matches on filter alone and logs an empty
-	// reading; the tracker rule logs the reading at its Match.
+	// reading; the tracker rule logs the trigger-time reading.
 	checkLog("SEEN:", slog.LevelDebug, bandage.TrackerReading{})
-	checkLog("OVERFLOW:", slog.LevelInfo, bandage.TrackerReading{Track: "bandwidth", Value: 150, Volume: 100})
+	checkLog("OVERFLOW:", slog.LevelInfo, reportReading)
 }
 
 // Chains are traversed in file order and rules within a chain in order;
 // goto runs its target chain at the point of dispatch and then ends the
 // current chain (its later rules skipped), while later chains are still
-// evaluated for the event. The log markers make the traversal order
-// observable.
+// evaluated for the event.
 func TestE2EChainFileOrderAndFirstMatchSemantics(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -1339,30 +1353,61 @@ chains:
       - id: a2
         actions: [{log: "debug,MARK:A2"}, {goto: gamma}]
       - id: a3
-        actions: [{log: "debug,MARK:A3"}]
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions: [{report: {reason: a3, ttl: 1h}}]
   - name: beta
     rules:
       - id: b1
-        actions: [{log: "debug,MARK:B1"}]
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions: [{log: "debug,MARK:B1"}, {report: {reason: b1, ttl: 1h}}]
   - name: gamma
     rules:
       - id: g1
-        actions: [{log: "debug,MARK:G1"}]
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions: [{log: "debug,MARK:G1"}, {report: {reason: g1, ttl: 1h}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
 	d.waitProcessed(t, 1)
 
+	// Traversal facts from report evidence: gamma's rule reports twice
+	// (150 + 150 bytes), so gamma ran both at a2's dispatch and at its
+	// own file-order traversal; a3 is absent, so goto ended alpha; b1
+	// reports, so later chains were still evaluated.
+	doc := d.getReports(t, nil)
+	byRule := make(map[string]reportEntry, len(doc.Reports))
+	for _, r := range doc.Reports {
+		byRule[r.Rule] = r
+	}
+	if len(doc.Reports) != 2 {
+		t.Fatalf("reports = %+v, want exactly b1 and g1", doc.Reports)
+	}
+	if _, ok := byRule["a3"]; ok {
+		t.Errorf("reports = %+v, want no a3 (goto ends its chain)", doc.Reports)
+	}
+	if _, ok := byRule["b1"]; !ok {
+		t.Errorf("reports = %+v, want b1 (later chains still evaluated)", doc.Reports)
+	}
+	g1, ok := byRule["g1"]
+	if !ok {
+		t.Fatalf("reports = %+v, want g1 (goto runs the target chain)", doc.Reports)
+	}
+	if g1.Tracker.Value != 300 {
+		t.Errorf("g1 tracker value = %v, want 300 (dispatch plus file-order traversal)", g1.Tracker.Value)
+	}
+
+	// The remaining fact — the emission order within the one event — is
+	// only observable as log content, and log content IS the contract
+	// for the log action (spec story 18: "logs the event and the tracker
+	// reading"; Testing Decisions: never assert log text except where
+	// logging is the contract). The markers are the action's message
+	// argument.
 	var got []string
 	for _, msg := range d.logs.messages() {
 		if strings.HasPrefix(msg, "MARK:") {
 			got = append(got, msg)
 		}
 	}
-	// a1 logs A1 and (non-terminal) traversal continues; a2 logs A2,
-	// runs gamma at the dispatch point (G1), and is terminal so a3
-	// never logs; beta runs next (B1); gamma's own file-order
-	// traversal logs G1 again.
 	want := []string{"MARK:A1", "MARK:A2", "MARK:G1", "MARK:B1", "MARK:G1"}
 	if !slices.Equal(got, want) {
 		t.Errorf("log order = %v, want %v (file order, rule order, dispatch, termination)", got, want)
