@@ -54,6 +54,7 @@ type counters struct {
 type options struct {
 	now    func() time.Time
 	logger *slog.Logger
+	store  reportStore
 }
 
 // Option configures the daemon wiring.
@@ -72,23 +73,43 @@ func withLogger(l *slog.Logger) Option {
 	return func(o *options) { o.logger = l }
 }
 
+// reportStore is the daemon's report persistence: the domain report
+// port plus Close. The sqlite adapter satisfies it.
+type reportStore interface {
+	report.Repository
+	Close() error
+}
+
+// withStore substitutes the report store. Like withLogger it is
+// unexported: the binary always wires sqlite; tests substitute a store
+// to keep a write in flight and observe shutdown with the store wedged.
+func withStore(s reportStore) Option {
+	return func(o *options) { o.store = s }
+}
+
 // Daemon is the assembled analyzer: syslog ingest → nginx JSON parser →
 // file-size enrichment → evaluation → report service → sqlite, served
 // over HTTP.
 type Daemon struct {
-	cfg    Config
-	chains []bandage.Chain
-	now    func() time.Time
-	logger *slog.Logger
-	parser EventParser
-	enrich *enrichment.FilesizeEnricher
+	cfg     Config
+	chains  []bandage.Chain
+	now     func() time.Time
+	logger  *slog.Logger
+	parser  EventParser
+	enrich  *enrichment.FilesizeEnricher
+	workers int
 
-	repo   *sqlite.ReportRepository
+	repo   reportStore
 	cache  *memory.Store
 	eval   *evaluation.Service
 	src    *syslog.Source
 	apiSrv *http.Server
 	apiLn  net.Listener
+
+	// ctx/cancel is the daemon-lifetime context threaded through the
+	// pipeline and sweeper; cancel is the bounded-shutdown backstop.
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	lines     chan string
 	processed *progress
@@ -103,8 +124,12 @@ type Daemon struct {
 }
 
 // New assembles the daemon. Config must already be validated (strictly
-// decoded before any socket opens).
+// decoded before any socket opens); the worker count must be at least
+// 1 (spec story 16).
 func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
+	if cfg.Pipeline.Workers < 1 {
+		return nil, fmt.Errorf("app: pipeline.workers must be at least 1 (got %d)", cfg.Pipeline.Workers)
+	}
 	var o options
 	WithClock(time.Now)(&o)
 	withLogger(slog.Default())(&o)
@@ -112,9 +137,13 @@ func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
 		opt(&o)
 	}
 
-	repo, err := sqlite.Open(cfg.DB.SQLite.Path)
-	if err != nil {
-		return nil, err
+	var repo reportStore = o.store
+	if repo == nil {
+		r, err := sqlite.Open(cfg.DB.SQLite.Path)
+		if err != nil {
+			return nil, err
+		}
+		repo = r
 	}
 	cache := memory.New(cfg.Cache.MaxEntries, o.now, o.logger)
 	reports := report.NewService(repo)
@@ -130,6 +159,7 @@ func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
 		logger:    o.logger,
 		parser:    nginxparser.New(),
 		enrich:    enricher,
+		workers:   cfg.Pipeline.Workers,
 		repo:      repo,
 		cache:     cache,
 		eval:      evaluation.NewService(chains, cache, reports, o.now, o.logger),
@@ -141,9 +171,16 @@ func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
 	return d, nil
 }
 
-// Start opens the ingest and API listeners and starts the pipeline. The
-// single pipeline goroutine is the worker seam (flux-engine style).
-func (d *Daemon) Start() error {
+// Start opens the ingest and API listeners and starts the pipeline:
+// one pipeline goroutine per configured worker reading the ingest line
+// channel, plus the sweeper (flux-engine style). lifetime spans the
+// daemon's run — the pipeline and sweeper thread it through every call
+// in place of ad-hoc background contexts. Its cancellation is the
+// daemon's bounded-shutdown backstop, so the work context is detached
+// from the caller's: a SIGINT/SIGTERM starts the graceful drain in
+// Shutdown, never an abort of in-flight work (spec: Daemon context).
+func (d *Daemon) Start(lifetime context.Context) error {
+	d.ctx, d.cancel = context.WithCancel(context.WithoutCancel(lifetime))
 	// The startup record names the running build: the log stream itself
 	// identifies what is deployed (spec story 14).
 	d.logger.Info("starting",
@@ -164,8 +201,10 @@ func (d *Daemon) Start() error {
 	}
 	d.apiLn = ln
 
-	d.wg.Add(2)
-	go d.runPipeline()
+	d.wg.Add(d.workers + 1)
+	for range d.workers {
+		go d.runPipeline()
+	}
 	go d.sweep()
 	go func() {
 		if err := d.apiSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -176,8 +215,8 @@ func (d *Daemon) Start() error {
 	return nil
 }
 
-// runPipeline parses, enriches and evaluates raw lines in order. Bad
-// lines are dropped and counted.
+// runPipeline parses, enriches and evaluates raw lines; one goroutine
+// per worker runs it. Bad lines are dropped and counted.
 func (d *Daemon) runPipeline() {
 	defer d.wg.Done()
 	for line := range d.lines {
@@ -190,10 +229,10 @@ func (d *Daemon) runPipeline() {
 			continue
 		}
 		d.parsed.Add(1)
-		if err := d.enrich.Enrich(context.Background(), &ev); err != nil {
+		if err := d.enrich.Enrich(d.ctx, &ev); err != nil {
 			d.logger.Error("enrich event", "error", err)
 		}
-		if err := d.eval.Evaluate(context.Background(), &ev); err != nil {
+		if err := d.eval.Evaluate(d.ctx, &ev); err != nil {
 			d.logger.Error("evaluate event", "error", err)
 		}
 		d.processed.bump()
@@ -219,7 +258,7 @@ func (d *Daemon) sweep() {
 				"received", s.Received, "parsed", s.Parsed, "dropped", s.Dropped,
 				"cache_gets", cs.Gets, "cache_sets", cs.Sets, "cache_misses", cs.Misses,
 				"cache_evictions", cs.Evictions, "cache_size", cs.Size)
-			n, err := d.sweepOnce(context.Background())
+			n, err := d.sweepOnce(d.ctx)
 			if err != nil {
 				d.logger.Error("sweep expired reports", "error", err)
 				continue
@@ -239,20 +278,43 @@ func (d *Daemon) sweepOnce(ctx context.Context) (int, error) {
 	return d.repo.DeleteExpired(ctx, d.now())
 }
 
-// Shutdown drains the pipeline and closes every resource. Idempotent.
+// Shutdown drains the pipeline and closes every resource, in that
+// order: the ingest stops, the line channel closes and the workers
+// finish the events already in flight — their report upserts complete
+// — before the resources close. Shutdown is bounded by the caller's
+// deadline even if a store call never returns: only when ctx expires
+// does the daemon cancel the lifetime context to abort stragglers and
+// return without waiting for them (spec: Daemon context). Idempotent.
 func (d *Daemon) Shutdown(ctx context.Context) error {
 	d.once.Do(func() {
-		err := d.src.Shutdown()
-		close(d.stopSweep)
-		close(d.lines)
-		d.wg.Wait()
-		if serr := d.apiSrv.Shutdown(ctx); serr != nil {
-			err = errors.Join(err, serr)
+		done := make(chan error, 1)
+		go func() {
+			var err error
+			if serr := d.src.Shutdown(); serr != nil {
+				err = errors.Join(err, serr)
+			}
+			close(d.stopSweep)
+			close(d.lines)
+			d.wg.Wait()
+			if serr := d.apiSrv.Shutdown(ctx); serr != nil {
+				err = errors.Join(err, serr)
+			}
+			if cerr := d.repo.Close(); cerr != nil {
+				err = errors.Join(err, cerr)
+			}
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			d.shutdown = err
+		case <-ctx.Done():
+			// Bounded backstop: the deadline expired with stragglers
+			// still in flight (e.g. a store call that never returns).
+			// Cancel the lifetime context to abort them and return
+			// without waiting; the drain goroutine finishes them off.
+			d.cancel()
+			d.shutdown = ctx.Err()
 		}
-		if cerr := d.repo.Close(); cerr != nil {
-			err = errors.Join(err, cerr)
-		}
-		d.shutdown = err
 	})
 	return d.shutdown
 }

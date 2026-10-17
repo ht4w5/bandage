@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 
 	"gopkg.in/yaml.v3"
 )
@@ -18,10 +19,11 @@ const DefaultCacheEntries = 65536
 // Config is the validated daemon configuration. It is decoded strictly:
 // unknown keys and invalid values abort startup before any socket opens.
 type Config struct {
-	Ingest Ingest
-	DB     DB
-	Cache  Cache
-	API    API
+	Ingest   Ingest
+	DB       DB
+	Cache    Cache
+	Pipeline Pipeline
+	API      API
 }
 
 // Ingest configures the ingest driver and the log parser.
@@ -53,6 +55,13 @@ type Cache struct {
 	MaxEntries int
 }
 
+// Pipeline configures the event-processing worker pool (ADR 0007).
+// Workers is the resolved worker-goroutine count: always at least 1
+// (validated at load).
+type Pipeline struct {
+	Workers int
+}
+
 // API configures the HTTP report API listener.
 type API struct {
 	Listen string
@@ -61,10 +70,11 @@ type API struct {
 // raw config wire types (strict decode).
 
 type rawConfig struct {
-	Ingest rawIngest `yaml:"ingest"`
-	DB     rawDB     `yaml:"db"`
-	Cache  rawCache  `yaml:"cache"`
-	API    rawAPI    `yaml:"api"`
+	Ingest   rawIngest   `yaml:"ingest"`
+	DB       rawDB       `yaml:"db"`
+	Cache    rawCache    `yaml:"cache"`
+	Pipeline rawPipeline `yaml:"pipeline"`
+	API      rawAPI      `yaml:"api"`
 }
 
 type rawIngest struct {
@@ -89,6 +99,10 @@ type rawSQLite struct {
 
 type rawCache struct {
 	MaxEntries *int `yaml:"max_entries"`
+}
+
+type rawPipeline struct {
+	Workers *int `yaml:"workers"`
 }
 
 type rawAPI struct {
@@ -139,6 +153,9 @@ func validateConfig(raw rawConfig) (Config, error) {
 		DB:    DB{Driver: raw.DB.Driver, SQLite: SQLite{Path: raw.DB.SQLite.Path}},
 		API:   API{Listen: raw.API.Listen},
 		Cache: Cache{MaxEntries: DefaultCacheEntries},
+		// pipeline.workers defaults to the machine's CPU count (spec
+		// story 15).
+		Pipeline: Pipeline{Workers: runtime.NumCPU()},
 	}
 
 	switch {
@@ -177,6 +194,12 @@ func validateConfig(raw rawConfig) (Config, error) {
 			return Config{}, errors.New("config: cache.max_entries: must be positive")
 		}
 		cfg.Cache.MaxEntries = *raw.Cache.MaxEntries
+	}
+	if raw.Pipeline.Workers != nil {
+		if *raw.Pipeline.Workers < 1 {
+			return Config{}, errors.New("config: pipeline.workers: must be positive")
+		}
+		cfg.Pipeline.Workers = *raw.Pipeline.Workers
 	}
 	if cfg.API.Listen == "" {
 		return Config{}, errors.New("config: api.listen: required")

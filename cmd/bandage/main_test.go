@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -232,21 +233,27 @@ func TestLogLevelPrecedence(t *testing.T) {
 
 func TestWorkersPrecedence(t *testing.T) {
 	cfgPath, rulesPath := writeConfig(t)
-	base := []string{"-t", "-c", cfgPath, "-r", rulesPath}
+	// A config value exercises the middle precedence tier (flag >
+	// config > default, spec story 9).
+	cfg4Path := writeTemp(t, strings.Replace(testConfig, "cache:", "pipeline:\n  workers: 4\n\ncache:", 1))
 
 	tests := []struct {
 		name  string
+		cfg   string
 		extra []string
 		want  int
 	}{
-		{name: "default", want: 0},
-		{name: "short flag", extra: []string{"-w", "4"}, want: 4},
-		{name: "long flag", extra: []string{"--workers", "8"}, want: 8},
+		{name: "default (CPU count)", cfg: cfgPath, want: runtime.NumCPU()},
+		{name: "config", cfg: cfg4Path, want: 4},
+		{name: "short flag", cfg: cfgPath, extra: []string{"-w", "4"}, want: 4},
+		{name: "long flag", cfg: cfgPath, extra: []string{"--workers", "8"}, want: 8},
+		{name: "flag over config", cfg: cfg4Path, extra: []string{"-w", "8"}, want: 8},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code, opts := run(append(append([]string{}, base...), tt.extra...), &stdout, &stderr)
+			args := append([]string{"-t", "-c", tt.cfg, "-r", rulesPath}, tt.extra...)
+			code, opts := run(args, &stdout, &stderr)
 			if code != 0 {
 				t.Fatalf("code = %d, want 0 (stderr %q)", code, stderr.String())
 			}
@@ -254,6 +261,22 @@ func TestWorkersPrecedence(t *testing.T) {
 				t.Errorf("workers = %d, want %d (flag > config > default)", opts.workers, tt.want)
 			}
 		})
+	}
+}
+
+// The resolved worker count must be at least 1: an invalid -w value
+// fails loudly instead of reaching the daemon (spec story 16).
+func TestInvalidWorkersFails(t *testing.T) {
+	for _, w := range []string{"0", "-1"} {
+		cfgPath, rulesPath := writeConfig(t)
+		var stdout, stderr bytes.Buffer
+		code, _ := run([]string{"-t", "-c", cfgPath, "-r", rulesPath, "-w", w}, &stdout, &stderr)
+		if code != 1 {
+			t.Errorf("run(-w %s) code = %d, want 1", w, code)
+		}
+		if !strings.Contains(stderr.String(), "pipeline.workers") {
+			t.Errorf("stderr = %q, want the pipeline.workers error", stderr.String())
+		}
 	}
 }
 

@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -25,6 +26,9 @@ db:
 cache:
   max_entries: 65536
 
+pipeline:
+  workers: 4
+
 api:
   listen: 127.0.0.1:8080
 `
@@ -45,6 +49,9 @@ func TestParseConfigValid(t *testing.T) {
 	}
 	if cfg.Cache.MaxEntries != 65536 {
 		t.Errorf("cache.max_entries = %d, want 65536", cfg.Cache.MaxEntries)
+	}
+	if cfg.Pipeline.Workers != 4 {
+		t.Errorf("pipeline.workers = %d, want 4", cfg.Pipeline.Workers)
 	}
 	if cfg.API.Listen != "127.0.0.1:8080" {
 		t.Errorf("api.listen = %q, want 127.0.0.1:8080", cfg.API.Listen)
@@ -67,6 +74,11 @@ api: {listen: "127.0.0.1:8080"}
 	}
 	if cfg.Cache.MaxEntries != 65536 {
 		t.Errorf("cache.max_entries = %d, want default 65536", cfg.Cache.MaxEntries)
+	}
+	// pipeline.workers defaults to the machine's CPU count when absent
+	// (spec story 15; ADR 0007 names runtime.NumCPU() as the default).
+	if cfg.Pipeline.Workers != runtime.NumCPU() {
+		t.Errorf("pipeline.workers = %d, want default %d (CPU count)", cfg.Pipeline.Workers, runtime.NumCPU())
 	}
 }
 
@@ -95,6 +107,9 @@ func TestParseConfigErrors(t *testing.T) {
 		{name: "missing db path", yaml: strings.Replace(validConfig, "    path: /var/lib/bandage/reports.db\n", "", 1), wantErr: "path"},
 		{name: "empty db path", yaml: strings.Replace(validConfig, "path: /var/lib/bandage/reports.db", `path: ""`, 1), wantErr: "path"},
 		{name: "zero cache entries", yaml: strings.Replace(validConfig, "max_entries: 65536", "max_entries: 0", 1), wantErr: "max_entries"},
+		{name: "zero pipeline workers", yaml: strings.Replace(validConfig, "workers: 4", "workers: 0", 1), wantErr: "pipeline.workers"},
+		{name: "negative pipeline workers", yaml: strings.Replace(validConfig, "workers: 4", "workers: -1", 1), wantErr: "pipeline.workers"},
+		{name: "unknown pipeline key", yaml: strings.Replace(validConfig, "  workers: 4", "  workerz: 4", 1), wantErr: "workerz"},
 		{name: "negative cache entries", yaml: strings.Replace(validConfig, "max_entries: 65536", "max_entries: -1", 1), wantErr: "max_entries"},
 		{name: "missing api listen", yaml: strings.Replace(validConfig, "  listen: 127.0.0.1:8080\n", "", 1), wantErr: "api.listen"},
 		{name: "empty api listen", yaml: strings.Replace(validConfig, "listen: 127.0.0.1:8080", `listen: ""`, 1), wantErr: "api.listen"},

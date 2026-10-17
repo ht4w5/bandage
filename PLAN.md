@@ -207,6 +207,9 @@ db:
 cache:
   max_entries: 65536           # total LRU cap across shards (default 65536)
 
+pipeline:
+  workers: 4                   # worker goroutines (default: CPU count, min 1)
+
 api:
   listen: 127.0.0.1:8080
 ```
@@ -234,6 +237,30 @@ api:
 7. **Serve** — HTTP **only reads** reports from the repository on request
    (plus explicit deletion, §7). No on-demand compilation from live tracker
    state.
+
+### Worker pool and shutdown (ADR 0007)
+
+The pipeline body (parse → enrich → evaluate → report) runs on N worker
+goroutines reading the ingest line channel; the sweeper is one more
+goroutine. `pipeline.workers` sets N (default: the machine's CPU count,
+minimum 1, values below 1 rejected at config load) and `-w/--workers`
+overrides it (flag > config > default). Every received line is
+processed exactly once across the workers; per-key tracker updates stay
+atomic (the cache's per-key update callback) and a duplicate concurrent
+trigger just refreshes the same (rule, target) report — the sqlite
+store keeps a single connection, so writes are deterministic under
+concurrency. Event ordering is relaxed under N workers (ADR 0007):
+replaying a log *in order* reproduces results, and
+`pipeline.workers: 1` is the strict arrival-order escape hatch for
+reproducible runs (live and replayed runs with N workers may differ
+marginally in accumulated tracker values).
+
+The daemon-lifetime context (from SIGINT/SIGTERM) is threaded through
+the pipeline and the sweeper. Shutdown drains first — the ingest stops,
+the line channel closes, the workers finish the events already in
+flight and their report upserts complete — then closes resources; it is
+bounded by the caller's deadline, and only when that expires does the
+daemon cancel the lifetime context to abort stragglers.
 
 ## 5. Tracker cache (in-memory, v0)
 
@@ -375,7 +402,8 @@ No `/v1` prefix, no debug endpoints. The API never writes reports; only
 ## 8. Validation & tooling
 
 - Strict config decode: unknown keys and invalid values rejected before any
-  socket opens (`cache.max_entries` must be positive).
+  socket opens (`cache.max_entries` and `pipeline.workers` must be positive;
+  `pipeline.workers` defaults to the CPU count).
 - Load-time rule validation: more than one tracker per rule, unknown
   `track`/volume methods, volume methods on non-replay trackers, unparseable
   filters (with `ParseError` line/col), dangling `goto`/`jump` targets,

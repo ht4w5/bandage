@@ -2,7 +2,10 @@ package sqlite
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +25,63 @@ func openTestRepo(t *testing.T) *ReportRepository {
 	}
 	t.Cleanup(func() { repo.Close() })
 	return repo
+}
+
+// Concurrent writes are deterministic under concurrency: one
+// connection serializes them (ADR 0007), for file and memory databases
+// alike — every upsert lands without a locking error, and duplicate
+// concurrent triggers refresh the same (rule, target) row.
+func TestConcurrentUpsertsAreDeterministic(t *testing.T) {
+	for _, path := range []string{":memory:", filepath.Join(t.TempDir(), "reports.db")} {
+		t.Run(path, func(t *testing.T) {
+			repo, err := Open(path)
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			defer repo.Close()
+			base := time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)
+
+			// 8 writers × 8 upserts; the even writers all write the same
+			// (rule, target), the odd writers one distinct target each.
+			const writers, perWriter = 8, 8
+			var wg sync.WaitGroup
+			errs := make(chan error, writers*perWriter)
+			for w := range writers {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for i := range perWriter {
+						target := fmt.Sprintf("203.0.113.%d/32", i)
+						if w%2 == 0 {
+							target = "198.51.100.7/32"
+						}
+						rec := bandage.Report{
+							Rule: "r", Chain: "c", Reason: "why", Target: target,
+							CreatedAt: base, UpdatedAt: base, ExpiresAt: base.Add(time.Hour),
+						}
+						if err := repo.Upsert(context.Background(), rec); err != nil {
+							errs <- err
+						}
+					}
+				}()
+			}
+			wg.Wait()
+			close(errs)
+			for err := range errs {
+				t.Errorf("Upsert error: %v", err)
+			}
+
+			// One row per (rule, target): the shared row plus the 8
+			// distinct ones, and every write is visible.
+			got, err := repo.List(context.Background(), report.Query{Now: base})
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if len(got) != 9 {
+				t.Errorf("rows = %d, want 9 (one per (rule, target))", len(got))
+			}
+		})
+	}
 }
 
 // singleColumnIndexes returns the table's single-column index names by
