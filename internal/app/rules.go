@@ -50,8 +50,9 @@ type rawTracker struct {
 	TargetPrefix rawTargetPrefix `yaml:"target_prefix"`
 }
 
-// rawTargetPrefix is accepted and defaulted ({32, 64}); aggregation is the
-// target-aggregation ticket's job.
+// rawTargetPrefix is the tracker's target aggregation, per family:
+// missing families default ({32, 64}); out-of-range values are load
+// errors (spec: load-time validation of out-of-range target prefixes).
 type rawTargetPrefix struct {
 	IPv4 *int `yaml:"ipv4"`
 	IPv6 *int `yaml:"ipv6"`
@@ -210,13 +211,40 @@ func parseTracker(id string, raw *rawTracker) (*bandage.TrackerConfig, error) {
 	if leak < 0 {
 		return nil, fmt.Errorf("rules: rule %q: tracker.leak: must be non-negative", id)
 	}
+	prefix, err := parseTargetPrefix(id, &raw.TargetPrefix)
+	if err != nil {
+		return nil, err
+	}
 
 	return &bandage.TrackerConfig{
-		Kind:   kind,
-		Leak:   leak,
-		Volume: volume,
-		TTL:    track.TTL(leak, volume),
+		Kind:         kind,
+		Leak:         leak,
+		Volume:       volume,
+		TTL:          track.TTL(leak, volume),
+		TargetPrefix: prefix,
 	}, nil
+}
+
+// parseTargetPrefix builds the tracker's target aggregation: {32, 64} by
+// default with each family defaulted independently; a value must fit its
+// family (IPv4 up to 32, IPv6 up to 64 — IPv6 is never finer than /64)
+// and be non-negative. Errors name the rule and the field (DECISIONS §5
+// style).
+func parseTargetPrefix(id string, raw *rawTargetPrefix) (bandage.TargetPrefix, error) {
+	prefix := bandage.DefaultTargetPrefix
+	if raw.IPv4 != nil {
+		if *raw.IPv4 < 0 || *raw.IPv4 > 32 {
+			return bandage.TargetPrefix{}, fmt.Errorf("rules: rule %q: tracker.target_prefix.ipv4: must be between 0 and 32, got %d", id, *raw.IPv4)
+		}
+		prefix.IPv4 = *raw.IPv4
+	}
+	if raw.IPv6 != nil {
+		if *raw.IPv6 < 0 || *raw.IPv6 > 64 {
+			return bandage.TargetPrefix{}, fmt.Errorf("rules: rule %q: tracker.target_prefix.ipv6: must be between 0 and 64, got %d", id, *raw.IPv6)
+		}
+		prefix.IPv6 = *raw.IPv6
+	}
+	return prefix, nil
 }
 
 // parseTrackerQuantity parses one explicit tracker quantity per kind:
