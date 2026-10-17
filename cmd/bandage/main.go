@@ -16,7 +16,9 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
+	"time"
 
 	flag "github.com/spf13/pflag"
 
@@ -33,6 +35,10 @@ const (
 	exitError = 1
 	exitUsage = 2
 )
+
+// shutdownTimeout bounds the graceful drain on the way down: shutdown
+// completes within it even if a store call hangs (spec story 31).
+const shutdownTimeout = 10 * time.Second
 
 // options is the resolved command line: paths and mode plus the values
 // an operator can override per run, resolved with flag > config >
@@ -91,10 +97,19 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 		test:       *testMode,
 		// Precedence: the explicit flag wins, then the config value,
 		// then the built-in default — decided by whether the flag was
-		// set. pipeline.workers arrives with the worker-pool ticket.
+		// set. log.level and pipeline.workers both come from the config
+		// here; the flags above override them when passed.
 		logLevel: resolveLogLevel(*logLevel, fs.Changed("log-level"), string(cfg.Log.Level)),
-		workers:  resolveWorkers(*workers, fs.Changed("workers"), 0),
+		workers:  resolveWorkers(*workers, fs.Changed("workers"), cfg.Pipeline.Workers),
 	}
+	// The resolved worker count must be at least 1 (spec story 16):
+	// config load rejects an invalid pipeline.workers, an explicit -w
+	// value is validated here, and the daemon receives the resolved
+	// count either way.
+	if opts.workers < 1 {
+		return fail(stderr, fmt.Errorf("pipeline.workers: must be positive (got %d)", opts.workers)), opts
+	}
+	cfg.Pipeline.Workers = opts.workers
 	level, err := bandage.ParseLevel(opts.logLevel)
 	if err != nil {
 		return fail(stderr, err), opts
@@ -120,16 +135,23 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	if err != nil {
 		return fail(stderr, err), opts
 	}
-	if err := d.Start(); err != nil {
+	// The daemon-lifetime context comes from SIGINT/SIGTERM: the signal
+	// ends the daemon's lifetime and starts the graceful drain below.
+	// The daemon detaches its work from the signal's cancellation —
+	// in-flight report upserts complete during the drain — and cancels
+	// its lifetime context only as the bounded-shutdown backstop
+	// (spec: Daemon context).
+	lifetime, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := d.Start(lifetime); err != nil {
 		return fail(stderr, err), opts
 	}
+	<-lifetime.Done()
+	logger.Info().Msg("shutting down")
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	s := <-sig
-	logger.Info().Str("signal", s.String()).Msg("shutting down")
-
-	if err := d.Shutdown(context.Background()); err != nil {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if err := d.Shutdown(shutdownCtx); err != nil {
 		return fail(stderr, fmt.Errorf("shutdown: %w", err)), opts
 	}
 	return exitOK, opts
@@ -156,9 +178,9 @@ func resolveLogLevel(flagValue string, flagSet bool, configValue string) string 
 }
 
 // resolveWorkers applies flag > config > default precedence to the
-// worker count. Zero means "unset" everywhere — no flag, no config key,
-// and for now no built-in default beyond it (the config key and the
-// CPU-count default land with the worker-pool ticket).
+// worker count: the flag wins when explicitly set, then the config
+// value, then the built-in default — the machine's CPU count (spec
+// story 15, ADR 0007).
 func resolveWorkers(flagValue int, flagSet bool, configValue int) int {
 	switch {
 	case flagSet:
@@ -166,7 +188,7 @@ func resolveWorkers(flagValue int, flagSet bool, configValue int) int {
 	case configValue != 0:
 		return configValue
 	default:
-		return 0
+		return runtime.NumCPU()
 	}
 }
 

@@ -1,7 +1,9 @@
 // Package sqlite is the sqlite report repository adapter (modernc.org/sqlite,
 // pure Go). One row per (rule, target) with indexed rule/target/expiry
 // columns and a JSON record body; reports survive restarts while tracker
-// state stays memory-only (ADR 0002).
+// state stays memory-only (ADR 0002). The store opens a single
+// connection for every path (file and memory alike), so concurrent
+// writes serialize through it and land deterministically (ADR 0007).
 package sqlite
 
 import (
@@ -26,16 +28,15 @@ type ReportRepository struct {
 }
 
 // Open opens (creating if needed) the report database at path and ensures
-// the schema exists. The special path ":memory:" keeps everything in one
-// connection (tests).
+// the schema exists. One connection serves every path — the special
+// ":memory:" (tests) and file databases alike — making writes
+// deterministic under concurrency (ADR 0007).
 func Open(path string) (*ReportRepository, error) {
 	db, err := sql.Open(driverName, path)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: open: %w", err)
 	}
-	if path == ":memory:" {
-		db.SetMaxOpenConns(1)
-	}
+	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("sqlite: schema: %w", err)

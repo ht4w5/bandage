@@ -196,7 +196,11 @@ func startTestDaemonCfg(t *testing.T, clock *testClock, network, dbPath, rulesYA
 		},
 		DB:    DB{Driver: "sqlite", SQLite: SQLite{Path: dbPath}},
 		Cache: Cache{MaxEntries: 65536},
-		API:   API{Listen: "127.0.0.1:0"},
+		// The existing suite asserts exact accumulation values, so it
+		// runs the deterministic single-worker pipeline; the worker-pool
+		// tests set pipeline.workers explicitly (ADR 0007).
+		Pipeline: Pipeline{Workers: 1},
+		API:      API{Listen: "127.0.0.1:0"},
 	}
 	if mutate != nil {
 		mutate(&cfg)
@@ -211,7 +215,7 @@ func startTestDaemonCfg(t *testing.T, clock *testClock, network, dbPath, rulesYA
 	if err != nil {
 		t.Fatalf("New error: %v", err)
 	}
-	if err := d.Start(); err != nil {
+	if err := d.Start(context.Background()); err != nil {
 		t.Fatalf("Start error: %v", err)
 	}
 	t.Cleanup(func() {
