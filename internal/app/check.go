@@ -47,22 +47,44 @@ func planText(cfg Config, chains []bandage.Chain) string {
 					rule.Tracker.Kind, fmtFloat(rule.Tracker.Leak), rule.Tracker.VolumeDesc(), ttl)
 			}
 			for _, action := range rule.Actions {
-				switch {
-				case action.Report != nil:
-					fmt.Fprintf(&b, "    action report reason=%s ttl=%s\n", action.Report.Reason, action.Report.TTL)
-				case action.Log != nil:
-					fmt.Fprintf(&b, "    action log level=%s message=%q\n", strings.ToLower(action.Log.Level.String()), action.Log.Message)
-				case action.Goto != "":
-					fmt.Fprintf(&b, "    action goto target=%s\n", action.Goto)
-				case action.Jump != "":
-					fmt.Fprintf(&b, "    action jump target=%s\n", action.Jump)
-				case action.Stop:
-					fmt.Fprintf(&b, "    action stop\n")
-				}
+				// The describer cannot fail; Accept is the single action
+				// dispatch point shared with evaluation.
+				_ = action.Accept(actionDescriber{b: &b})
 			}
 		}
 	}
 	return b.String()
+}
+
+// actionDescriber is the -check side of Action.Accept: it appends one
+// action line to the validated plan.
+type actionDescriber struct {
+	b *strings.Builder
+}
+
+func (d actionDescriber) VisitReport(a *bandage.ReportAction) error {
+	fmt.Fprintf(d.b, "    action report reason=%s ttl=%s\n", a.Reason, a.TTL)
+	return nil
+}
+
+func (d actionDescriber) VisitLog(a *bandage.LogAction) error {
+	fmt.Fprintf(d.b, "    action log level=%s message=%q\n", strings.ToLower(a.Level.String()), a.Message)
+	return nil
+}
+
+func (d actionDescriber) VisitGoto(target string) error {
+	fmt.Fprintf(d.b, "    action goto target=%s\n", target)
+	return nil
+}
+
+func (d actionDescriber) VisitJump(target string) error {
+	fmt.Fprintf(d.b, "    action jump target=%s\n", target)
+	return nil
+}
+
+func (d actionDescriber) VisitStop() error {
+	fmt.Fprintf(d.b, "    action stop\n")
+	return nil
 }
 
 func fmtFloat(v float64) string {

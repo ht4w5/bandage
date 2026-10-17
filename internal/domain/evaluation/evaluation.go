@@ -96,34 +96,53 @@ func (s *Service) runChain(ctx context.Context, ci int, event *bandage.Event) er
 
 // runActions runs a matching rule's full action list in order: the
 // actions always all run, and terminality applies only after the list.
+// Every action walks through Action.Accept — the single dispatch point
+// shared with the -check describer.
 func (s *Service) runActions(ctx context.Context, chain *bandage.Chain, rule *bandage.Rule, reading bandage.TrackerReading, event *bandage.Event) error {
+	dispatch := actionDispatch{svc: s, ctx: ctx, chain: chain, rule: rule, reading: reading, event: event}
 	for _, action := range rule.Actions {
-		switch {
-		case action.Report != nil:
-			if err := s.trigger(ctx, chain, rule, action.Report, reading, event); err != nil {
-				return err
-			}
-		case action.Log != nil:
-			// flux's log statement: the level and message name the
-			// record; the event and the rule's tracker reading are
-			// logged with it (PLAN §1).
-			s.logger.Log(ctx, action.Log.Level, action.Log.Message,
-				"rule", rule.ID,
-				"event", event,
-				"tracker", reading,
-			)
-		case action.Goto != "":
-			if err := s.runNamedChain(ctx, rule, action.Goto, event); err != nil {
-				return err
-			}
-		case action.Jump != "":
-			if err := s.runNamedChain(ctx, rule, action.Jump, event); err != nil {
-				return err
-			}
+		if err := action.Accept(&dispatch); err != nil {
+			return err
 		}
 	}
 	return nil
 }
+
+// actionDispatch is the evaluation side of Action.Accept: it executes
+// one action variant for a match.
+type actionDispatch struct {
+	svc     *Service
+	ctx     context.Context
+	chain   *bandage.Chain
+	rule    *bandage.Rule
+	reading bandage.TrackerReading
+	event   *bandage.Event
+}
+
+func (d *actionDispatch) VisitReport(a *bandage.ReportAction) error {
+	return d.svc.trigger(d.ctx, d.chain, d.rule, a, d.reading, d.event)
+}
+
+func (d *actionDispatch) VisitLog(a *bandage.LogAction) error {
+	// flux's log action: the level and message name the record; the
+	// event and the rule's tracker reading are logged with it (PLAN §1).
+	d.svc.logger.Log(d.ctx, a.Level, a.Message,
+		"rule", d.rule.ID,
+		"event", d.event,
+		"tracker", d.reading,
+	)
+	return nil
+}
+
+func (d *actionDispatch) VisitGoto(target string) error {
+	return d.svc.runNamedChain(d.ctx, d.rule, target, d.event)
+}
+
+func (d *actionDispatch) VisitJump(target string) error {
+	return d.svc.runNamedChain(d.ctx, d.rule, target, d.event)
+}
+
+func (d *actionDispatch) VisitStop() error { return nil }
 
 // runNamedChain runs a goto/jump target chain by name. The loader has
 // validated that the target exists (validateChainGraph).

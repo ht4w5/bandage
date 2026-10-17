@@ -107,6 +107,35 @@ type Action struct {
 	Stop bool
 }
 
+// ActionVisitor handles one action variant. The evaluation dispatcher
+// and the -check describer both walk action lists through Action.Accept,
+// so the five-case action vocabulary has a single dispatch point.
+type ActionVisitor interface {
+	VisitReport(*ReportAction) error
+	VisitLog(*LogAction) error
+	VisitGoto(target string) error
+	VisitJump(target string) error
+	VisitStop() error
+}
+
+// Accept dispatches the action to the matching visitor method. Exactly
+// one field of Action is set; a zero Action visits nothing.
+func (a Action) Accept(v ActionVisitor) error {
+	switch {
+	case a.Report != nil:
+		return v.VisitReport(a.Report)
+	case a.Log != nil:
+		return v.VisitLog(a.Log)
+	case a.Goto != "":
+		return v.VisitGoto(a.Goto)
+	case a.Jump != "":
+		return v.VisitJump(a.Jump)
+	case a.Stop:
+		return v.VisitStop()
+	}
+	return nil
+}
+
 // Matcher decides whether a rule considers an event. The filter module's
 // Filter satisfies it; the core stays dependency-free.
 type Matcher interface {
