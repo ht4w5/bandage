@@ -109,7 +109,9 @@ chains:
     carrying `report` must have a `tracker` — reports are always
     evidence-backed.
   - `log` — debug logging in flux's shape (`log: "debug,ROUTE:"`), logging
-    the event and the rule's tracker reading at that point.
+    the rule, its Target, the event and the rule's tracker reading at
+    that point (ADR 0005: the four level words only — a rule can never
+    exit the process).
   - `goto` — run the target chain, then end this chain.
   - `jump` — run the target chain, then resume this chain.
   - `stop` — end traversal of this chain.
@@ -159,7 +161,7 @@ cmd/bandage/                run(args) seam: pflag CLI with shorthands
                             (-c config, -r rules, -t test, -l log level,
                             -w workers, -v version, -h help)
 internal/domain/            package bandage: Event (§2), Report, Rule/Chain
-                            value types
+                            value types, log `Level` enum (ADR 0005)
 internal/domain/filter/     webjail filter language: Parse, Filter.Match(*Event),
                             ParseError{Line, Col} — ported as-is
 internal/domain/enrichment/ FilesizeEnricher (EWMA, minSamples) + FilesizeCache
@@ -168,9 +170,11 @@ internal/domain/track/      RateTracker, BandwidthTracker, ReplayTracker
                             (flux bucket math + replay volume methods) +
                             TrackerCache port
 internal/domain/evaluation/ EvaluationService: prefilter → tracker update →
-                            match (filter ∧ overflow) → action dispatch
+                            match (filter ∧ overflow) → action dispatch +
+                            `Logger` port (ADR 0005)
 internal/domain/report/     ReportService + ReportRepository port (persistence)
-internal/app/               pipeline wiring, worker pool (flux engine style)
+internal/app/               pipeline wiring, worker pool (flux engine style),
+                            program-wide zerolog logger (ADR 0005)
 internal/identity/          build identity: linker-injected version, commit,
                             build date, dirty flag (-v output, startup log
                             record, --test plan header)
@@ -209,6 +213,11 @@ cache:
 
 api:
   listen: 127.0.0.1:8080
+
+log:
+  level: info                  # debug | info | warn | error (default info;
+                               # -l overrides; rendering is console text on
+                               # stderr, ADR 0005)
 ```
 
 ## 4. Pipeline
@@ -282,12 +291,12 @@ no TTL). TTL is flux's `volume/leak`, passed by the tracker on each update
   plus a periodic sweep with an internal cadence.
 - **Memory bound** — `cache.max_entries` (default 65536) across all
   shards/namespaces, enforced by per-shard LRU under pressure (flux's ccache
-  `MaxSize` precedent, hand-rolled to keep deps small). Dropping an entry
-  resets that key's bucket, so **every capped drop is logged** (ns, key)
-  and counted in stats.
+  `MaxSize` precedent, hand-rolled to keep deps small). Removing an entry
+  resets that key's bucket, so **every eviction is logged** (namespace,
+  Target) and counted in stats.
 - **Statistics** — gets/sets/misses/evictions and current size, logged
-  periodically via slog (flux's `Statistics` precedent; no debug
-  endpoints).
+  periodically via the program-wide zerolog logger (ADR 0005; flux's
+  `Statistics` precedent; no debug endpoints).
 
 ### Consequence of no persistence
 
@@ -375,7 +384,8 @@ No `/v1` prefix, no debug endpoints. The API never writes reports; only
 ## 8. Validation & tooling
 
 - Strict config decode: unknown keys and invalid values rejected before any
-  socket opens (`cache.max_entries` must be positive).
+  socket opens (`cache.max_entries` must be positive; `log.level` must be one
+  of `debug`, `info`, `warn`, `error`).
 - Load-time rule validation: more than one tracker per rule, unknown
   `track`/volume methods, volume methods on non-replay trackers, unparseable
   filters (with `ParseError` line/col), dangling `goto`/`jump` targets,
@@ -406,5 +416,5 @@ No `/v1` prefix, no debug endpoints. The API never writes reports; only
 ## 10. Open items
 
 None — v0 scope is closed. Decided along the way: `cache.max_entries` is
-configurable (default 65536) with capped drops logged; restart-cold tracker
+configurable (default 65536) with evictions logged; restart-cold tracker
 and file-size state is accepted for v0.

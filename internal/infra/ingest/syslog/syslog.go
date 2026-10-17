@@ -6,10 +6,10 @@ package syslog
 
 import (
 	"fmt"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 
+	"github.com/rs/zerolog"
 	gsyslog "gopkg.in/mcuadros/go-syslog.v2"
 	gformat "gopkg.in/mcuadros/go-syslog.v2/format"
 )
@@ -23,7 +23,7 @@ type Source struct {
 	network string
 	addr    string
 	out     chan<- string
-	logger  *slog.Logger
+	logger  zerolog.Logger
 
 	srv      *gsyslog.Server
 	parts    gsyslog.LogPartsChannel
@@ -35,7 +35,7 @@ type Source struct {
 
 // New returns a syslog source for the given network ("tcp", "udp" or
 // "unixgram") and listen address. Start binds the listener.
-func New(network, addr string, out chan<- string, logger *slog.Logger) *Source {
+func New(network, addr string, out chan<- string, logger zerolog.Logger) *Source {
 	return &Source{
 		network:  network,
 		addr:     addr,
@@ -70,7 +70,7 @@ func (s *Source) Start() error {
 	if err := s.srv.Boot(); err != nil {
 		return fmt.Errorf("syslog: boot %s %s: %w", s.network, s.addr, err)
 	}
-	s.logger.Info("syslog ingest started", "network", s.network, "addr", s.addr)
+	s.logger.Info().Str("network", s.network).Str("addr", s.addr).Msg("syslog ingest started")
 
 	s.wg.Add(1)
 	go s.run()

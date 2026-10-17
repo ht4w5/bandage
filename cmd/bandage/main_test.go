@@ -205,21 +205,30 @@ func TestTestModeFailsNonZeroOnInvalidInput(t *testing.T) {
 
 func TestLogLevelPrecedence(t *testing.T) {
 	cfgPath, rulesPath := writeConfig(t)
-	base := []string{"-t", "-c", cfgPath, "-r", rulesPath}
 
+	// Flag > config > default: the explicit -l wins, then log.level,
+	// then the built-in default (spec: precedence).
 	tests := []struct {
-		name  string
-		extra []string
-		want  string
+		name   string
+		config string // empty: the default valid fixture
+		extra  []string
+		want   string
 	}{
 		{name: "default", want: "info"},
+		{name: "config over default", config: testConfig + "\nlog:\n  level: warn\n", want: "warn"},
+		{name: "flag over config", config: testConfig + "\nlog:\n  level: warn\n", extra: []string{"-l", "error"}, want: "error"},
 		{name: "short flag", extra: []string{"-l", "warn"}, want: "warn"},
 		{name: "long flag", extra: []string{"--log-level", "debug"}, want: "debug"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			cfg := cfgPath
+			if tt.config != "" {
+				cfg = writeTemp(t, tt.config)
+			}
+			args := []string{"-t", "-c", cfg, "-r", rulesPath}
 			var stdout, stderr bytes.Buffer
-			code, opts := run(append(append([]string{}, base...), tt.extra...), &stdout, &stderr)
+			code, opts := run(append(args, tt.extra...), &stdout, &stderr)
 			if code != 0 {
 				t.Fatalf("code = %d, want 0 (stderr %q)", code, stderr.String())
 			}

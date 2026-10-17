@@ -1,10 +1,9 @@
 // Package memory is the in-memory tracker cache adapter: a sharded map
 // with per-key atomic updates and sliding TTL expiry (enforced lazily on
 // access plus a periodic sweep), bounded by a global entry cap enforced
-// by per-shard LRU eviction. Every capped drop is logged with its
-// tracker namespace and the true Target (and path, where the key has
-// one) decoded from the domain's key convention, and counted in
-// statistics.
+// by per-shard LRU eviction. Every eviction is logged with its tracker
+// namespace and the true Target (and path, where the key has one)
+// decoded from the domain's key convention, and counted in statistics.
 package memory
 
 import (
@@ -12,10 +11,11 @@ import (
 	"context"
 	"errors"
 	"hash/fnv"
-	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/rs/zerolog"
 
 	bandage "github.com/HT4w5/bandage/internal/domain"
 	"github.com/HT4w5/bandage/internal/domain/track"
@@ -36,7 +36,7 @@ type Store struct {
 	shards   []shard
 	perShard int
 	now      func() time.Time
-	logger   *slog.Logger
+	logger   zerolog.Logger
 
 	gets, sets, misses, evictions atomic.Int64
 }
@@ -58,15 +58,15 @@ type entry struct {
 
 // New returns an empty store bounded to maxEntries (clamped to at least
 // 1) across all shards and namespaces. now is the wall clock expiry
-// runs on; logger receives a warning for every capped drop.
-func New(maxEntries int, now func() time.Time, logger *slog.Logger) *Store {
+// runs on; logger receives a warning for every eviction.
+func New(maxEntries int, now func() time.Time, logger zerolog.Logger) *Store {
 	return newStore(maxEntries, defaultShards, now, logger)
 }
 
 // newStore pins the shard count (tests use one shard to observe exact
 // LRU order). The entry cap becomes a per-shard budget summing to at
 // most maxEntries.
-func newStore(maxEntries, shards int, now func() time.Time, logger *slog.Logger) *Store {
+func newStore(maxEntries, shards int, now func() time.Time, logger zerolog.Logger) *Store {
 	if maxEntries < 1 {
 		maxEntries = 1
 	}
@@ -75,9 +75,6 @@ func newStore(maxEntries, shards int, now func() time.Time, logger *slog.Logger)
 	}
 	if shards < 1 {
 		shards = 1
-	}
-	if logger == nil {
-		logger = slog.Default()
 	}
 	s := &Store{
 		shards:   make([]shard, shards),
@@ -94,7 +91,7 @@ func newStore(maxEntries, shards int, now func() time.Time, logger *slog.Logger)
 // Update atomically applies fn to the record for (ns, key) and returns
 // it. An expired entry is treated as absent (lazy expiry): the record
 // restarts from zero. Inserting over the cap drops the shard's
-// least-recently-used entry — a capped drop, logged with its tracker
+// least-recently-used entry — an eviction, logged with its tracker
 // namespace and true Target (and path where present) and counted in
 // statistics. fn runs under the shard lock and must not perform I/O or
 // use ctx.
@@ -136,8 +133,8 @@ func (s *Store) Update(ctx context.Context, ns, key string, ttl time.Duration, f
 }
 
 // SweepExpired removes every expired entry across all shards. Entries
-// without a TTL never expire. TTL removals are not capped drops: nothing
-// is logged or counted as an eviction for them.
+// without a TTL never expire. TTL removals are not evictions: nothing
+// is logged or counted for them.
 func (s *Store) SweepExpired() {
 	now := s.now()
 	for i := range s.shards {
@@ -157,7 +154,7 @@ func (s *Store) SweepExpired() {
 // Statistics returns the operational counters (flux's Statistics
 // precedent): Gets and Sets count Update lookups and writes, Misses
 // counts lookups that found no live entry (absent or TTL-expired),
-// Evictions counts capped drops, and Size is the current entry count
+// Evictions counts evictions, and Size is the current entry count
 // (expired entries count until lazily dropped or swept).
 func (s *Store) Statistics() track.Statistics {
 	var size int64
@@ -183,35 +180,34 @@ func (s *Store) shardFor(fullKey string) *shard {
 }
 
 // evictLocked drops least-recently-used entries until the shard is
-// within its budget of the entry cap. Every capped drop is logged with
-// its tracker namespace and true Target (story 41: every capped drop is
-// logged; ticket 07: with its tracker namespace and Target) and counted
-// in statistics. Called under the shard lock.
+// within its budget of the entry cap. Every eviction is logged with its
+// tracker namespace and true Target (GLOSSARY: Eviction) and counted in
+// statistics. Called under the shard lock.
 func (s *Store) evictLocked(sh *shard) {
 	for sh.l.Len() > s.perShard {
 		el := sh.l.Back()
 		e := el.Value.(*entry)
 		sh.remove(el)
 		s.evictions.Add(1)
-		s.logger.Warn("tracker cache capped drop", dropAttrs(e)...)
+		evictionAttrs(s.logger.Warn(), e).Msg("tracker cache eviction")
 	}
 }
 
-// dropAttrs renders a capped drop's identity per the domain's key
+// evictionAttrs renders an eviction's identity per the domain's key
 // convention: namespace plus the true Target decoded from the key —
 // never the raw key — and the path for per-(Target, path) keys. The
 // filesize namespace has no Target: its keys are paths and log as their
 // own case.
-func dropAttrs(e *entry) []any {
-	if e.ns == bandage.FilesizeNamespace {
-		return []any{"namespace", e.ns, "path", e.key}
+func evictionAttrs(ev *zerolog.Event, ent *entry) *zerolog.Event {
+	if ent.ns == bandage.FilesizeNamespace {
+		return ev.Str("namespace", ent.ns).Str("path", ent.key)
 	}
-	target, path := bandage.SplitTrackerKey(e.key)
-	attrs := []any{"namespace", e.ns, "target", target}
+	target, path := bandage.SplitTrackerKey(ent.key)
+	ev = ev.Str("namespace", ent.ns).Str("target", target)
 	if path != "" {
-		attrs = append(attrs, "path", path)
+		ev = ev.Str("path", path)
 	}
-	return attrs
+	return ev
 }
 
 func (sh *shard) remove(el *list.Element) {

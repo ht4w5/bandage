@@ -4,21 +4,22 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rs/zerolog"
 
 	bandage "github.com/HT4w5/bandage/internal/domain"
 	"github.com/HT4w5/bandage/internal/domain/track"
 )
 
 // Tests at the store seam (the tracker-cache port's adapter): the entry
-// cap and its per-shard LRU eviction, the capped-drop log line (logging
-// IS the contract for capped drops per the spec's Testing Decisions),
-// lazy TTL expiry plus the periodic sweep seam, no-TTL enrichment
-// survival, and the statistics counters. Time is driven through the
-// injected clock and direct sweep triggers — never sleep.
+// cap and its per-shard LRU eviction, the eviction log line (logging IS
+// the contract for evictions per the spec's Testing Decisions), lazy
+// TTL expiry plus the periodic sweep seam, no-TTL enrichment survival,
+// and the statistics counters. Time is driven through the injected
+// clock and direct sweep triggers — never sleep.
 
 type testClock struct{ t time.Time }
 
@@ -28,8 +29,10 @@ func (c *testClock) Now() time.Time { return c.t }
 
 func (c *testClock) Advance(d time.Duration) { c.t = c.t.Add(d) }
 
-func testLogger(buf *bytes.Buffer) *slog.Logger {
-	return slog.New(slog.NewTextHandler(buf, nil))
+// testLogger writes console-style records to buf so tests can assert
+// the log text where logging is the contract.
+func testLogger(buf *bytes.Buffer) zerolog.Logger {
+	return zerolog.New(zerolog.ConsoleWriter{Out: buf, NoColor: true})
 }
 
 // update runs one accumulate step (value += inc) for (ns, key).
@@ -65,7 +68,7 @@ func TestStoreCapEvictsLeastRecentlyUsed(t *testing.T) {
 		t.Errorf("size = %d, want 3 (never above the cap)", st.Size)
 	}
 
-	// a was touched last: its state survived the capped drop.
+	// a was touched last: its state survived the eviction.
 	if rec := update(t, s, "rule-one", "a", time.Hour, 1); rec.Value != 3 {
 		t.Errorf("a after drop = %v, want 3 (LRU order kept a)", rec.Value)
 	}
@@ -76,11 +79,11 @@ func TestStoreCapEvictsLeastRecentlyUsed(t *testing.T) {
 	}
 }
 
-// Every capped drop is logged with its tracker namespace and Target and
-// counted in statistics (spec: capped drops are the one place where log
-// text IS the contract — story 41: "every capped drop is logged"; ticket
-// 07: "with its tracker namespace and Target").
-func TestStoreCappedDropLoggedWithNamespaceAndTarget(t *testing.T) {
+// Every eviction is logged with its tracker namespace and Target and
+// counted in statistics (spec: evictions are the one place where log
+// text IS the contract — every eviction is logged with its tracker
+// namespace and Target).
+func TestStoreEvictionLoggedWithNamespaceAndTarget(t *testing.T) {
 	buf := &bytes.Buffer{}
 	s := newStore(1, 1, newTestClock(time.Time{}).Now, testLogger(buf))
 
@@ -89,21 +92,21 @@ func TestStoreCappedDropLoggedWithNamespaceAndTarget(t *testing.T) {
 
 	logs := buf.String()
 	if !strings.Contains(logs, "namespace=rule-one") {
-		t.Errorf("capped drop log missing tracker namespace:\n%s", logs)
+		t.Errorf("eviction log missing tracker namespace:\n%s", logs)
 	}
 	if !strings.Contains(logs, "target=203.0.113.7") {
-		t.Errorf("capped drop log missing Target:\n%s", logs)
+		t.Errorf("eviction log missing Target:\n%s", logs)
 	}
 	if st := s.Statistics(); st.Evictions != 1 {
-		t.Errorf("evictions = %d, want 1 (capped drop counted)", st.Evictions)
+		t.Errorf("evictions = %d, want 1 (eviction counted)", st.Evictions)
 	}
 }
 
 // The logged Target is the true Target split from the key convention —
 // never the raw cache key — and per-(Target, path) keys carry their path
-// as its own attribute (story 41 / ticket 07: the drop log must name the
-// tracker namespace and Target).
-func TestStoreCappedDropLogsTrueTargetAndPath(t *testing.T) {
+// as its own attribute (the eviction log must name the tracker
+// namespace and Target).
+func TestStoreEvictionLogsTrueTargetAndPath(t *testing.T) {
 	buf := &bytes.Buffer{}
 	s := newStore(1, 1, newTestClock(time.Time{}).Now, testLogger(buf))
 
@@ -112,22 +115,22 @@ func TestStoreCappedDropLogsTrueTargetAndPath(t *testing.T) {
 
 	logs := buf.String()
 	if !strings.Contains(logs, "namespace=iso-replay") {
-		t.Errorf("capped drop log missing tracker namespace:\n%s", logs)
+		t.Errorf("eviction log missing tracker namespace:\n%s", logs)
 	}
 	if !strings.Contains(logs, "target=203.0.113.7/32") {
-		t.Errorf("capped drop log missing the true Target:\n%s", logs)
+		t.Errorf("eviction log missing the true Target:\n%s", logs)
 	}
 	if !strings.Contains(logs, "path=/big.iso") {
-		t.Errorf("capped drop log missing the path:\n%s", logs)
+		t.Errorf("eviction log missing the path:\n%s", logs)
 	}
 	if strings.Contains(logs, "203.0.113.7/32\x00/big.iso") {
-		t.Errorf("capped drop log leaks the raw composite key:\n%s", logs)
+		t.Errorf("eviction log leaks the raw composite key:\n%s", logs)
 	}
 }
 
-// The filesize namespace has no Target: its capped drops are their own
+// The filesize namespace has no Target: its evictions are their own
 // case, logging the path (the key) instead of inventing a Target.
-func TestStoreCappedDropFilesizeLogsPathOnly(t *testing.T) {
+func TestStoreEvictionFilesizeLogsPathOnly(t *testing.T) {
 	buf := &bytes.Buffer{}
 	s := newStore(1, 1, newTestClock(time.Time{}).Now, testLogger(buf))
 
@@ -136,13 +139,13 @@ func TestStoreCappedDropFilesizeLogsPathOnly(t *testing.T) {
 
 	logs := buf.String()
 	if !strings.Contains(logs, "namespace=filesize") {
-		t.Errorf("capped drop log missing the filesize namespace:\n%s", logs)
+		t.Errorf("eviction log missing the filesize namespace:\n%s", logs)
 	}
 	if !strings.Contains(logs, "path=/a") {
-		t.Errorf("capped drop log missing the path:\n%s", logs)
+		t.Errorf("eviction log missing the path:\n%s", logs)
 	}
 	if strings.Contains(logs, "target=") {
-		t.Errorf("filesize capped drop log invents a Target:\n%s", logs)
+		t.Errorf("filesize eviction log invents a Target:\n%s", logs)
 	}
 }
 
@@ -165,7 +168,7 @@ func TestStoreLazyTTLExpiry(t *testing.T) {
 		t.Errorf("misses = %d, want 2 (absent insert + expired lookup)", st.Misses)
 	}
 	if st.Evictions != 0 {
-		t.Errorf("evictions = %d, want 0 (TTL expiry is not a capped drop)", st.Evictions)
+		t.Errorf("evictions = %d, want 0 (TTL expiry is not an eviction)", st.Evictions)
 	}
 }
 
@@ -212,8 +215,9 @@ func TestStoreNoTTLEntrySurvivesSweeps(t *testing.T) {
 }
 
 // The statistics counters: gets and sets count lookups and writes,
-// misses count lookups without a live entry, evictions count capped
-// drops, size counts entries (TTL removals are not evictions).
+// misses count lookups without a live entry, evictions count entries
+// removed by the entry cap, size counts entries (TTL removals are not
+// evictions).
 func TestStoreStatisticsCounters(t *testing.T) {
 	clock := newTestClock(time.Time{})
 	s := newStore(2, 1, clock.Now, testLogger(&bytes.Buffer{}))
@@ -247,7 +251,7 @@ func TestStoreStatisticsCounters(t *testing.T) {
 }
 
 // The cap holds across all shards and namespaces: size never exceeds
-// maxEntries, and every capped drop is logged (drop-log count ==
+// maxEntries, and every eviction is logged (eviction-log count ==
 // eviction count).
 func TestStoreCapEnforcedAcrossShardsAndNamespaces(t *testing.T) {
 	buf := &bytes.Buffer{}
@@ -265,7 +269,7 @@ func TestStoreCapEnforcedAcrossShardsAndNamespaces(t *testing.T) {
 	if st.Evictions != 90 {
 		t.Errorf("evictions = %d, want 90", st.Evictions)
 	}
-	if drops := strings.Count(buf.String(), "capped drop"); drops != 90 {
-		t.Errorf("capped drop log lines = %d, want 90 (every drop logged)", drops)
+	if evictions := strings.Count(buf.String(), "tracker cache eviction"); evictions != 90 {
+		t.Errorf("eviction log lines = %d, want 90 (every eviction logged)", evictions)
 	}
 }

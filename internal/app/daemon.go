@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/rs/zerolog"
 
 	"github.com/HT4w5/bandage/internal/infra/cache/memory"
 	"github.com/HT4w5/bandage/internal/infra/httpapi"
@@ -53,7 +55,7 @@ type counters struct {
 
 type options struct {
 	now    func() time.Time
-	logger *slog.Logger
+	logger zerolog.Logger
 }
 
 // Option configures the daemon wiring.
@@ -64,11 +66,11 @@ func WithClock(now func() time.Time) Option {
 	return func(o *options) { o.now = now }
 }
 
-// withLogger sets the daemon logger. The daemon's logging is the
-// contract for capped drops and log actions, so tests capture it; the
-// binary configures the default logger before wiring — the option is
-// unexported like every test-only seam.
-func withLogger(l *slog.Logger) Option {
+// WithLogger injects the program-wide logger: the command passes the
+// one logger built from config (ADR 0005), and tests capture records
+// through the same injection point (spec: Log capture) — the daemon's
+// logging is the contract for evictions and log actions.
+func WithLogger(l zerolog.Logger) Option {
 	return func(o *options) { o.logger = l }
 }
 
@@ -79,7 +81,7 @@ type Daemon struct {
 	cfg    Config
 	chains []bandage.Chain
 	now    func() time.Time
-	logger *slog.Logger
+	logger zerolog.Logger
 	parser EventParser
 	enrich *enrichment.FilesizeEnricher
 
@@ -107,7 +109,10 @@ type Daemon struct {
 func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
 	var o options
 	WithClock(time.Now)(&o)
-	withLogger(slog.Default())(&o)
+	// The default logger is built from config like the program-wide one
+	// (ADR 0005); the command passes its flag-adjusted instance and
+	// tests pass their capture.
+	o.logger = NewLogger(os.Stderr, cfg.Log.Level)
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -132,7 +137,7 @@ func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
 		enrich:    enricher,
 		repo:      repo,
 		cache:     cache,
-		eval:      evaluation.NewService(chains, cache, reports, o.now, o.logger),
+		eval:      evaluation.NewService(chains, cache, reports, o.now, domainLogger{o.logger}),
 		lines:     make(chan string),
 		processed: newProgress(),
 		stopSweep: make(chan struct{}),
@@ -146,12 +151,12 @@ func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
 func (d *Daemon) Start() error {
 	// The startup record names the running build: the log stream itself
 	// identifies what is deployed (spec story 14).
-	d.logger.Info("starting",
-		"name", identity.Name,
-		"version", identity.Version(),
-		"commit", identity.Commit(),
-		"build_date", identity.BuildDate(),
-	)
+	d.logger.Info().
+		Str("name", identity.Name).
+		Str("version", identity.Version()).
+		Str("commit", identity.Commit()).
+		Str("build_date", identity.BuildDate()).
+		Msg("starting")
 	d.src = syslog.New(d.cfg.Ingest.Syslog.Network, d.cfg.Ingest.Syslog.Listen, d.lines, d.logger)
 	if err := d.src.Start(); err != nil {
 		return err
@@ -169,10 +174,10 @@ func (d *Daemon) Start() error {
 	go d.sweep()
 	go func() {
 		if err := d.apiSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			d.logger.Error("api server stopped", "error", err)
+			d.logger.Error().Err(err).Msg("api server stopped")
 		}
 	}()
-	d.logger.Info("api started", "addr", ln.Addr().String())
+	d.logger.Info().Str("addr", ln.Addr().String()).Msg("api started")
 	return nil
 }
 
@@ -185,16 +190,16 @@ func (d *Daemon) runPipeline() {
 		ev, err := d.parser.Parse([]byte(line))
 		if err != nil {
 			d.dropped.Add(1)
-			d.logger.Warn("dropping bad log line", "error", err)
+			d.logger.Warn().Err(err).Msg("dropping bad log line")
 			d.processed.bump()
 			continue
 		}
 		d.parsed.Add(1)
 		if err := d.enrich.Enrich(context.Background(), &ev); err != nil {
-			d.logger.Error("enrich event", "error", err)
+			d.logger.Error().Err(err).Msg("enrich event")
 		}
 		if err := d.eval.Evaluate(context.Background(), &ev); err != nil {
-			d.logger.Error("evaluate event", "error", err)
+			d.logger.Error().Err(err).Msg("evaluate event")
 		}
 		d.processed.bump()
 	}
@@ -215,17 +220,18 @@ func (d *Daemon) sweep() {
 			d.cache.SweepExpired()
 			cs := d.cache.Statistics()
 			s := d.stats()
-			d.logger.Info("statistics",
-				"received", s.Received, "parsed", s.Parsed, "dropped", s.Dropped,
-				"cache_gets", cs.Gets, "cache_sets", cs.Sets, "cache_misses", cs.Misses,
-				"cache_evictions", cs.Evictions, "cache_size", cs.Size)
+			d.logger.Info().
+				Int64("received", s.Received).Int64("parsed", s.Parsed).Int64("dropped", s.Dropped).
+				Int64("cache_gets", cs.Gets).Int64("cache_sets", cs.Sets).Int64("cache_misses", cs.Misses).
+				Int64("cache_evictions", cs.Evictions).Int64("cache_size", cs.Size).
+				Msg("statistics")
 			n, err := d.sweepOnce(context.Background())
 			if err != nil {
-				d.logger.Error("sweep expired reports", "error", err)
+				d.logger.Error().Err(err).Msg("sweep expired reports")
 				continue
 			}
 			if n > 0 {
-				d.logger.Info("swept expired reports", "count", n)
+				d.logger.Info().Int("count", n).Msg("swept expired reports")
 			}
 		}
 	}

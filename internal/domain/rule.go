@@ -1,10 +1,7 @@
 package bandage
 
 import (
-	"fmt"
-	"log/slog"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -85,32 +82,15 @@ type ReportAction struct {
 }
 
 // LogAction emits debug output for a match: flux's "level,message"
-// shape (e.g. `log: "debug,ROUTE:"`), logging the event and the rule's
-// tracker reading. It is never terminal.
+// shape (e.g. `log: "debug,ROUTE:"`), logging the rule, its Target, the
+// event and the rule's tracker reading. It is never terminal.
 type LogAction struct {
-	// Level is the slog level parsed from the "level" argument.
-	Level slog.Level
+	// Level is the domain level parsed from the "level" argument (the
+	// four-word vocabulary — a rule can never reach a process-exiting
+	// level, ADR 0005).
+	Level Level
 	// Message is the "message" argument (flux's prefix).
 	Message string
-}
-
-// ParseLevel parses one level argument ("debug", "info", "warn" or
-// "error", case-insensitive). It is the one level parser: the log
-// action's "level,message" shape (spec story 18) and the -log-level
-// flag share it.
-func ParseLevel(s string) (slog.Level, error) {
-	switch strings.ToLower(s) {
-	case "debug":
-		return slog.LevelDebug, nil
-	case "info":
-		return slog.LevelInfo, nil
-	case "warn":
-		return slog.LevelWarn, nil
-	case "error":
-		return slog.LevelError, nil
-	default:
-		return 0, fmt.Errorf("unknown log level %q (want debug, info, warn or error)", s)
-	}
 }
 
 // Action is a step executed when a rule matches; the actions of a match

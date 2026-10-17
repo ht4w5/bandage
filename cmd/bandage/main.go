@@ -14,7 +14,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -92,17 +91,17 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 		test:       *testMode,
 		// Precedence: the explicit flag wins, then the config value,
 		// then the built-in default — decided by whether the flag was
-		// set. The config keys (log.level, pipeline.workers) arrive
-		// with the logging and worker-pool tickets; the resolution is
-		// in place now.
-		logLevel: resolveLogLevel(*logLevel, fs.Changed("log-level"), ""),
+		// set. pipeline.workers arrives with the worker-pool ticket.
+		logLevel: resolveLogLevel(*logLevel, fs.Changed("log-level"), string(cfg.Log.Level)),
 		workers:  resolveWorkers(*workers, fs.Changed("workers"), 0),
 	}
 	level, err := bandage.ParseLevel(opts.logLevel)
 	if err != nil {
 		return fail(stderr, err), opts
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level})))
+	// The one program-wide logger (ADR 0005): built from the resolved
+	// config here and passed to the daemon and its adapters.
+	logger := app.NewLogger(stderr, level)
 
 	if opts.test {
 		plan, err := app.Test(opts.configPath, opts.rulesPath)
@@ -117,7 +116,7 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	if err != nil {
 		return fail(stderr, err), opts
 	}
-	d, err := app.New(cfg, chains)
+	d, err := app.New(cfg, chains, app.WithLogger(logger))
 	if err != nil {
 		return fail(stderr, err), opts
 	}
@@ -128,7 +127,7 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	s := <-sig
-	slog.Info("shutting down", "signal", s.String())
+	logger.Info().Str("signal", s.String()).Msg("shutting down")
 
 	if err := d.Shutdown(context.Background()); err != nil {
 		return fail(stderr, fmt.Errorf("shutdown: %w", err)), opts

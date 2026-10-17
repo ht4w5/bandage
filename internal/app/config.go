@@ -10,6 +10,8 @@ import (
 	"os"
 
 	"gopkg.in/yaml.v3"
+
+	bandage "github.com/HT4w5/bandage/internal/domain"
 )
 
 // DefaultCacheEntries is the default tracker cache entry cap.
@@ -22,6 +24,7 @@ type Config struct {
 	DB     DB
 	Cache  Cache
 	API    API
+	Log    Log
 }
 
 // Ingest configures the ingest driver and the log parser.
@@ -58,6 +61,13 @@ type API struct {
 	Listen string
 }
 
+// Log configures the program-wide logger (ADR 0005). Level is the
+// four-word vocabulary; the rendering is fixed console-style text on
+// stderr.
+type Log struct {
+	Level bandage.Level
+}
+
 // raw config wire types (strict decode).
 
 type rawConfig struct {
@@ -65,6 +75,7 @@ type rawConfig struct {
 	DB     rawDB     `yaml:"db"`
 	Cache  rawCache  `yaml:"cache"`
 	API    rawAPI    `yaml:"api"`
+	Log    rawLog    `yaml:"log"`
 }
 
 type rawIngest struct {
@@ -93,6 +104,10 @@ type rawCache struct {
 
 type rawAPI struct {
 	Listen string `yaml:"listen"`
+}
+
+type rawLog struct {
+	Level string `yaml:"level"`
 }
 
 // LoadConfig reads and validates the config file at path.
@@ -139,6 +154,7 @@ func validateConfig(raw rawConfig) (Config, error) {
 		DB:    DB{Driver: raw.DB.Driver, SQLite: SQLite{Path: raw.DB.SQLite.Path}},
 		API:   API{Listen: raw.API.Listen},
 		Cache: Cache{MaxEntries: DefaultCacheEntries},
+		Log:   Log{Level: bandage.LevelInfo},
 	}
 
 	switch {
@@ -180,6 +196,15 @@ func validateConfig(raw rawConfig) (Config, error) {
 	}
 	if cfg.API.Listen == "" {
 		return Config{}, errors.New("config: api.listen: required")
+	}
+	if raw.Log.Level != "" {
+		// log.level shares the one level parser with the log action: the
+		// same four words, so both always mean the same thing.
+		level, err := bandage.ParseLevel(raw.Log.Level)
+		if err != nil {
+			return Config{}, fmt.Errorf("config: log.level: %w", err)
+		}
+		cfg.Log.Level = level
 	}
 	return cfg, nil
 }
