@@ -11,7 +11,8 @@ import (
 // record if none exists, or one whose TTL has passed) and returns it
 // afterwards. fn runs under the store's per-key lock, so it must not
 // perform I/O or use ctx. ttl is the sliding expiry for the entry; zero
-// means no expiry.
+// means no expiry and is reserved for the filesize namespace (tracker
+// entries derive a positive TTL via TTL — see MinTTL).
 type TrackerCache interface {
 	Update(ctx context.Context, ns, key string, ttl time.Duration, fn func(*Record)) (Record, error)
 }
