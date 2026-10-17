@@ -1,0 +1,46 @@
+# bandage rules, format version 0.
+#
+# A rule matches when its filter accepts the event and its tracker
+# overflows; its report action then writes a report about the offending
+# target. Filter expressions beyond "any", replay trackers and the
+# goto/jump/stop actions arrive with later tickets.
+version: 0
+
+chains:
+  - name: download-abuse
+    rules:
+      - id: sustained-iso-egress
+        filter: any
+        tracker:
+          track: bandwidth
+          leak: 1MB
+          volume: 100GB
+          target_prefix: {ipv4: 24, ipv6: 64}
+        actions:
+          - report:
+              reason: iso-egress-overflow
+              ttl: 7d
+
+      - id: iso-download-flood
+        filter: any
+        tracker:
+          track: rate
+          leak: 10
+          volume: 100
+          target_prefix: {ipv4: 24, ipv6: 64}
+        actions:
+          - report:
+              reason: iso-download-overflow
+              ttl: 24h
+
+  - name: api
+    rules:
+      - id: bursty-api
+        tracker:
+          track: rate
+          leak: 10/s
+          volume: 200
+        actions:
+          - report:
+              reason: api-rate-overflow
+              ttl: 12h
