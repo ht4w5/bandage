@@ -1,8 +1,10 @@
 package bandage
 
 import (
+	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -90,6 +92,25 @@ type LogAction struct {
 	Level slog.Level
 	// Message is the "message" argument (flux's prefix).
 	Message string
+}
+
+// ParseLevel parses one level argument ("debug", "info", "warn" or
+// "error", case-insensitive). It is the one level parser: the log
+// action's "level,message" shape (spec story 18) and the -log-level
+// flag share it.
+func ParseLevel(s string) (slog.Level, error) {
+	switch strings.ToLower(s) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return 0, fmt.Errorf("unknown log level %q (want debug, info, warn or error)", s)
+	}
 }
 
 // Action is a step executed when a rule matches; the actions of a match

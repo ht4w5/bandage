@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"regexp"
 	"strconv"
@@ -524,9 +523,9 @@ func parseChainAction(id, name string, val *yaml.Node) (bandage.Action, error) {
 }
 
 // parseLogAction parses `log: "level,message"` (flux's shape): exactly
-// two comma-separated arguments — a debug/info/warn/error level and a
-// message. The event and the rule's tracker reading are logged beside
-// the message at evaluation time.
+// two comma-separated arguments — a debug/info/warn/error level (the
+// shared bandage.ParseLevel) and a message. The event and the rule's
+// tracker reading are logged beside the message at evaluation time.
 func parseLogAction(id string, val *yaml.Node) (bandage.Action, error) {
 	if val.Kind != yaml.ScalarNode {
 		return bandage.Action{}, fmt.Errorf("rules: rule %q: action log: wants a \"level,message\" string", id)
@@ -535,18 +534,9 @@ func parseLogAction(id string, val *yaml.Node) (bandage.Action, error) {
 	if len(args) != 2 {
 		return bandage.Action{}, fmt.Errorf("rules: rule %q: action log: wants \"level,message\", got %q", id, val.Value)
 	}
-	var level slog.Level
-	switch strings.ToLower(args[0]) {
-	case "debug":
-		level = slog.LevelDebug
-	case "info":
-		level = slog.LevelInfo
-	case "warn":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default:
-		return bandage.Action{}, fmt.Errorf("rules: rule %q: action log: unknown level %q (want debug, info, warn or error)", id, args[0])
+	level, err := bandage.ParseLevel(args[0])
+	if err != nil {
+		return bandage.Action{}, fmt.Errorf("rules: rule %q: action log: %w", id, err)
 	}
 	return bandage.Action{Log: &bandage.LogAction{Level: level, Message: args[1]}}, nil
 }

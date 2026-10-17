@@ -17,10 +17,10 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/HT4w5/bandage/internal/app"
+	bandage "github.com/HT4w5/bandage/internal/domain"
 )
 
 func main() {
@@ -32,7 +32,7 @@ func main() {
 	)
 	flag.Parse()
 
-	level, err := parseLevel(*logLevel)
+	level, err := bandage.ParseLevel(*logLevel)
 	if err != nil {
 		fatal(err)
 	}
@@ -72,21 +72,6 @@ func main() {
 	ctx := context.Background()
 	if err := d.Shutdown(ctx); err != nil {
 		fatal(fmt.Errorf("shutdown: %w", err))
-	}
-}
-
-func parseLevel(s string) (slog.Level, error) {
-	switch strings.ToLower(s) {
-	case "debug":
-		return slog.LevelDebug, nil
-	case "info":
-		return slog.LevelInfo, nil
-	case "warn":
-		return slog.LevelWarn, nil
-	case "error":
-		return slog.LevelError, nil
-	default:
-		return 0, fmt.Errorf("unknown log level %q (want debug, info, warn or error)", s)
 	}
 }
 
