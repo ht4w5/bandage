@@ -63,6 +63,13 @@ type testDaemon struct {
 
 func startTestDaemon(t *testing.T, clock *testClock, network, dbPath, rulesYAML string) *testDaemon {
 	t.Helper()
+	return startTestDaemonCfg(t, clock, network, dbPath, rulesYAML, nil)
+}
+
+// startTestDaemonCfg is startTestDaemon with a config mutation hook for
+// tests that need a non-default knob (e.g. a small cache entry cap).
+func startTestDaemonCfg(t *testing.T, clock *testClock, network, dbPath, rulesYAML string, mutate func(*Config)) *testDaemon {
+	t.Helper()
 	listen := filepath.Join(t.TempDir(), "log.sock")
 	switch network {
 	case "unixgram":
@@ -83,6 +90,9 @@ func startTestDaemon(t *testing.T, clock *testClock, network, dbPath, rulesYAML 
 		Cache: Cache{MaxEntries: 65536},
 		API:   API{Listen: "127.0.0.1:0"},
 	}
+	if mutate != nil {
+		mutate(&cfg)
+	}
 	chains, err := ParseRules([]byte(rulesYAML))
 	if err != nil {
 		t.Fatalf("ParseRules error: %v", err)
@@ -95,6 +105,10 @@ func startTestDaemon(t *testing.T, clock *testClock, network, dbPath, rulesYAML 
 		t.Fatalf("Start error: %v", err)
 	}
 	t.Cleanup(func() {
+		// The shared client can park a dialed-but-never-used keep-alive
+		// connection (server-side state "new"), which http.Server.Shutdown
+		// never closes; drop idle conns first so Shutdown is deterministic.
+		http.DefaultClient.CloseIdleConnections()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := d.Shutdown(ctx); err != nil {
@@ -558,6 +572,71 @@ chains:
 				t.Errorf("reports = %+v, want 1", doc.Reports)
 			}
 		})
+	}
+}
+
+// Bounded tracker cache (ticket 07, ADR 0002): an evicted bucket
+// accumulates fresh state from zero on the next event — never a crash,
+// never a stale Match — and overflow fires again after re-accumulating
+// past volume.
+func TestE2EEvictedBucketAccumulatesFresh(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	rules := `
+version: 0
+chains:
+  - name: api
+    rules:
+      - id: bursty-api
+        tracker: {track: rate, leak: 0, volume: 2}
+        actions: [{report: {reason: api-rate-overflow, ttl: 1h}}]
+`
+	// max_entries 1: every event for another target caps the cache and
+	// drops the previous bucket (logged and counted by the store).
+	d := startTestDaemonCfg(t, clock, "unixgram", ":memory:", rules, func(c *Config) {
+		c.Cache.MaxEntries = 1
+	})
+
+	// 203.0.113.7 overflows on its third event: value 3 > 2.
+	for i := 0; i < 3; i++ {
+		d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/api", 200, 0))
+	}
+	d.waitProcessed(t, 3)
+	doc := d.getReports(t, nil)
+	if len(doc.Reports) != 1 || doc.Reports[0].Tracker.Value != 3 || doc.Reports[0].UpdatedAt != wallBase {
+		t.Fatalf("first trigger: %+v", doc.Reports)
+	}
+
+	// One event for another target caps the cache: 203.0.113.7's bucket
+	// is dropped and restarts from zero on its next event, so that event
+	// must not Match — the report stays untouched.
+	clock.Advance(10 * time.Minute)
+	d.send(nginxLine(eventTime2, "203.0.113.8", "GET", "/api", 200, 0))
+	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/api", 200, 0))
+	d.waitProcessed(t, 5)
+	doc = d.getReports(t, nil)
+	if len(doc.Reports) != 1 || doc.Reports[0].UpdatedAt != wallBase || doc.Reports[0].Tracker.Value != 3 {
+		t.Fatalf("after eviction + one fresh event: %+v, want untouched report (no stale Match)", doc.Reports)
+	}
+
+	// Overflow fires again after the bucket re-accumulates past volume
+	// from zero: value 3 > 2 refreshes the same (rule, target) row.
+	clock.Advance(10 * time.Minute)
+	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/api", 200, 0))
+	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/api", 200, 0))
+	d.waitProcessed(t, 7)
+	doc = d.getReports(t, nil)
+	if len(doc.Reports) != 1 {
+		t.Fatalf("reports = %+v, want 1", doc.Reports)
+	}
+	r := doc.Reports[0]
+	if r.Tracker.Value != 3 {
+		t.Errorf("tracker value = %v, want 3 (fresh accumulation after eviction)", r.Tracker.Value)
+	}
+	if r.CreatedAt != wallBase {
+		t.Errorf("created_at = %q, want %q (identity unchanged)", r.CreatedAt, wallBase)
+	}
+	if r.UpdatedAt != "2025-10-17T18:20:00Z" {
+		t.Errorf("updated_at = %q, want %q (overflow fired again)", r.UpdatedAt, "2025-10-17T18:20:00Z")
 	}
 }
 
