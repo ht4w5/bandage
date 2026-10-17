@@ -20,8 +20,10 @@ import (
 
 const defaultShards = 256
 
-// Store is an in-memory track.TrackerCache bounded to maxEntries across
-// all shards and namespaces. It is safe for concurrent use.
+// Store is an in-memory tracker cache (the TrackerCache port declared
+// beside its consumer in domain/evaluation is satisfied structurally)
+// bounded to maxEntries across all shards and namespaces. It is safe for
+// concurrent use.
 //
 // TTL expiry is enforced lazily on Update and by SweepExpired, which the
 // owner runs periodically (the daemon ticks it at an internal cadence).

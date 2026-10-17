@@ -236,7 +236,7 @@ func parseTracker(id string, raw *rawTracker) (*bandage.TrackerConfig, error) {
 		return nil, fmt.Errorf("rules: rule %q: tracker.volume: must be positive", id)
 	}
 	cfg.Volume = volume
-	cfg.TTL = track.TTL(leak, volume)
+	cfg.TTL = bandage.TTL(leak, volume)
 	return cfg, nil
 }
 

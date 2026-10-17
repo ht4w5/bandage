@@ -10,9 +10,24 @@ import (
 	"time"
 
 	bandage "github.com/HT4w5/bandage/internal/domain"
-	"github.com/HT4w5/bandage/internal/domain/report"
-	"github.com/HT4w5/bandage/internal/domain/track"
 )
+
+// TrackerCache is the tracker-state port beside its consumer: records
+// keyed by (ns, key) with sliding TTL and atomic per-key update
+// callbacks. fn runs under the store's per-key lock, so it must not
+// perform I/O or use ctx; ttl is the sliding expiry, zero means no
+// expiry (the reserved filesize namespace). The in-memory store
+// satisfies this structurally.
+type TrackerCache interface {
+	Update(ctx context.Context, ns, key string, ttl time.Duration, fn func(*bandage.Record)) (bandage.Record, error)
+}
+
+// ReportSink is the report write path beside its consumer: a Trigger
+// upserts one report per (rule, target). report.Service satisfies this
+// structurally.
+type ReportSink interface {
+	Trigger(ctx context.Context, rec bandage.Report) error
+}
 
 // Service evaluates events against the loaded chains.
 //
@@ -25,13 +40,13 @@ import (
 type Service struct {
 	chains  []bandage.Chain
 	byName  map[string]int
-	cache   track.TrackerCache
-	reports *report.Service
+	cache   TrackerCache
+	reports ReportSink
 	now     func() time.Time
 	logger  *slog.Logger
 }
 
-func NewService(chains []bandage.Chain, cache track.TrackerCache, reports *report.Service, now func() time.Time, logger *slog.Logger) *Service {
+func NewService(chains []bandage.Chain, cache TrackerCache, reports ReportSink, now func() time.Time, logger *slog.Logger) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -152,12 +167,12 @@ func (s *Service) updateTracker(ctx context.Context, rule *bandage.Rule, event *
 		// ("tolerated download equivalents") and the cache-entry TTL is
 		// re-derived from it per event.
 		volume = cfg.VolumeFor(size)
-		ttl = track.TTL(cfg.Leak, volume)
+		ttl = bandage.TTL(cfg.Leak, volume)
 		// Replay state is keyed per (Target, path): the target prefix
 		// string and the path joined with "\x00" (DECISIONS §9).
 		key += "\x00" + event.Path
 	}
-	rec, err := s.cache.Update(ctx, rule.ID, key, ttl, func(r *track.Record) {
+	rec, err := s.cache.Update(ctx, rule.ID, key, ttl, func(r *bandage.Record) {
 		r.Accumulate(increment, cfg.Leak, event.Time.Unix())
 	})
 	if err != nil {

@@ -7,8 +7,6 @@ import (
 	"time"
 
 	bandage "github.com/HT4w5/bandage/internal/domain"
-	"github.com/HT4w5/bandage/internal/domain/report"
-	"github.com/HT4w5/bandage/internal/domain/track"
 )
 
 // Replay tracker semantics at the evaluation seam (PLAN §1, DECISIONS
@@ -16,16 +14,17 @@ import (
 // fractions capped at 1, state is keyed per (Target, path), decay and
 // overflow follow the generic leaky-bucket math, and the cache-entry TTL
 // is derived per event from the volume-method output. Stubs stand in at
-// the existing ports (DECISIONS §2); no sleeps, event timestamps only.
+// the consumer-side ports (DECISIONS §2); no sleeps, event timestamps
+// only.
 
 // matchAll accepts every event.
 type matchAll struct{}
 
 func (matchAll) Match(*bandage.Event) bool { return true }
 
-// stubCache is a track.TrackerCache test double recording every update.
+// stubCache is a TrackerCache test double recording every update.
 type stubCache struct {
-	records map[string]track.Record
+	records map[string]bandage.Record
 	updates []stubUpdate
 }
 
@@ -34,9 +33,9 @@ type stubUpdate struct {
 	ttl     time.Duration
 }
 
-func (c *stubCache) Update(_ context.Context, ns, key string, ttl time.Duration, fn func(*track.Record)) (track.Record, error) {
+func (c *stubCache) Update(_ context.Context, ns, key string, ttl time.Duration, fn func(*bandage.Record)) (bandage.Record, error) {
 	if c.records == nil {
-		c.records = make(map[string]track.Record)
+		c.records = make(map[string]bandage.Record)
 	}
 	full := ns + "\x00" + key
 	r := c.records[full]
@@ -46,29 +45,44 @@ func (c *stubCache) Update(_ context.Context, ns, key string, ttl time.Duration,
 	return r, nil
 }
 
-// stubRepo is a report.Repository test double capturing upserts.
-type stubRepo struct {
+// stubSink is a ReportSink test double capturing the reports a Trigger
+// writes.
+type stubSink struct {
 	upserts []bandage.Report
 }
 
-func (r *stubRepo) Upsert(_ context.Context, rec bandage.Report) error {
-	r.upserts = append(r.upserts, rec)
+func (s *stubSink) Trigger(_ context.Context, rec bandage.Report) error {
+	s.upserts = append(s.upserts, rec)
 	return nil
 }
 
-func (r *stubRepo) List(context.Context, report.Query) ([]bandage.Report, error) {
-	return nil, nil
+// constVolume is a bandage.VolumeMethod test double: one tolerated
+// volume regardless of size.
+type constVolume float64
+
+func (v constVolume) Volume(float64) float64 { return float64(v) }
+func (v constVolume) String() string         { return "constant" }
+
+// stepVolume is a bandage.VolumeMethod test double: low below
+// threshold bytes, high from it. The real volume methods have their own
+// tests in the track module.
+type stepVolume struct {
+	threshold, low, high float64
 }
 
-func (r *stubRepo) Delete(context.Context, report.Query) (int, error) { return 0, nil }
-
-func (r *stubRepo) DeleteExpired(context.Context, time.Time) (int, error) { return 0, nil }
+func (v stepVolume) Volume(size float64) float64 {
+	if size >= v.threshold {
+		return v.high
+	}
+	return v.low
+}
+func (v stepVolume) String() string { return "step" }
 
 // harness assembles a service around one replay rule and exposes the
 // stubs' recorded state.
 type harness struct {
 	svc  *Service
-	repo *stubRepo
+	sink *stubSink
 	cch  *stubCache
 }
 
@@ -78,7 +92,7 @@ func newHarness(t *testing.T, cfg *bandage.TrackerConfig) *harness {
 	if cfg.TargetPrefix == (bandage.TargetPrefix{}) {
 		cfg.TargetPrefix = bandage.DefaultTargetPrefix
 	}
-	repo := &stubRepo{}
+	sink := &stubSink{}
 	cache := &stubCache{}
 	chains := []bandage.Chain{{
 		Name: "replay",
@@ -90,8 +104,8 @@ func newHarness(t *testing.T, cfg *bandage.TrackerConfig) *harness {
 		}},
 	}}
 	return &harness{
-		svc:  NewService(chains, cache, report.NewService(repo), func() time.Time { return time.Unix(1000, 0) }, nil),
-		repo: repo,
+		svc:  NewService(chains, cache, sink, func() time.Time { return time.Unix(1000, 0) }, nil),
+		sink: sink,
 		cch:  cache,
 	}
 }
@@ -127,8 +141,8 @@ func TestReplaySkipsUnknownSize(t *testing.T) {
 	if len(h.cch.updates) != 0 {
 		t.Errorf("cache updates = %+v, want none (unknown size skips the cache entirely)", h.cch.updates)
 	}
-	if len(h.repo.upserts) != 0 {
-		t.Errorf("upserts = %+v, want none (no Match during warm-up)", h.repo.upserts)
+	if len(h.sink.upserts) != 0 {
+		t.Errorf("upserts = %+v, want none (no Match during warm-up)", h.sink.upserts)
 	}
 }
 
@@ -200,12 +214,12 @@ func TestReplayDecayAndOverflow(t *testing.T) {
 	for i, ts := range at {
 		h.evaluate(t, event(ts, "/a", 100, 100))
 		wantReport := i == len(at)-1
-		if got := len(h.repo.upserts) != 0; got != wantReport {
+		if got := len(h.sink.upserts) != 0; got != wantReport {
 			t.Fatalf("after event %d: report = %v, want %v (value vs volume 2)", i, got, wantReport)
 		}
 	}
 
-	rec := h.repo.upserts[0]
+	rec := h.sink.upserts[0]
 	want := bandage.TrackerReading{Track: "replay", Value: 3, Leak: 0.5, Volume: 2}
 	if rec.Tracker != want {
 		t.Errorf("tracker reading = %+v, want %+v", rec.Tracker, want)
@@ -221,7 +235,7 @@ func TestReplayReadingCarriesVolumeMethodOutput(t *testing.T) {
 	cfg := &bandage.TrackerConfig{
 		Kind:         bandage.TrackReplay,
 		Leak:         0,
-		VolumeMethod: track.StepVolume{Threshold: 1000, VolumeLow: 2, VolumeHigh: 5},
+		VolumeMethod: stepVolume{threshold: 1000, low: 2, high: 5},
 	}
 	h := newHarness(t, cfg)
 
@@ -230,11 +244,11 @@ func TestReplayReadingCarriesVolumeMethodOutput(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		h.evaluate(t, event(int64(100+i), "/big.iso", 2000, 2000))
 	}
-	if len(h.repo.upserts) != 1 {
-		t.Fatalf("upserts = %+v, want 1", h.repo.upserts)
+	if len(h.sink.upserts) != 1 {
+		t.Fatalf("upserts = %+v, want 1", h.sink.upserts)
 	}
 	want := bandage.TrackerReading{Track: "replay", Value: 6, Volume: 5}
-	if got := h.repo.upserts[0].Tracker; got != want {
+	if got := h.sink.upserts[0].Tracker; got != want {
 		t.Errorf("tracker reading = %+v, want %+v", got, want)
 	}
 }
@@ -246,7 +260,7 @@ func TestReplayTTLDerivedPerEvent(t *testing.T) {
 	cfg := &bandage.TrackerConfig{
 		Kind:         bandage.TrackReplay,
 		Leak:         0.5,
-		VolumeMethod: track.StepVolume{Threshold: 1000, VolumeLow: 2, VolumeHigh: 5},
+		VolumeMethod: stepVolume{threshold: 1000, low: 2, high: 5},
 	}
 	h := newHarness(t, cfg)
 
@@ -266,11 +280,11 @@ func TestReplayTTLDerivedPerEvent(t *testing.T) {
 	// leak 0: the default TTL.
 	cfg0 := &bandage.TrackerConfig{
 		Kind:         bandage.TrackReplay,
-		VolumeMethod: track.ConstantVolume(3),
+		VolumeMethod: constVolume(3),
 	}
 	h0 := newHarness(t, cfg0)
 	h0.evaluate(t, event(100, "/a", 100, 100))
-	if got := h0.cch.updates[0].ttl; got != track.DefaultTTL {
-		t.Errorf("leak 0 TTL = %v, want %v", got, track.DefaultTTL)
+	if got := h0.cch.updates[0].ttl; got != bandage.DefaultTTL {
+		t.Errorf("leak 0 TTL = %v, want %v", got, bandage.DefaultTTL)
 	}
 }
