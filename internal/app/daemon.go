@@ -22,8 +22,8 @@ import (
 	"github.com/HT4w5/bandage/internal/domain/report"
 )
 
-// sweepInterval is the internal cadence of the expired-report sweeper
-// and the periodic statistics log.
+// sweepInterval is the internal cadence of the tracker cache expiry
+// sweep, the expired-report sweeper and the periodic statistics log.
 const sweepInterval = time.Minute
 
 // File-size enrichment parameters (DECISIONS §3): the EWMA smoothing
@@ -110,7 +110,7 @@ func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
 	if err != nil {
 		return nil, err
 	}
-	cache := memory.New(o.now)
+	cache := memory.New(cfg.Cache.MaxEntries, o.now, o.logger)
 	reports := report.NewService(repo)
 	enricher, err := enrichment.NewFilesizeEnricher(memory.NewFilesize(cache), filesizePeriod, filesizeMinSamples)
 	if err != nil {
@@ -186,8 +186,9 @@ func (d *Daemon) runPipeline() {
 	}
 }
 
-// sweep periodically deletes expired reports and logs the periodic
-// statistics line (drop accounting, DECISIONS §6).
+// sweep periodically expires tracker cache entries, logs the periodic
+// statistics line (drop accounting and cache stats, DECISIONS §6) and
+// deletes expired reports.
 func (d *Daemon) sweep() {
 	defer d.wg.Done()
 	t := time.NewTicker(sweepInterval)
@@ -197,8 +198,13 @@ func (d *Daemon) sweep() {
 		case <-d.stopSweep:
 			return
 		case <-t.C:
+			d.cache.SweepExpired()
 			s := d.Stats()
-			d.logger.Info("statistics", "received", s.Received, "parsed", s.Parsed, "dropped", s.Dropped)
+			cs := d.cache.Statistics()
+			d.logger.Info("statistics",
+				"received", s.Received, "parsed", s.Parsed, "dropped", s.Dropped,
+				"cache_gets", cs.Gets, "cache_sets", cs.Sets, "cache_misses", cs.Misses,
+				"cache_evictions", cs.Evictions, "cache_size", cs.Size)
 			n, err := d.sweepOnce(context.Background())
 			if err != nil {
 				d.logger.Error("sweep expired reports", "error", err)

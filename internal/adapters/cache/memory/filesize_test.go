@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -11,7 +12,7 @@ import (
 // The Filesize adapter shares the tracker store under namespace
 // "filesize" without TTL and round-trips records exactly.
 func TestFilesizeUpdateRoundTrip(t *testing.T) {
-	store := New(time.Now)
+	store := New(16, time.Now, testLogger(&bytes.Buffer{}))
 	cache := NewFilesize(store)
 
 	got, err := cache.Update(context.Background(), "/a", func(r *enrichment.FilesizeRecord) {
