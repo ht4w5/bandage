@@ -238,13 +238,17 @@ The `TrackerCache` port below is the seam where a write-back persistence
 layer can slot in later (hybrid memory + disk: dirty-set flush to the
 reports sqlite DB, read-through on miss).
 
-### Port (declared in `internal/domain/track`)
+### Port (`Record` is a core value type in `internal/domain`; the tiny
+### `TrackerCache` interfaces are declared beside each consumer —
+### `internal/domain/track`, `internal/domain/evaluation` — and satisfied
+### structurally by the store)
 
 ```go
 // Record is leaked-bucket state for one key (flux's CacheEntry).
+// Value is fractional to hold replay's transferred-fraction increments.
 type Record struct {
-    Value      int64 // accumulated since last decay
-    LastUpdate int64 // unix seconds of the last contributing event
+    Value      float64 // accumulated since last decay
+    LastUpdate int64   // unix seconds of the last contributing event
 }
 
 // TrackerCache stores records keyed by (ns, key); ns is the rule ID.
@@ -268,8 +272,9 @@ no TTL). TTL is flux's `volume/leak`, passed by the tracker on each update
   expiry); `Update` hashes the key to a shard and runs `fn` under the lock
   (`fn` stays O(1), no I/O — webjail's contract).
 - **TTL** — flux's `volume/leak`, passed per update (0 = no expiry, e.g.
-  the `filesize` namespace); enforced lazily on access plus a periodic
-  sweep with an internal cadence.
+  the `filesize` namespace; a positive `volume/leak` clamps to a 1s
+  minimum so it always yields a real expiry); enforced lazily on access
+  plus a periodic sweep with an internal cadence.
 - **Memory bound** — `cache.max_entries` (default 65536) across all
   shards/namespaces, enforced by per-shard LRU under pressure (flux's ccache
   `MaxSize` precedent, hand-rolled to keep deps small). Dropping an entry
