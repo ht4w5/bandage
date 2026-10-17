@@ -698,7 +698,7 @@ chains:
 
 // Bounded tracker cache (ticket 07, ADR 0002): an evicted bucket
 // accumulates fresh state from zero on the next event — never a crash,
-// never a stale Match — and overflow fires again after re-accumulating
+// never a stale Match — and the rule matches again after re-accumulating
 // past volume.
 func TestE2EEvictedBucketAccumulatesFresh(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
@@ -754,8 +754,8 @@ chains:
 		t.Fatalf("after eviction + one fresh event: %+v, want untouched report (no stale Match)", doc.Reports)
 	}
 
-	// Overflow fires again after the bucket re-accumulates past volume
-	// from zero: value 3 > 2 refreshes the same (rule, target) row.
+	// The rule matches again after the tracker re-accumulates past
+	// volume from zero: value 3 > 2 refreshes the same (rule, target) row.
 	clock.Advance(10 * time.Minute)
 	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/api", 200, 0))
 	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/api", 200, 0))
@@ -772,7 +772,7 @@ chains:
 		t.Errorf("created_at = %q, want %q (identity unchanged)", r.CreatedAt, wallBase)
 	}
 	if r.UpdatedAt != "2025-10-17T18:20:00Z" {
-		t.Errorf("updated_at = %q, want %q (overflow fired again)", r.UpdatedAt, "2025-10-17T18:20:00Z")
+		t.Errorf("updated_at = %q, want %q (the report triggered again)", r.UpdatedAt, "2025-10-17T18:20:00Z")
 	}
 }
 
@@ -1140,9 +1140,9 @@ chains:
         actions: [{report: {reason: after-goto, ttl: 1h}}]
   - name: topic
     rules:
-      - id: topic-hit
+      - id: topic-match
         tracker: {track: rate, leak: 0, volume: 1}
-        actions: [{report: {reason: topic-hit, ttl: 1h}}]
+        actions: [{report: {reason: topic-match, ttl: 1h}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
@@ -1150,11 +1150,11 @@ chains:
 
 	doc := d.getReports(t, nil)
 	if len(doc.Reports) != 1 {
-		t.Fatalf("reports = %+v, want exactly the topic-hit report (after-goto must not fire)", doc.Reports)
+		t.Fatalf("reports = %+v, want exactly the topic-match report (after-goto must not match)", doc.Reports)
 	}
 	r := doc.Reports[0]
-	if r.Rule != "topic-hit" || r.Reason != "topic-hit" {
-		t.Errorf("report = %q/%q, want topic-hit/topic-hit", r.Rule, r.Reason)
+	if r.Rule != "topic-match" || r.Reason != "topic-match" {
+		t.Errorf("report = %q/%q, want topic-match/topic-match", r.Rule, r.Reason)
 	}
 	if r.Tracker.Value != 2 {
 		// One increment from the goto-entered traversal and one from
@@ -1179,9 +1179,9 @@ chains:
         actions: [{report: {reason: after-jump, ttl: 1h}}]
   - name: topic
     rules:
-      - id: topic-hit
+      - id: topic-match
         tracker: {track: rate, leak: 0, volume: 1}
-        actions: [{report: {reason: topic-hit, ttl: 1h}}]
+        actions: [{report: {reason: topic-match, ttl: 1h}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
@@ -1192,8 +1192,8 @@ chains:
 	for _, r := range doc.Reports {
 		got[r.Rule] = true
 	}
-	if len(doc.Reports) != 2 || !got["after-jump"] || !got["topic-hit"] {
-		t.Fatalf("reports = %+v, want after-jump (resumed) and topic-hit (jumped)", doc.Reports)
+	if len(doc.Reports) != 2 || !got["after-jump"] || !got["topic-match"] {
+		t.Fatalf("reports = %+v, want after-jump (resumed) and topic-match (jumped)", doc.Reports)
 	}
 }
 
@@ -1208,12 +1208,12 @@ version: 0
 chains:
   - name: order
     rules:
-      - id: first-hit
+      - id: first-match
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: first-hit, ttl: 1h}}]
-      - id: second-hit
+        actions: [{report: {reason: first-match, ttl: 1h}}]
+      - id: second-match
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: second-hit, ttl: 1h}}]
+        actions: [{report: {reason: second-match, ttl: 1h}}]
   - name: continue
     rules:
       - id: non-terminal
@@ -1231,8 +1231,8 @@ chains:
 	for _, r := range doc.Reports {
 		got[r.Rule] = true
 	}
-	if len(doc.Reports) != 2 || !got["first-hit"] || !got["after-non-terminal"] {
-		t.Fatalf("reports = %+v, want first-hit and after-non-terminal (second-hit skipped)", doc.Reports)
+	if len(doc.Reports) != 2 || !got["first-match"] || !got["after-non-terminal"] {
+		t.Fatalf("reports = %+v, want first-match and after-non-terminal (second-match skipped)", doc.Reports)
 	}
 }
 
@@ -1252,17 +1252,17 @@ chains:
         actions: [{report: {reason: after-stop, ttl: 1h}}]
   - name: topic
     rules:
-      - id: topic-hit
+      - id: topic-match
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: topic-hit, ttl: 1h}}]
+        actions: [{report: {reason: topic-match, ttl: 1h}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
 	d.waitProcessed(t, 1)
 
 	doc := d.getReports(t, nil)
-	if len(doc.Reports) != 1 || doc.Reports[0].Rule != "topic-hit" {
-		t.Fatalf("reports = %+v, want only topic-hit (stop ends its chain, not the others)", doc.Reports)
+	if len(doc.Reports) != 1 || doc.Reports[0].Rule != "topic-match" {
+		t.Fatalf("reports = %+v, want only topic-match (stop ends its chain, not the others)", doc.Reports)
 	}
 }
 
@@ -1416,7 +1416,7 @@ chains:
 
 // A terminal rule runs its FULL action list before ending its chain
 // (spec: Actions and control flow): goto runs the target chain mid-list,
-// the report after it still fires, and only then does the chain end.
+// the report after it still runs, and only then does the chain end.
 func TestE2EFullActionListRunsBeforeTerminality(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -1434,9 +1434,9 @@ chains:
         actions: [{report: {reason: after, ttl: 1h}}]
   - name: topic
     rules:
-      - id: topic-hit
+      - id: topic-match
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: topic-hit, ttl: 1h}}]
+        actions: [{report: {reason: topic-match, ttl: 1h}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
@@ -1448,7 +1448,7 @@ chains:
 		byRule[r.Rule] = r
 	}
 	if len(doc.Reports) != 2 {
-		t.Fatalf("reports = %+v, want exactly routed and topic-hit", doc.Reports)
+		t.Fatalf("reports = %+v, want exactly routed and topic-match", doc.Reports)
 	}
 	if r, ok := byRule["route"]; !ok || r.Reason != "routed" {
 		t.Errorf("reports = %+v, want route/routed (the report after goto still runs)", doc.Reports)
@@ -1456,15 +1456,15 @@ chains:
 	if _, ok := byRule["after"]; ok {
 		t.Errorf("reports = %+v, want no after (goto ends its chain)", doc.Reports)
 	}
-	topic, ok := byRule["topic-hit"]
+	topic, ok := byRule["topic-match"]
 	if !ok {
-		t.Fatalf("reports = %+v, want topic-hit (goto runs the target chain)", doc.Reports)
+		t.Fatalf("reports = %+v, want topic-match (goto runs the target chain)", doc.Reports)
 	}
 	// The topic chain ran twice for the one event — once at the goto
 	// dispatch and once at its own file-order traversal — so its
 	// tracker accumulated 2×150 bytes.
 	if topic.Tracker.Value != 300 {
-		t.Errorf("topic-hit tracker value = %v, want 300 (dispatch plus file-order traversal)", topic.Tracker.Value)
+		t.Errorf("topic-match tracker value = %v, want 300 (dispatch plus file-order traversal)", topic.Tracker.Value)
 	}
 }
 
