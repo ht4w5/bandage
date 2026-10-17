@@ -198,7 +198,7 @@ func TestTargetOnlyQueriesDoNotFullScan(t *testing.T) {
 }
 
 // Behavior of the target-only shapes stays correct with the indexes in
-// place (dismiss by target, list by target).
+// place (delete by target, list by target).
 func TestTargetOnlyListAndDelete(t *testing.T) {
 	repo := openTestRepo(t)
 	ctx := context.Background()

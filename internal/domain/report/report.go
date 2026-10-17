@@ -22,7 +22,7 @@ type Query struct {
 }
 
 // ErrUnfiltered is returned by Repository.Delete when neither Rule nor
-// Target is set: deletion is dismiss-by-filter, never delete-all.
+// Target is set: deletion is by filter, never delete-all.
 var ErrUnfiltered = errors.New("report: delete requires a rule or target filter")
 
 // Repository persists reports, one row per (rule, target).
@@ -36,8 +36,8 @@ type Repository interface {
 	List(ctx context.Context, q Query) ([]bandage.Report, error)
 	// Delete removes reports matching the query and returns the number
 	// of deleted rows. At least one of Rule or Target must be set
-	// (ErrUnfiltered otherwise): dismissal is never delete-all. Rows
-	// match regardless of expiry — dismissal addresses storage, not
+	// (ErrUnfiltered otherwise): deletion is never delete-all. Rows
+	// match regardless of expiry — deletion addresses storage, not
 	// just the live list — and tracker state is untouched.
 	Delete(ctx context.Context, q Query) (int, error)
 	// DeleteExpired deletes rows whose expires_at has passed and returns

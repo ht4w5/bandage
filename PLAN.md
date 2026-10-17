@@ -321,9 +321,10 @@ no TTL). TTL is flux's `volume/leak`, passed by the tracker on each update
   `MaxSize` precedent, hand-rolled to keep deps small). Removing an entry
   resets that key's bucket, so **every eviction is logged** (namespace,
   Target) and counted in stats.
-- **Statistics** — gets/sets/misses/evictions and current size, logged
-  periodically via the program-wide zerolog logger (ADR 0005; flux's
-  `Statistics` precedent; no debug endpoints).
+- **Statistics** — gets/sets/misses/evictions, current size and the
+  entry cap, logged periodically via the program-wide zerolog logger
+  (ADR 0005; flux's `Statistics` precedent) and served in `GET /stats`'s
+  tracker cache block (§7).
 
 ### Consequence of no persistence
 
@@ -400,10 +401,18 @@ Reports are sorted by `created_at` descending.
 - `GET /reports` — the report list (§6), read-only. Query params:
   `?rule=`, `?target=`. Expired rows are never returned.
 - `DELETE /reports` — explicit deletion; requires `?rule=` and/or `?target=`
-  (no accidental delete-all); returns the number of deleted rows. This is
-  *dismiss*, not *silence*: tracker state is untouched, so a report whose
-  condition persists returns on the next trigger.
+  (no accidental delete-all); returns the number of deleted rows. Deleting
+  reports does not touch tracker state, so a Target that still overflows is
+  reported again on the next trigger.
 - `GET /ping` — liveness.
+- `GET /stats` — the human-facing ops snapshot (ADR 0006): indented JSON
+  with a generation timestamp, uptime, the build block (name, version,
+  commit, build date, dirty, Go version, platform), the pipeline block
+  (workers, received, parsed, dropped) and the tracker cache block (gets,
+  sets, misses, evictions, size, entry cap), cumulative since start. It
+  carries no format version and is explicitly not a stable machine
+  contract; machine-readable metric gathering would be a separate
+  Prometheus-format endpoint.
 
 No `/v1` prefix, no debug endpoints. The API never writes reports; only
 `report` actions do.
