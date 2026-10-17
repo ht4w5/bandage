@@ -53,6 +53,8 @@ CREATE TABLE IF NOT EXISTS reports (
 	body       TEXT    NOT NULL,
 	PRIMARY KEY (rule, target)
 );
+CREATE INDEX IF NOT EXISTS idx_reports_rule ON reports (rule);
+CREATE INDEX IF NOT EXISTS idx_reports_target ON reports (target);
 CREATE INDEX IF NOT EXISTS idx_reports_expires_at ON reports (expires_at);
 `
 
