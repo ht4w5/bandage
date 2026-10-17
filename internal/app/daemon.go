@@ -17,6 +17,7 @@ import (
 	nginxparser "github.com/HT4w5/bandage/internal/adapters/parse/nginx"
 	"github.com/HT4w5/bandage/internal/adapters/persistence/sqlite"
 	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/domain/enrichment"
 	"github.com/HT4w5/bandage/internal/domain/evaluation"
 	"github.com/HT4w5/bandage/internal/domain/report"
 )
@@ -24,6 +25,14 @@ import (
 // sweepInterval is the internal cadence of the expired-report sweeper
 // and the periodic statistics log.
 const sweepInterval = time.Minute
+
+// File-size enrichment parameters (DECISIONS §3): the EWMA smoothing
+// window (alpha = 1/period) and the warm-up sample gate. Internal
+// constants — the spec's config surface has no enrichment knobs.
+const (
+	filesizePeriod     = 5
+	filesizeMinSamples = 5
+)
 
 // EventParser is the parser port beside its consumer: one raw log line in,
 // one domain Event out (or an error, which drops and counts the line).
@@ -58,13 +67,15 @@ func WithLogger(l *slog.Logger) Option {
 }
 
 // Daemon is the assembled analyzer: syslog ingest → nginx JSON parser →
-// evaluation → report service → sqlite, served over HTTP.
+// file-size enrichment → evaluation → report service → sqlite, served
+// over HTTP.
 type Daemon struct {
 	cfg    Config
 	chains []bandage.Chain
 	now    func() time.Time
 	logger *slog.Logger
 	parser EventParser
+	enrich *enrichment.FilesizeEnricher
 
 	repo   *sqlite.ReportRepository
 	cache  *memory.Store
@@ -101,6 +112,10 @@ func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
 	}
 	cache := memory.New(o.now)
 	reports := report.NewService(repo)
+	enricher, err := enrichment.NewFilesizeEnricher(memory.NewFilesize(cache), filesizePeriod, filesizeMinSamples)
+	if err != nil {
+		return nil, err
+	}
 
 	d := &Daemon{
 		cfg:       cfg,
@@ -108,6 +123,7 @@ func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
 		now:       o.now,
 		logger:    o.logger,
 		parser:    nginxparser.New(),
+		enrich:    enricher,
 		repo:      repo,
 		cache:     cache,
 		eval:      evaluation.NewService(chains, cache, reports, o.now, o.logger),
@@ -146,8 +162,8 @@ func (d *Daemon) Start() error {
 	return nil
 }
 
-// runPipeline parses and evaluates raw lines in order. Bad lines are
-// dropped and counted.
+// runPipeline parses, enriches and evaluates raw lines in order. Bad
+// lines are dropped and counted.
 func (d *Daemon) runPipeline() {
 	defer d.wg.Done()
 	for line := range d.lines {
@@ -160,6 +176,9 @@ func (d *Daemon) runPipeline() {
 			continue
 		}
 		d.parsed.Add(1)
+		if err := d.enrich.Enrich(context.Background(), &ev); err != nil {
+			d.logger.Error("enrich event", "error", err)
+		}
 		if err := d.eval.Evaluate(context.Background(), &ev); err != nil {
 			d.logger.Error("evaluate event", "error", err)
 		}
