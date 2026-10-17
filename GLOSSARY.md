@@ -70,6 +70,11 @@ A replay tracker's tolerated volume as a function of file size —
 download equivalents. Only replay configures one.
 _Avoid_: threshold formula, scaling curve
 
+**Eviction**:
+Tracker state removed because the tracker cache entry cap is reached;
+that target's tracker starts over empty.
+_Avoid_: capped drop, drop, expiry
+
 ### Reports
 
 **Report**:
