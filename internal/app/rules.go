@@ -156,6 +156,7 @@ func buildRule(chainName string, raw *rawRule, seen map[string]bool) (bandage.Ru
 		return bandage.Rule{}, fmt.Errorf("rules: rule %q: %w", id, err)
 	}
 	rule.Filter = parsed
+	rule.FilterSource = flt
 
 	if raw.Tracker != nil {
 		cfg, err := parseTracker(id, raw.Tracker)
