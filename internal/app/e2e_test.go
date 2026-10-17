@@ -130,7 +130,7 @@ func startTestDaemon(t *testing.T, clock *testClock, network, dbPath, rulesYAML 
 	case "unixgram":
 		// listen is the temp sock path
 	case "tcp", "udp":
-		listen = freeAddr(t)
+		listen = freeAddr(t, network)
 	default:
 		t.Fatalf("unknown network %q", network)
 	}
@@ -159,12 +159,15 @@ func startTestDaemon(t *testing.T, clock *testClock, network, dbPath, rulesYAML 
 	}
 	t.Cleanup(func() {
 		// Close pooled HTTP connections before shutting down: the shared
-		// client can leave a connection that was accepted but never used,
-		// and http.Server.Shutdown waits on those until the peer closes
-		// them (golang/go#22682).
+		// client can leave a connection that was accepted but never used
+		// (a parked spare is not idle to http.Server), and
+		// http.Server.Shutdown waits on those until the peer closes them
+		// (golang/go#22682). Belt and braces: the one-shot apiClient
+		// never pools, but nothing may leave a connection behind.
 		if tr, ok := http.DefaultTransport.(*http.Transport); ok {
 			tr.CloseIdleConnections()
 		}
+		apiClient.CloseIdleConnections()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := d.Shutdown(ctx); err != nil {
@@ -203,14 +206,30 @@ func startTestDaemon(t *testing.T, clock *testClock, network, dbPath, rulesYAML 
 	return td
 }
 
-func freeAddr(t *testing.T) string {
+// freeAddr reserves a free listen address for the network and returns
+// it. The probe matches the network's address family and transport: a
+// port free for TCP may well be busy for UDP.
+func freeAddr(t *testing.T, network string) string {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	var addr string
+	switch network {
+	case "tcp":
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr = ln.Addr().String()
+		ln.Close()
+	case "udp":
+		c, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr = c.LocalAddr().String()
+		c.Close()
+	default:
+		t.Fatalf("freeAddr: unknown network %q", network)
 	}
-	addr := ln.Addr().String()
-	ln.Close()
 	return addr
 }
 
@@ -258,6 +277,39 @@ type reportDoc struct {
 	Version     int           `json:"version"`
 	GeneratedAt string        `json:"generated_at"`
 	Reports     []reportEntry `json:"reports"`
+}
+
+// del issues DELETE /reports with the query and returns the response
+// status and the {"deleted": n} count.
+func (d *testDaemon) del(t *testing.T, query url.Values) (int, int) {
+	t.Helper()
+	u := "http://" + d.APIAddr() + "/reports"
+	if len(query) > 0 {
+		u += "?" + query.Encode()
+	}
+	req, err := http.NewRequest(http.MethodDelete, u, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := apiClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE %s: %v", u, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return resp.StatusCode, 0
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Deleted int `json:"deleted"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("DELETE %s: bad JSON %q: %v", u, body, err)
+	}
+	return resp.StatusCode, out.Deleted
 }
 
 func (d *testDaemon) get(t *testing.T, path string, query url.Values) (int, reportDoc) {
@@ -488,6 +540,13 @@ chains:
 	if second.UpdatedAt != "2025-10-17T18:10:00Z" || second.ExpiresAt != "2025-10-17T19:10:00Z" {
 		t.Errorf("updated_at/expires_at = %q/%q", second.UpdatedAt, second.ExpiresAt)
 	}
+	// The re-Trigger refreshes the tracker reading and the sample.
+	if second.Tracker.Value != 300 {
+		t.Errorf("tracker value = %v, want 300 (re-trigger refreshes the reading)", second.Tracker.Value)
+	}
+	if second.Sample.Time != eventTime2At {
+		t.Errorf("sample time = %q, want %q (re-trigger refreshes the sample)", second.Sample.Time, eventTime2At)
+	}
 	if first.UpdatedAt != "2025-10-17T18:10:00Z" {
 		t.Errorf("new report updated_at = %q", first.UpdatedAt)
 	}
@@ -567,19 +626,6 @@ func TestE2EAPIPingOnly(t *testing.T) {
 			t.Errorf("GET %s = %d, want 404", path, resp.StatusCode)
 		}
 	}
-
-	req, err := http.NewRequest(http.MethodDelete, "http://"+d.APIAddr()+"/reports?rule=x", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err = apiClient.Do(req)
-	if err != nil {
-		t.Fatalf("DELETE /reports: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Errorf("DELETE /reports = %d, want 405 (dismiss is a later ticket)", resp.StatusCode)
-	}
 }
 
 // Reports survive restarts (sqlite); tracker state is memory-only and
@@ -657,6 +703,252 @@ chains:
 	d.waitProcessed(t, 1)
 	if doc := d.getReports(t, nil); len(doc.Reports) != 1 {
 		t.Errorf("reports = %+v, want 1", doc.Reports)
+	}
+}
+
+// DELETE /reports requires ?rule= and/or ?target= (400 without) and
+// returns deleted-row counts per filter combination. Deletion is
+// storage-level: expired rows count too.
+func TestE2EDeleteByFilterCounts(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	rules := `
+version: 0
+chains:
+  - name: abuse-one
+    rules:
+      - id: rule-one
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions: [{report: {reason: one, ttl: 1h}}]
+  - name: abuse-two
+    rules:
+      - id: rule-two
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions: [{report: {reason: two, ttl: 1h}}]
+`
+	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
+
+	// Two clients in far-apart networks, so target aggregation can
+	// never merge them into one target.
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
+	d.send(nginxLine(eventTime1, "198.51.100.7", "GET", "/big", 200, 150))
+	d.waitProcessed(t, 2)
+
+	doc := d.getReports(t, nil)
+	if len(doc.Reports) != 4 {
+		t.Fatalf("reports = %+v, want 4 (two rules x two targets)", doc.Reports)
+	}
+	targets := map[string]bool{}
+	for _, r := range doc.Reports {
+		targets[r.Target] = true
+	}
+	if len(targets) != 2 {
+		t.Fatalf("distinct targets = %v, want 2", targets)
+	}
+	var tA, tB string
+	for target := range targets {
+		if tA == "" {
+			tA = target
+		} else {
+			tB = target
+		}
+	}
+
+	// Missing both filters: 400, and nothing is deleted.
+	if status, _ := d.del(t, nil); status != http.StatusBadRequest {
+		t.Errorf("DELETE without filters = %d, want 400", status)
+	}
+	if doc := d.getReports(t, nil); len(doc.Reports) != 4 {
+		t.Errorf("reports after 400 = %+v, want 4 still listed", doc.Reports)
+	}
+
+	// rule and target together narrow as AND.
+	if _, n := d.del(t, url.Values{"rule": {"rule-one"}, "target": {tA}}); n != 1 {
+		t.Errorf("DELETE rule-one&target=%s count = %d, want 1", tA, n)
+	}
+	// rule alone deletes every target of that rule.
+	if _, n := d.del(t, url.Values{"rule": {"rule-one"}}); n != 1 {
+		t.Errorf("DELETE rule-one count = %d, want 1", n)
+	}
+	// target alone deletes every rule for that target.
+	if _, n := d.del(t, url.Values{"target": {tA}}); n != 1 {
+		t.Errorf("DELETE target=%s count = %d, want 1", tA, n)
+	}
+	doc = d.getReports(t, nil)
+	if len(doc.Reports) != 1 || doc.Reports[0].Rule != "rule-two" || doc.Reports[0].Target != tB {
+		t.Fatalf("remaining = %+v, want only rule-two/%s", doc.Reports, tB)
+	}
+	if _, n := d.del(t, url.Values{"rule": {"rule-two"}, "target": {tB}}); n != 1 {
+		t.Errorf("DELETE rule-two&target=%s count = %d, want 1", tB, n)
+	}
+
+	// Non-matching filters delete nothing.
+	if _, n := d.del(t, url.Values{"rule": {"nope"}}); n != 0 {
+		t.Errorf("DELETE rule=nope count = %d, want 0", n)
+	}
+	if doc := d.getReports(t, nil); len(doc.Reports) != 0 {
+		t.Errorf("final reports = %+v, want none", doc.Reports)
+	}
+}
+
+// Dismissal is not silence: DELETE /reports leaves tracker state
+// untouched, so a report whose condition persists returns on the next
+// trigger — with a fresh identity and a tracker reading that kept
+// accumulating across the dismissal.
+func TestE2EDismissIsNotSilence(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	rules := `
+version: 0
+chains:
+  - name: abuse
+    rules:
+      - id: sticky
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions: [{report: {reason: sticky, ttl: 1h}}]
+`
+	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
+
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
+	d.waitProcessed(t, 1)
+	doc := d.getReports(t, nil)
+	if len(doc.Reports) != 1 || doc.Reports[0].Tracker.Value != 150 {
+		t.Fatalf("after first trigger: %+v", doc.Reports)
+	}
+
+	if _, n := d.del(t, url.Values{"rule": {"sticky"}}); n != 1 {
+		t.Fatalf("dismiss count = %d, want 1", n)
+	}
+	if doc := d.getReports(t, nil); len(doc.Reports) != 0 {
+		t.Fatalf("after dismiss: %+v, want none", doc.Reports)
+	}
+
+	// The condition persists: the next trigger brings the report back.
+	clock.Advance(10 * time.Minute)
+	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 150))
+	d.waitProcessed(t, 2)
+	doc = d.getReports(t, nil)
+	if len(doc.Reports) != 1 {
+		t.Fatalf("after re-trigger: %+v, want the report back", doc.Reports)
+	}
+	r := doc.Reports[0]
+	if r.CreatedAt != "2025-10-17T18:10:00Z" {
+		t.Errorf("created_at = %q, want a fresh %q (dismissed report is gone)", r.CreatedAt, "2025-10-17T18:10:00Z")
+	}
+	if r.Tracker.Value != 300 {
+		t.Errorf("tracker value = %v, want 300 (dismissal touched no tracker state)", r.Tracker.Value)
+	}
+	if r.Sample.Time != eventTime2At {
+		t.Errorf("sample time = %q, want %q", r.Sample.Time, eventTime2At)
+	}
+}
+
+// The periodic sweeper deletes expired rows from storage at the
+// injected wall clock: an expired row is gone without any DELETE, a
+// live row survives the pass.
+func TestE2ESweeperDeletesExpiredRows(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	rules := `
+version: 0
+chains:
+  - name: one
+    rules:
+      - id: rule-one
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions: [{report: {reason: one, ttl: 1h}}]
+  - name: three
+    rules:
+      - id: rule-three
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions: [{report: {reason: three, ttl: 1h}}]
+  - name: two
+    rules:
+      - id: rule-two
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions: [{report: {reason: two, ttl: 2h}}]
+`
+	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
+
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
+	d.waitProcessed(t, 1)
+	if doc := d.getReports(t, nil); len(doc.Reports) != 3 {
+		t.Fatalf("reports = %+v, want 3", doc.Reports)
+	}
+
+	clock.Advance(90 * time.Minute)
+	// Expired reports are never returned...
+	if doc := d.getReports(t, nil); len(doc.Reports) != 1 || doc.Reports[0].Rule != "rule-two" {
+		t.Fatalf("after 90m: %+v, want only rule-two", doc.Reports)
+	}
+	// ...but they are still in storage until swept: dismissal counts
+	// them like any other row.
+	if _, n := d.del(t, url.Values{"rule": {"rule-three"}}); n != 1 {
+		t.Errorf("dismiss of an expired row = %d, want 1 (still stored pre-sweep)", n)
+	}
+
+	// One sweeper pass at the injected clock deletes expired rows only.
+	if _, err := d.sweepOnce(context.Background()); err != nil {
+		t.Fatalf("sweepOnce: %v", err)
+	}
+	if _, n := d.del(t, url.Values{"rule": {"rule-one"}}); n != 0 {
+		t.Errorf("dismiss after sweep = %d, want 0 (row swept away)", n)
+	}
+	if _, n := d.del(t, url.Values{"rule": {"rule-two"}}); n != 1 {
+		t.Errorf("dismiss of a live row = %d, want 1 (sweeper leaves it)", n)
+	}
+}
+
+// expires_at is recomputed unconditionally on every trigger: a
+// re-trigger whose ttl is shorter (config changed across restart)
+// pulls expiry in, even over an earlier, later-expiring value, while
+// created_at stays fixed at the report's first trigger.
+func TestE2EExpiresAtRefreshedUnconditionally(t *testing.T) {
+	expiryRules := func(ttl string) string {
+		return fmt.Sprintf(`
+version: 0
+chains:
+  - name: abuse
+    rules:
+      - id: sticky
+        tracker: {track: bandwidth, leak: 0, volume: 100}
+        actions: [{report: {reason: sticky, ttl: %s}}]
+`, ttl)
+	}
+	clock := newTestClock(mustTime(t, wallBase))
+	dbPath := filepath.Join(t.TempDir(), "reports.db")
+
+	d1 := startTestDaemon(t, clock, "unixgram", dbPath, expiryRules("24h"))
+	d1.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
+	d1.waitProcessed(t, 1)
+	doc := d1.getReports(t, nil)
+	if len(doc.Reports) != 1 {
+		t.Fatalf("after first trigger: %+v", doc.Reports)
+	}
+	if doc.Reports[0].CreatedAt != wallBase || doc.Reports[0].ExpiresAt != "2025-10-18T18:00:00Z" {
+		t.Fatalf("created_at/expires_at = %q/%q, want %q/2025-10-18T18:00:00Z",
+			doc.Reports[0].CreatedAt, doc.Reports[0].ExpiresAt, wallBase)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := d1.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	cancel()
+
+	// Restart with a shorter ttl for the same rule: the re-trigger must
+	// overwrite the later-expiring value, not extend it.
+	clock.Advance(30 * time.Minute)
+	d2 := startTestDaemon(t, clock, "unixgram", dbPath, expiryRules("1m"))
+	d2.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 150))
+	d2.waitProcessed(t, 1)
+	doc = d2.getReports(t, nil)
+	if len(doc.Reports) != 1 {
+		t.Fatalf("after re-trigger: %+v, want 1", doc.Reports)
+	}
+	r := doc.Reports[0]
+	if r.CreatedAt != wallBase {
+		t.Errorf("created_at = %q, want fixed %q", r.CreatedAt, wallBase)
+	}
+	if r.UpdatedAt != "2025-10-17T18:30:00Z" || r.ExpiresAt != "2025-10-17T18:31:00Z" {
+		t.Errorf("updated_at/expires_at = %q/%q, want 2025-10-17T18:30:00Z/2025-10-17T18:31:00Z "+
+			"(unconditional refresh over the later-expiring 2025-10-18T18:00:00Z)", r.UpdatedAt, r.ExpiresAt)
 	}
 }
 
