@@ -68,6 +68,23 @@ func (s *Service) Evaluate(ctx context.Context, event *bandage.Event) error {
 	return nil
 }
 
+// matchContext is one rule match in progress: the matched rule and its
+// chain with the trigger-time tracker reading and the event — the data
+// clump every action needs.
+type matchContext struct {
+	chain   *bandage.Chain
+	rule    *bandage.Rule
+	reading bandage.TrackerReading
+	event   *bandage.Event
+}
+
+// target is the report Target and the tracker cache key base: the
+// event's source aggregated to the rule tracker's prefix (the one
+// derivation, TrackerConfig.TargetString).
+func (m matchContext) target() string {
+	return m.rule.Tracker.TargetString(m.event.RemoteAddr)
+}
+
 // runChain traverses one chain's rules in order. It is also entered by
 // name from goto/jump actions.
 func (s *Service) runChain(ctx context.Context, ci int, event *bandage.Event) error {
@@ -84,7 +101,7 @@ func (s *Service) runChain(ctx context.Context, ci int, event *bandage.Event) er
 		if !matched {
 			continue
 		}
-		if err := s.runActions(ctx, chain, rule, reading, event); err != nil {
+		if err := s.runActions(ctx, matchContext{chain: chain, rule: rule, reading: reading, event: event}); err != nil {
 			return err
 		}
 		if rule.Terminal() {
@@ -98,9 +115,9 @@ func (s *Service) runChain(ctx context.Context, ci int, event *bandage.Event) er
 // actions always all run, and terminality applies only after the list.
 // Every action walks through Action.Accept — the single dispatch point
 // shared with the -check describer.
-func (s *Service) runActions(ctx context.Context, chain *bandage.Chain, rule *bandage.Rule, reading bandage.TrackerReading, event *bandage.Event) error {
-	dispatch := actionDispatch{svc: s, ctx: ctx, chain: chain, rule: rule, reading: reading, event: event}
-	for _, action := range rule.Actions {
+func (s *Service) runActions(ctx context.Context, m matchContext) error {
+	dispatch := actionDispatch{svc: s, ctx: ctx, m: m}
+	for _, action := range m.rule.Actions {
 		if err := action.Accept(&dispatch); err != nil {
 			return err
 		}
@@ -111,35 +128,32 @@ func (s *Service) runActions(ctx context.Context, chain *bandage.Chain, rule *ba
 // actionDispatch is the evaluation side of Action.Accept: it executes
 // one action variant for a match.
 type actionDispatch struct {
-	svc     *Service
-	ctx     context.Context
-	chain   *bandage.Chain
-	rule    *bandage.Rule
-	reading bandage.TrackerReading
-	event   *bandage.Event
+	svc *Service
+	ctx context.Context
+	m   matchContext
 }
 
 func (d *actionDispatch) VisitReport(a *bandage.ReportAction) error {
-	return d.svc.trigger(d.ctx, d.chain, d.rule, a, d.reading, d.event)
+	return d.svc.trigger(d.ctx, d.m, a)
 }
 
 func (d *actionDispatch) VisitLog(a *bandage.LogAction) error {
 	// flux's log action: the level and message name the record; the
 	// event and the rule's tracker reading are logged with it (PLAN §1).
 	d.svc.logger.Log(d.ctx, a.Level, a.Message,
-		"rule", d.rule.ID,
-		"event", d.event,
-		"tracker", d.reading,
+		"rule", d.m.rule.ID,
+		"event", d.m.event,
+		"tracker", d.m.reading,
 	)
 	return nil
 }
 
 func (d *actionDispatch) VisitGoto(target string) error {
-	return d.svc.runNamedChain(d.ctx, d.rule, target, d.event)
+	return d.svc.runNamedChain(d.ctx, d.m.rule, target, d.m.event)
 }
 
 func (d *actionDispatch) VisitJump(target string) error {
-	return d.svc.runNamedChain(d.ctx, d.rule, target, d.event)
+	return d.svc.runNamedChain(d.ctx, d.m.rule, target, d.m.event)
 }
 
 func (d *actionDispatch) VisitStop() error { return nil }
@@ -167,8 +181,9 @@ func (s *Service) updateTracker(ctx context.Context, rule *bandage.Rule, event *
 	ttl := cfg.TTL
 	// The key is the Target: the source address aggregated to the
 	// tracker's prefix, so sources in one prefix share tracker state
-	// (the domain's key convention).
-	target := cfg.Target(event.RemoteAddr).String()
+	// (the domain's key convention; the one derivation is
+	// TrackerConfig.TargetString).
+	target := cfg.TargetString(event.RemoteAddr)
 	key := bandage.TrackerKey(target)
 	switch cfg.Kind {
 	case bandage.TrackBandwidth:
@@ -209,24 +224,26 @@ func (s *Service) updateTracker(ctx context.Context, rule *bandage.Rule, event *
 	return reading, rec.Overflow(volume), nil
 }
 
-func (s *Service) trigger(ctx context.Context, chain *bandage.Chain, rule *bandage.Rule, action *bandage.ReportAction, reading bandage.TrackerReading, event *bandage.Event) error {
+// trigger writes the report for a matching rule: the only write path to
+// the report table.
+func (s *Service) trigger(ctx context.Context, m matchContext, action *bandage.ReportAction) error {
 	now := s.now()
 	rec := bandage.Report{
-		Rule:      rule.ID,
-		Chain:     chain.Name,
+		Rule:      m.rule.ID,
+		Chain:     m.chain.Name,
 		Reason:    action.Reason,
-		Target:    rule.Tracker.Target(event.RemoteAddr).String(),
+		Target:    m.target(),
 		CreatedAt: now,
 		UpdatedAt: now,
 		ExpiresAt: now.Add(action.TTL),
-		Tracker:   reading,
+		Tracker:   m.reading,
 		Sample: bandage.Sample{
-			Time:   event.Time,
-			Path:   event.Path,
-			Agent:  event.Agent,
-			Status: event.Status,
-			Sent:   event.SentBytes,
-			Size:   event.SizeBytes,
+			Time:   m.event.Time,
+			Path:   m.event.Path,
+			Agent:  m.event.Agent,
+			Status: m.event.Status,
+			Sent:   m.event.SentBytes,
+			Size:   m.event.SizeBytes,
 		},
 	}
 	return s.reports.Trigger(ctx, rec)

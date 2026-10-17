@@ -46,3 +46,11 @@ func (c *TrackerConfig) Target(addr netip.Addr) netip.Prefix {
 	}
 	return prefix.Aggregate(addr)
 }
+
+// TargetString aggregates addr to this tracker's Target prefix and
+// renders it canonically (e.g. "203.0.113.0/24"): the report Target and
+// the base of the tracker cache key (the domain's key convention).
+// Every target derivation goes through here.
+func (c *TrackerConfig) TargetString(addr netip.Addr) string {
+	return c.Target(addr).String()
+}

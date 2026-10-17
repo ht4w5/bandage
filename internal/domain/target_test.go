@@ -79,3 +79,14 @@ func TestTrackerConfigTarget(t *testing.T) {
 		t.Errorf("Target = %q, want %q", got, "203.0.113.0/24")
 	}
 }
+
+// TargetString is the one target derivation behind tracker cache keys
+// and report Targets: it renders the tracker's aggregated prefix
+// canonically.
+func TestTrackerConfigTargetString(t *testing.T) {
+	addr := netip.MustParseAddr("203.0.113.7")
+	cfg := &TrackerConfig{TargetPrefix: TargetPrefix{IPv4: 24, IPv6: 64}}
+	if got := cfg.TargetString(addr); got != "203.0.113.0/24" {
+		t.Errorf("TargetString = %q, want %q", got, "203.0.113.0/24")
+	}
+}
