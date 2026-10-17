@@ -153,6 +153,12 @@ func (d *testDaemon) waitProcessed(t *testing.T, n int64) {
 	}
 }
 
+// apiClient makes one-shot HTTP calls (keep-alive disabled). A pooled
+// connection the client never reuses would sit un-started on the server
+// where net/http's Shutdown leaves brand-new connections alone for ~5s,
+// racing the cleanup deadline; the tests must leave no connections behind.
+var apiClient = &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
 // reportEntry mirrors the version-0 report document entry.
 type reportEntry struct {
 	Rule      string `json:"rule"`
@@ -190,7 +196,7 @@ func (d *testDaemon) get(t *testing.T, path string, query url.Values) (int, repo
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
-	resp, err := http.Get(u)
+	resp, err := apiClient.Get(u)
 	if err != nil {
 		t.Fatalf("GET %s: %v", u, err)
 	}
@@ -468,7 +474,7 @@ func TestE2EAPIPingOnly(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", bandwidthRules)
 
-	resp, err := http.Get("http://" + d.APIAddr() + "/ping")
+	resp, err := apiClient.Get("http://" + d.APIAddr() + "/ping")
 	if err != nil {
 		t.Fatalf("GET /ping: %v", err)
 	}
@@ -479,7 +485,7 @@ func TestE2EAPIPingOnly(t *testing.T) {
 	}
 
 	for _, path := range []string{"/", "/metrics", "/debug", "/reports/1"} {
-		resp, err := http.Get("http://" + d.APIAddr() + path)
+		resp, err := apiClient.Get("http://" + d.APIAddr() + path)
 		if err != nil {
 			t.Fatalf("GET %s: %v", path, err)
 		}
@@ -493,7 +499,7 @@ func TestE2EAPIPingOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = apiClient.Do(req)
 	if err != nil {
 		t.Fatalf("DELETE /reports: %v", err)
 	}
