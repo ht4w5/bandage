@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"time"
 
 	bandage "github.com/HT4w5/bandage/internal/domain"
@@ -128,13 +129,35 @@ func (s *Service) updateTracker(ctx context.Context, rule *bandage.Rule, event *
 	}
 	cfg := rule.Tracker
 	increment := 1.0
-	if cfg.Kind == bandage.TrackBandwidth {
-		increment = float64(event.SentBytes)
-	}
+	volume := cfg.Volume
+	ttl := cfg.TTL
 	// The key is the Target: the source address aggregated to the
 	// tracker's prefix, so sources in one prefix share tracker state.
 	key := cfg.Target(event.RemoteAddr).String()
-	rec, err := s.cache.Update(ctx, rule.ID, key, cfg.TTL, func(r *track.Record) {
+	switch cfg.Kind {
+	case bandage.TrackBandwidth:
+		increment = float64(event.SentBytes)
+	case bandage.TrackReplay:
+		if event.SizeBytes == bandage.FilesizeUnknown {
+			// Warm-up blindness (DECISIONS §8): skip the event entirely —
+			// no increment, no decay, no cache touch. No Match is possible
+			// until the path's Filesize estimate is warm.
+			return bandage.TrackerReading{}, false, nil
+		}
+		// Increment by the transferred fraction of the estimated size,
+		// capped at 1 per event (DECISIONS §8; no flux byte-domain hack).
+		size := float64(event.SizeBytes)
+		increment = math.Min(float64(event.SentBytes)/size, 1)
+		// Volume is the volume method's output for this event's estimate
+		// ("tolerated download equivalents") and the cache-entry TTL is
+		// re-derived from it per event.
+		volume = cfg.VolumeFor(size)
+		ttl = track.TTL(cfg.Leak, volume)
+		// Replay state is keyed per (Target, path): the target prefix
+		// string and the path joined with "\x00" (DECISIONS §9).
+		key += "\x00" + event.Path
+	}
+	rec, err := s.cache.Update(ctx, rule.ID, key, ttl, func(r *track.Record) {
 		r.Accumulate(increment, cfg.Leak, event.Time.Unix())
 	})
 	if err != nil {
@@ -144,9 +167,9 @@ func (s *Service) updateTracker(ctx context.Context, rule *bandage.Rule, event *
 		Track:  string(cfg.Kind),
 		Value:  rec.Value,
 		Leak:   cfg.Leak,
-		Volume: cfg.Volume,
+		Volume: volume,
 	}
-	return reading, rec.Overflow(cfg.Volume), nil
+	return reading, rec.Overflow(volume), nil
 }
 
 func (s *Service) trigger(ctx context.Context, chain *bandage.Chain, rule *bandage.Rule, action *bandage.ReportAction, reading bandage.TrackerReading, event *bandage.Event) error {
