@@ -41,9 +41,9 @@ type rawRule struct {
 	Actions []yaml.Node `yaml:"actions"`
 }
 
-// rawTracker keeps leak and volume as nodes: presence is validated ("explicit
-// leak and volume") and the volume-method block shape stays open for the
-// replay ticket. A missing node has Kind zero.
+// rawTracker keeps leak and volume as nodes: presence is validated
+// ("explicit leak and volume") and replay's volume may be a scalar or a
+// volume-method block (DECISIONS §8). A missing node has Kind zero.
 type rawTracker struct {
 	Track        string          `yaml:"track"`
 	Leak         yaml.Node       `yaml:"leak"`
@@ -184,34 +184,26 @@ func buildRule(chainName string, raw *rawRule, seen map[string]bool) (bandage.Ru
 	return rule, nil
 }
 
-// parseTracker builds the rule's tracker config: explicit leak and volume
-// with the cache TTL derived as volume/leak.
+// parseTracker builds the rule's tracker config: explicit leak and
+// volume. The cache TTL (volume/leak) is fixed at build for rate and
+// bandwidth; replay re-derives it per event from its volume method
+// output (DECISIONS §8), so its build-time TTL stays zero.
 func parseTracker(id string, raw *rawTracker) (*bandage.TrackerConfig, error) {
 	var kind bandage.TrackKind
 	switch raw.Track {
 	case "":
-		return nil, fmt.Errorf("rules: rule %q: tracker.track: required (want %q or %q)",
-			id, bandage.TrackRate, bandage.TrackBandwidth)
-	case string(bandage.TrackRate), string(bandage.TrackBandwidth):
+		return nil, fmt.Errorf("rules: rule %q: tracker.track: required (want %q, %q or %q)",
+			id, bandage.TrackRate, bandage.TrackBandwidth, bandage.TrackReplay)
+	case string(bandage.TrackRate), string(bandage.TrackBandwidth), string(bandage.TrackReplay):
 		kind = bandage.TrackKind(raw.Track)
-	case string(bandage.TrackReplay):
-		return nil, fmt.Errorf("rules: rule %q: tracker.track: tracker kind %q is not supported yet (want %q or %q)",
-			id, raw.Track, bandage.TrackRate, bandage.TrackBandwidth)
 	default:
-		return nil, fmt.Errorf("rules: rule %q: tracker.track: unknown tracker kind %q (want %q or %q)",
-			id, raw.Track, bandage.TrackRate, bandage.TrackBandwidth)
+		return nil, fmt.Errorf("rules: rule %q: tracker.track: unknown tracker kind %q (want %q, %q or %q)",
+			id, raw.Track, bandage.TrackRate, bandage.TrackBandwidth, bandage.TrackReplay)
 	}
 
 	leak, err := parseTrackerQuantity(id, "tracker.leak", &raw.Leak, kind)
 	if err != nil {
 		return nil, err
-	}
-	volume, err := parseTrackerQuantity(id, "tracker.volume", &raw.Volume, kind)
-	if err != nil {
-		return nil, err
-	}
-	if volume <= 0 {
-		return nil, fmt.Errorf("rules: rule %q: tracker.volume: must be positive", id)
 	}
 	if leak < 0 {
 		return nil, fmt.Errorf("rules: rule %q: tracker.leak: must be non-negative", id)
@@ -221,13 +213,31 @@ func parseTracker(id string, raw *rawTracker) (*bandage.TrackerConfig, error) {
 		return nil, err
 	}
 
-	return &bandage.TrackerConfig{
-		Kind:         kind,
-		Leak:         leak,
-		Volume:       volume,
-		TTL:          track.TTL(leak, volume),
-		TargetPrefix: prefix,
-	}, nil
+	cfg := &bandage.TrackerConfig{Kind: kind, Leak: leak, TargetPrefix: prefix}
+	if kind == bandage.TrackReplay {
+		// Replay volume is a plain scalar (the constant method) or a
+		// volume-method block scaling tolerated download equivalents
+		// with file size (DECISIONS §8).
+		volume, method, err := parseReplayVolume(id, &raw.Volume)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Volume, cfg.VolumeMethod = volume, method
+		return cfg, nil
+	}
+	if raw.Volume.Kind != 0 && raw.Volume.Kind != yaml.ScalarNode {
+		return nil, fmt.Errorf("rules: rule %q: tracker.volume: must be a quantity (volume methods are replay-only)", id)
+	}
+	volume, err := parseTrackerQuantity(id, "tracker.volume", &raw.Volume, kind)
+	if err != nil {
+		return nil, err
+	}
+	if volume <= 0 {
+		return nil, fmt.Errorf("rules: rule %q: tracker.volume: must be positive", id)
+	}
+	cfg.Volume = volume
+	cfg.TTL = track.TTL(leak, volume)
+	return cfg, nil
 }
 
 // parseTargetPrefix builds the tracker's target aggregation: {32, 64} by
@@ -252,28 +262,195 @@ func parseTargetPrefix(id string, raw *rawTargetPrefix) (bandage.TargetPrefix, e
 	return prefix, nil
 }
 
-// parseTrackerQuantity parses one explicit tracker quantity per kind:
-// rate uses plain numbers (request counts), bandwidth byte quantities.
-// Errors name the rule and the field (DECISIONS §5).
+// parseTrackerQuantity parses one explicit scalar tracker quantity per
+// kind: rate uses plain numbers (request counts), replay plain numbers
+// (fractions per second), bandwidth byte quantities. Errors name the
+// rule and the field (DECISIONS §5).
 func parseTrackerQuantity(id, field string, node *yaml.Node, kind bandage.TrackKind) (float64, error) {
 	if node == nil || node.Kind == 0 {
 		return 0, fmt.Errorf("rules: rule %q: %s: required", id, field)
 	}
 	if node.Kind != yaml.ScalarNode {
-		// Volume-method blocks land with the replay ticket.
 		return 0, fmt.Errorf("rules: rule %q: %s: must be a quantity", id, field)
 	}
 	var (
 		v   float64
 		err error
 	)
-	if kind == bandage.TrackRate {
-		v, err = track.ParseNumber(node.Value)
-	} else {
+	if kind == bandage.TrackBandwidth {
 		v, err = track.ParseBytes(node.Value)
+	} else {
+		v, err = track.ParseNumber(node.Value)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("rules: rule %q: %s: %w", id, field, err)
+	}
+	return v, nil
+}
+
+// parseReplayVolume parses the replay tracker's volume: a plain scalar
+// number (the constant method, returned as the constant volume) or a
+// volume-method block (returned as a VolumeMethod). A volume method is
+// replay-only — rate and bandwidth reject non-scalar volumes at load.
+func parseReplayVolume(id string, node *yaml.Node) (float64, bandage.VolumeMethod, error) {
+	if node == nil || node.Kind == 0 {
+		return 0, nil, fmt.Errorf("rules: rule %q: tracker.volume: required", id)
+	}
+	if node.Kind == yaml.ScalarNode {
+		v, err := track.ParseNumber(node.Value)
+		if err != nil {
+			return 0, nil, fmt.Errorf("rules: rule %q: tracker.volume: %w", id, err)
+		}
+		if v <= 0 {
+			return 0, nil, fmt.Errorf("rules: rule %q: tracker.volume: must be positive", id)
+		}
+		return v, nil, nil
+	}
+	if node.Kind != yaml.MappingNode {
+		return 0, nil, fmt.Errorf("rules: rule %q: tracker.volume: must be a quantity or a volume method", id)
+	}
+	method, err := parseVolumeMethod(id, node)
+	return 0, method, err
+}
+
+// volumeMethodKeys is each volume method's strict parameter set
+// (besides the method name itself): unknown keys are load errors (spec:
+// strict decode).
+var volumeMethodKeys = map[string]map[string]bool{
+	"constant":       {"value": true},
+	"clamped-linear": {"intercept": true, "slope": true, "min": true, "max": true},
+	"inverse-square": {"base": true, "pivot": true},
+	"step":           {"threshold": true, "volume_low": true, "volume_high": true},
+}
+
+// parseVolumeMethod builds one replay volume method from its block,
+// validating each method's parameters at load (DECISIONS §8).
+func parseVolumeMethod(id string, node *yaml.Node) (bandage.VolumeMethod, error) {
+	fields := map[string]*yaml.Node{}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		fields[node.Content[i].Value] = node.Content[i+1]
+	}
+	method := fields["method"]
+	if method == nil || method.Kind != yaml.ScalarNode {
+		return nil, fmt.Errorf("rules: rule %q: tracker.volume.method: required (want constant, clamped-linear, inverse-square or step)", id)
+	}
+	allowed := volumeMethodKeys[method.Value]
+	if allowed == nil {
+		return nil, fmt.Errorf("rules: rule %q: tracker.volume.method: unknown volume method %q (want constant, clamped-linear, inverse-square or step)", id, method.Value)
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if key := node.Content[i].Value; key != "method" && !allowed[key] {
+			return nil, fmt.Errorf("rules: rule %q: tracker.volume: unknown key %q in volume method block", id, key)
+		}
+	}
+
+	switch method.Value {
+	case "constant":
+		value, err := volumeNumber(id, "value", fields["value"])
+		if err != nil {
+			return nil, err
+		}
+		if value <= 0 {
+			return nil, fmt.Errorf("rules: rule %q: tracker.volume.value: must be positive", id)
+		}
+		return track.ConstantVolume(value), nil
+
+	case "clamped-linear":
+		intercept, err := volumeNumber(id, "intercept", fields["intercept"])
+		if err != nil {
+			return nil, err
+		}
+		slope, err := volumeNumber(id, "slope", fields["slope"])
+		if err != nil {
+			return nil, err
+		}
+		minV, err := volumeNumber(id, "min", fields["min"])
+		if err != nil {
+			return nil, err
+		}
+		maxV, err := volumeNumber(id, "max", fields["max"])
+		if err != nil {
+			return nil, err
+		}
+		if minV < 0 {
+			return nil, fmt.Errorf("rules: rule %q: tracker.volume.min: must be non-negative", id)
+		}
+		if maxV < minV {
+			return nil, fmt.Errorf("rules: rule %q: tracker.volume.max: must be >= min", id)
+		}
+		return track.ClampedLinearVolume{Intercept: intercept, Slope: slope, Min: minV, Max: maxV}, nil
+
+	case "inverse-square":
+		base, err := volumeNumber(id, "base", fields["base"])
+		if err != nil {
+			return nil, err
+		}
+		pivot, err := volumeSize(id, "pivot", fields["pivot"])
+		if err != nil {
+			return nil, err
+		}
+		if base < 0 {
+			return nil, fmt.Errorf("rules: rule %q: tracker.volume.base: must be non-negative", id)
+		}
+		if pivot <= 0 {
+			return nil, fmt.Errorf("rules: rule %q: tracker.volume.pivot: must be positive", id)
+		}
+		return track.InverseSquareVolume{Base: base, Pivot: pivot}, nil
+
+	case "step":
+		threshold, err := volumeSize(id, "threshold", fields["threshold"])
+		if err != nil {
+			return nil, err
+		}
+		low, err := volumeNumber(id, "volume_low", fields["volume_low"])
+		if err != nil {
+			return nil, err
+		}
+		high, err := volumeNumber(id, "volume_high", fields["volume_high"])
+		if err != nil {
+			return nil, err
+		}
+		if threshold <= 0 {
+			return nil, fmt.Errorf("rules: rule %q: tracker.volume.threshold: must be positive", id)
+		}
+		if low < 0 {
+			return nil, fmt.Errorf("rules: rule %q: tracker.volume.volume_low: must be non-negative", id)
+		}
+		if high < 0 {
+			return nil, fmt.Errorf("rules: rule %q: tracker.volume.volume_high: must be non-negative", id)
+		}
+		return track.StepVolume{Threshold: threshold, VolumeLow: low, VolumeHigh: high}, nil
+	}
+	return nil, fmt.Errorf("rules: rule %q: tracker.volume.method: unknown volume method %q", id, method.Value)
+}
+
+// volumeNumber parses one plain numeric volume-method parameter.
+func volumeNumber(id, key string, node *yaml.Node) (float64, error) {
+	if node == nil {
+		return 0, fmt.Errorf("rules: rule %q: tracker.volume.%s: required", id, key)
+	}
+	if node.Kind != yaml.ScalarNode {
+		return 0, fmt.Errorf("rules: rule %q: tracker.volume.%s: invalid number %q", id, key, node.Value)
+	}
+	v, err := strconv.ParseFloat(node.Value, 64)
+	if err != nil {
+		return 0, fmt.Errorf("rules: rule %q: tracker.volume.%s: invalid number %q", id, key, node.Value)
+	}
+	return v, nil
+}
+
+// volumeSize parses one byte-size volume-method parameter (flux decimal
+// human sizes: 1GB = 1e9; DECISIONS §5).
+func volumeSize(id, key string, node *yaml.Node) (float64, error) {
+	if node == nil {
+		return 0, fmt.Errorf("rules: rule %q: tracker.volume.%s: required", id, key)
+	}
+	if node.Kind != yaml.ScalarNode {
+		return 0, fmt.Errorf("rules: rule %q: tracker.volume.%s: invalid quantity %q", id, key, node.Value)
+	}
+	v, err := track.ParseBytes(node.Value)
+	if err != nil {
+		return 0, fmt.Errorf("rules: rule %q: tracker.volume.%s: %w", id, key, err)
 	}
 	return v, nil
 }

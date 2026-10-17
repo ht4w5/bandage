@@ -2,6 +2,7 @@ package bandage
 
 import (
 	"log/slog"
+	"strconv"
 	"time"
 )
 
@@ -61,6 +62,15 @@ func (c *TrackerConfig) VolumeFor(sizeBytes float64) float64 {
 		return c.VolumeMethod.Volume(sizeBytes)
 	}
 	return c.Volume
+}
+
+// VolumeDesc renders the volume configuration for the -check plan: the
+// volume method's description or the constant volume.
+func (c *TrackerConfig) VolumeDesc() string {
+	if c.VolumeMethod != nil {
+		return c.VolumeMethod.String()
+	}
+	return strconv.FormatFloat(c.Volume, 'f', -1, 64)
 }
 
 // ReportAction upserts a report for the tracker's target on match. It is
