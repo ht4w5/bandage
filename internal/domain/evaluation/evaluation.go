@@ -71,7 +71,9 @@ func (s *Service) updateTracker(ctx context.Context, rule *bandage.Rule, event *
 	if cfg.Kind == bandage.TrackBandwidth {
 		increment = float64(event.SentBytes)
 	}
-	key := event.RemoteAddr.String()
+	// The key is the Target: the source address aggregated to the
+	// tracker's prefix, so sources in one prefix share tracker state.
+	key := cfg.Target(event.RemoteAddr).String()
 	rec, err := s.cache.Update(ctx, rule.ID, key, cfg.TTL, func(r *track.Record) {
 		r.Accumulate(increment, cfg.Leak, event.Time.Unix())
 	})
@@ -93,7 +95,7 @@ func (s *Service) trigger(ctx context.Context, chain *bandage.Chain, rule *banda
 		Rule:      rule.ID,
 		Chain:     chain.Name,
 		Reason:    action.Reason,
-		Target:    event.RemoteAddr.String(),
+		Target:    rule.Tracker.Target(event.RemoteAddr).String(),
 		CreatedAt: now,
 		UpdatedAt: now,
 		ExpiresAt: now.Add(action.TTL),
