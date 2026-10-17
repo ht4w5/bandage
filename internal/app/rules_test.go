@@ -73,6 +73,9 @@ func TestParseRulesValid(t *testing.T) {
 	if iso.Tracker.TTL != 1e5*time.Second {
 		t.Errorf("tracker TTL = %v, want %v", iso.Tracker.TTL, 1e5*time.Second)
 	}
+	if iso.Tracker.TargetPrefix != (bandage.TargetPrefix{IPv4: 24, IPv6: 64}) {
+		t.Errorf("tracker target_prefix = %+v, want {24 64}", iso.Tracker.TargetPrefix)
+	}
 	if len(iso.Actions) != 1 || iso.Actions[0].Report == nil {
 		t.Fatalf("actions = %+v, want one report action", iso.Actions)
 	}
@@ -89,6 +92,35 @@ func TestParseRulesValid(t *testing.T) {
 	}
 	if api.Tracker.TTL != 10*time.Second {
 		t.Errorf("api tracker TTL = %v, want 10s", api.Tracker.TTL)
+	}
+	if api.Tracker.TargetPrefix != bandage.DefaultTargetPrefix {
+		t.Errorf("tracker target_prefix = %+v, want default %+v", api.Tracker.TargetPrefix, bandage.DefaultTargetPrefix)
+	}
+}
+
+// target_prefix defaults to {32, 64} and each family defaults
+// independently when only the other is declared (PLAN §1).
+func TestParseRulesTargetPrefixDefaults(t *testing.T) {
+	tests := []struct {
+		name  string
+		extra string
+		want  bandage.TargetPrefix
+	}{
+		{"omitted defaults to {32, 64}", "", bandage.DefaultTargetPrefix},
+		{"ipv4 only defaults ipv6", "target_prefix: {ipv4: 24}\n", bandage.TargetPrefix{IPv4: 24, IPv6: 64}},
+		{"ipv6 only defaults ipv4", "target_prefix: {ipv6: 48}\n", bandage.TargetPrefix{IPv4: 32, IPv6: 48}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			yaml := "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker:\n          track: rate\n          leak: 1\n          volume: 2\n          " + tt.extra
+			chains, err := ParseRules([]byte(yaml))
+			if err != nil {
+				t.Fatalf("ParseRules error: %v", err)
+			}
+			if got := chains[0].Rules[0].Tracker.TargetPrefix; got != tt.want {
+				t.Errorf("target_prefix = %+v, want %+v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -293,6 +325,16 @@ chains:
 		{name: "bandwidth zero leak accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: bandwidth, leak: 0, volume: 1KB}\n"},
 		{name: "bad quantity names rule and field", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: my-rule\n        tracker: {track: bandwidth, leak: 1, volume: 1q}\n", wantErr: `rule "my-rule": tracker.volume`},
 		{name: "volume block rejected for now", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker:\n          track: bandwidth\n          leak: 1\n          volume: {method: constant, value: 5}\n", wantErr: "tracker.volume"},
+
+		// Target aggregation (target_prefix).
+		// Target aggregation (target_prefix).
+		{name: "target prefix boundary values accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2, target_prefix: {ipv4: 32, ipv6: 64}}\n"},
+		{name: "zero target prefix accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2, target_prefix: {ipv4: 0, ipv6: 0}}\n"},
+		{name: "target prefix ipv4 above 32 rejected", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2, target_prefix: {ipv4: 33, ipv6: 64}}\n", wantErr: "target_prefix.ipv4"},
+		{name: "target prefix ipv4 negative rejected", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2, target_prefix: {ipv4: -1}}\n", wantErr: "target_prefix.ipv4"},
+		{name: "target prefix ipv6 finer than 64 rejected", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2, target_prefix: {ipv6: 65}}\n", wantErr: "target_prefix.ipv6"},
+		{name: "target prefix ipv6 negative rejected", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2, target_prefix: {ipv6: -2}}\n", wantErr: "target_prefix.ipv6"},
+		{name: "bad target prefix names rule and field", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: my-rule\n        tracker: {track: rate, leak: 1, volume: 2, target_prefix: {ipv6: 65}}\n", wantErr: `rule "my-rule": tracker.target_prefix.ipv6`},
 
 		// Actions (report, log, goto, jump, stop) and their YAML shapes
 		// (DECISIONS §9).

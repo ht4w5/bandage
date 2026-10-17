@@ -223,6 +223,12 @@ func (d *testDaemon) waitProcessed(t *testing.T, n int64) {
 	}
 }
 
+// apiClient makes one-shot HTTP calls (keep-alive disabled). A pooled
+// connection the client never reuses would sit un-started on the server
+// where net/http's Shutdown leaves brand-new connections alone for ~5s,
+// racing the cleanup deadline; the tests must leave no connections behind.
+var apiClient = &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
 // reportEntry mirrors the version-0 report document entry.
 type reportEntry struct {
 	Rule      string `json:"rule"`
@@ -260,7 +266,7 @@ func (d *testDaemon) get(t *testing.T, path string, query url.Values) (int, repo
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
-	resp, err := http.Get(u)
+	resp, err := apiClient.Get(u)
 	if err != nil {
 		t.Fatalf("GET %s: %v", u, err)
 	}
@@ -328,8 +334,8 @@ func TestE2EOverflowWritesReport(t *testing.T) {
 	if r.Rule != "sustained-egress" || r.Chain != "download-abuse" || r.Reason != "egress-overflow" {
 		t.Errorf("provenance = %q/%q/%q", r.Rule, r.Chain, r.Reason)
 	}
-	if r.Target != "203.0.113.7" {
-		t.Errorf("target = %q, want %q", r.Target, "203.0.113.7")
+	if r.Target != "203.0.113.7/32" {
+		t.Errorf("target = %q, want %q", r.Target, "203.0.113.7/32")
 	}
 	if r.CreatedAt != wallBase || r.UpdatedAt != wallBase {
 		t.Errorf("created_at/updated_at = %q/%q, want %q", r.CreatedAt, r.UpdatedAt, wallBase)
@@ -473,7 +479,7 @@ chains:
 	}
 	// Sorted by created_at descending: the new target first.
 	first, second := doc.Reports[0], doc.Reports[1]
-	if first.Target != "203.0.113.8" || second.Target != "203.0.113.7" {
+	if first.Target != "203.0.113.8/32" || second.Target != "203.0.113.7/32" {
 		t.Fatalf("sort order = %q then %q", first.Target, second.Target)
 	}
 	if second.CreatedAt != wallBase {
@@ -518,11 +524,11 @@ chains:
 	if doc := d.getReports(t, url.Values{"rule": {"nope"}}); len(doc.Reports) != 0 {
 		t.Errorf("?rule=nope: %+v", doc.Reports)
 	}
-	if doc := d.getReports(t, url.Values{"target": {"203.0.113.7"}}); len(doc.Reports) != 2 {
-		t.Errorf("?target=203.0.113.7: %+v", doc.Reports)
+	if doc := d.getReports(t, url.Values{"target": {"203.0.113.7/32"}}); len(doc.Reports) != 2 {
+		t.Errorf("?target=203.0.113.7/32: %+v", doc.Reports)
 	}
-	if doc := d.getReports(t, url.Values{"target": {"203.0.113.8"}}); len(doc.Reports) != 0 {
-		t.Errorf("?target=203.0.113.8: %+v", doc.Reports)
+	if doc := d.getReports(t, url.Values{"target": {"203.0.113.8/32"}}); len(doc.Reports) != 0 {
+		t.Errorf("?target=203.0.113.8/32: %+v", doc.Reports)
 	}
 
 	clock.Advance(90 * time.Minute)
@@ -541,7 +547,7 @@ func TestE2EAPIPingOnly(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", bandwidthRules)
 
-	resp, err := http.Get("http://" + d.APIAddr() + "/ping")
+	resp, err := apiClient.Get("http://" + d.APIAddr() + "/ping")
 	if err != nil {
 		t.Fatalf("GET /ping: %v", err)
 	}
@@ -552,7 +558,7 @@ func TestE2EAPIPingOnly(t *testing.T) {
 	}
 
 	for _, path := range []string{"/", "/metrics", "/debug", "/reports/1"} {
-		resp, err := http.Get("http://" + d.APIAddr() + path)
+		resp, err := apiClient.Get("http://" + d.APIAddr() + path)
 		if err != nil {
 			t.Fatalf("GET %s: %v", path, err)
 		}
@@ -566,7 +572,7 @@ func TestE2EAPIPingOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = apiClient.Do(req)
 	if err != nil {
 		t.Fatalf("DELETE /reports: %v", err)
 	}
@@ -1032,5 +1038,149 @@ chains:
 	// tracker accumulated 2×150 bytes.
 	if topic.Tracker.Value != 300 {
 		t.Errorf("topic-hit tracker value = %v, want 300 (dispatch plus file-order traversal)", topic.Tracker.Value)
+	}
+}
+
+// Target aggregation (spec: target_prefix): sources in one aggregated
+// prefix share the tracker's state and produce ONE Report Target
+// rendered as the prefix; a single IPv6 source is never reported finer
+// than /64.
+func TestE2ETargetAggregationSharesStatePerPrefix(t *testing.T) {
+	tests := []struct {
+		name    string
+		rules   string
+		clients []string
+		fourth  string
+		want    string
+		filter  url.Values
+	}{
+		{
+			name: "ipv4 /24",
+			rules: `
+version: 0
+chains:
+  - name: abuse
+    rules:
+      - id: burst
+        tracker: {track: rate, leak: 0, volume: 2, target_prefix: {ipv4: 24, ipv6: 64}}
+        actions: [{report: {reason: burst, ttl: 1h}}]
+`,
+			clients: []string{"203.0.113.7", "203.0.113.8", "203.0.113.254"},
+			fourth:  "203.0.113.9",
+			want:    "203.0.113.0/24",
+			filter:  url.Values{"target": {"203.0.113.0/24"}},
+		},
+		{
+			name: "ipv6 /64 (default, never finer than /64)",
+			rules: `
+version: 0
+chains:
+  - name: abuse
+    rules:
+      - id: burst
+        tracker: {track: rate, leak: 0, volume: 2}
+        actions: [{report: {reason: burst, ttl: 1h}}]
+`,
+			clients: []string{"2001:db8::1", "2001:db8::2", "2001:db8:0:0:1:2:3:4"},
+			fourth:  "2001:db8::ffff",
+			want:    "2001:db8::/64",
+			filter:  url.Values{"target": {"2001:db8::/64"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clock := newTestClock(mustTime(t, wallBase))
+			d := startTestDaemon(t, clock, "unixgram", ":memory:", tt.rules)
+
+			// One event per source address; none alone overflows volume 2.
+			for _, client := range tt.clients {
+				d.send(nginxLine(eventTime1, client, "GET", "/api", 200, 0))
+			}
+			d.waitProcessed(t, int64(len(tt.clients)))
+
+			doc := d.getReports(t, nil)
+			if len(doc.Reports) != 1 {
+				t.Fatalf("reports = %+v, want 1 (shared state overflows once)", doc.Reports)
+			}
+			r := doc.Reports[0]
+			if r.Target != tt.want {
+				t.Errorf("target = %q, want %q", r.Target, tt.want)
+			}
+			if r.Tracker.Value != 3 {
+				t.Errorf("tracker value = %v, want 3 (three sources accumulated)", r.Tracker.Value)
+			}
+
+			// Another source in the same prefix upserts the same Report
+			// Target: still exactly one report.
+			d.send(nginxLine(eventTime2, tt.fourth, "GET", "/api", 200, 0))
+			d.waitProcessed(t, int64(len(tt.clients))+1)
+			doc = d.getReports(t, nil)
+			if len(doc.Reports) != 1 {
+				t.Fatalf("reports after 4th source = %+v, want still 1", doc.Reports)
+			}
+			if doc.Reports[0].Target != tt.want {
+				t.Errorf("target = %q, want %q", doc.Reports[0].Target, tt.want)
+			}
+
+			// ?target= matches the prefix string.
+			if doc := d.getReports(t, tt.filter); len(doc.Reports) != 1 {
+				t.Errorf("?target=%s: %+v, want 1", tt.filter.Get("target"), doc.Reports)
+			}
+		})
+	}
+}
+
+// Sources in different aggregated prefixes never share tracker state and
+// produce one Report Target each; ?target= matches the prefix string.
+func TestE2ETargetAggregationSeparatesPrefixes(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	rules := `
+version: 0
+chains:
+  - name: abuse
+    rules:
+      - id: burst
+        tracker: {track: rate, leak: 0, volume: 2, target_prefix: {ipv4: 24, ipv6: 64}}
+        actions: [{report: {reason: burst, ttl: 1h}}]
+`
+	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
+
+	// Two sources per prefix: two buckets at value 2 each. Nothing
+	// overflows (value == volume does not overflow) — state does not
+	// smear across prefixes.
+	for _, client := range []string{"203.0.113.7", "203.0.113.8", "203.0.114.7", "203.0.114.8"} {
+		d.send(nginxLine(eventTime1, client, "GET", "/api", 200, 0))
+	}
+	d.waitProcessed(t, 4)
+	if doc := d.getReports(t, nil); len(doc.Reports) != 0 {
+		t.Fatalf("reports after two per prefix = %+v, want none", doc.Reports)
+	}
+
+	// A third source in 203.0.113.0/24 overflows only that prefix.
+	d.send(nginxLine(eventTime2, "203.0.113.9", "GET", "/api", 200, 0))
+	d.waitProcessed(t, 5)
+	doc := d.getReports(t, nil)
+	if len(doc.Reports) != 1 || doc.Reports[0].Target != "203.0.113.0/24" {
+		t.Fatalf("reports = %+v, want one for 203.0.113.0/24", doc.Reports)
+	}
+
+	// A third source in 203.0.114.0/24 gets its own report.
+	d.send(nginxLine(eventTime2, "203.0.114.9", "GET", "/api", 200, 0))
+	d.waitProcessed(t, 6)
+	doc = d.getReports(t, nil)
+	if len(doc.Reports) != 2 {
+		t.Fatalf("reports = %+v, want one per prefix", doc.Reports)
+	}
+	seen := map[string]bool{doc.Reports[0].Target: true, doc.Reports[1].Target: true}
+	if !seen["203.0.113.0/24"] || !seen["203.0.114.0/24"] {
+		t.Errorf("report targets = %+v, want 203.0.113.0/24 and 203.0.114.0/24", doc.Reports)
+	}
+
+	// ?target= matches the aggregated prefix string, not raw addresses.
+	if doc := d.getReports(t, url.Values{"target": {"203.0.113.0/24"}}); len(doc.Reports) != 1 {
+		t.Errorf("?target=203.0.113.0/24: %+v, want 1", doc.Reports)
+	}
+	if doc := d.getReports(t, url.Values{"target": {"203.0.113.7/32"}}); len(doc.Reports) != 0 {
+		t.Errorf("?target=203.0.113.7/32: %+v, want 0", doc.Reports)
 	}
 }

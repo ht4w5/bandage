@@ -13,7 +13,7 @@ func TestReportMarshalJSON(t *testing.T) {
 		Rule:      "sustained-iso-egress",
 		Chain:     "download-abuse",
 		Reason:    "iso-egress-overflow",
-		Target:    "203.0.113.7",
+		Target:    "203.0.113.0/24",
 		CreatedAt: time.Date(2025, 10, 17, 10, 2, 11, 0, time.UTC),
 		UpdatedAt: time.Date(2025, 10, 17, 18, 29, 40, 500, time.UTC), // sub-second truncated in document
 		ExpiresAt: time.Date(2025, 10, 24, 18, 29, 40, 0, time.UTC),
@@ -40,7 +40,7 @@ func TestReportMarshalJSON(t *testing.T) {
 		"rule": "sustained-iso-egress",
 		"chain": "download-abuse",
 		"reason": "iso-egress-overflow",
-		"target": "203.0.113.7",
+		"target": "203.0.113.0/24",
 		"created_at": "2025-10-17T10:02:11Z",
 		"updated_at": "2025-10-17T18:29:40Z",
 		"expires_at": "2025-10-24T18:29:40Z",

@@ -27,6 +27,9 @@ type TrackerConfig struct {
 	Volume float64
 	// TTL is the tracker cache entry TTL derived at build (volume/leak).
 	TTL time.Duration
+	// TargetPrefix is the tracker's target aggregation, defaulted at
+	// build (DefaultTargetPrefix).
+	TargetPrefix TargetPrefix
 }
 
 // ReportAction upserts a report for the tracker's target on match. It is
