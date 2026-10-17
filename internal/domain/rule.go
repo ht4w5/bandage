@@ -74,10 +74,13 @@ type Matcher interface {
 // accepts the event and its tracker (if any) overflows. The ID namespaces
 // the rule's tracker state.
 type Rule struct {
-	ID      string
-	Filter  Matcher
-	Tracker *TrackerConfig
-	Actions []Action
+	ID string
+	// FilterSource is the effective filter expression as written
+	// ("any" when omitted), kept for the -check plan print.
+	FilterSource string
+	Filter       Matcher
+	Tracker      *TrackerConfig
+	Actions      []Action
 }
 
 // Terminal reports whether a match of this rule ends traversal of its

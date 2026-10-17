@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -274,9 +275,8 @@ chains:
 		{name: "omitted filter defaults to any", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2}\n"},
 		{name: "explicit any filter", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        filter: any\n        tracker: {track: rate, leak: 1, volume: 2}\n"},
 		{
-			name:    "filter beyond any rejected",
-			yaml:    "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        filter: 'src 10.0.0.0/8'\n        tracker: {track: rate, leak: 1, volume: 2}\n",
-			wantErr: "unsupported filter expression",
+			name: "filter expression accepted",
+			yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        filter: 'src 10.0.0.0/8'\n        tracker: {track: rate, leak: 1, volume: 2}\n",
 		},
 
 		// Tracker parsing and validation.
@@ -674,5 +674,129 @@ func TestLoadRulesFromFile(t *testing.T) {
 	}
 	if len(chains) != 2 {
 		t.Errorf("chains = %d, want 2", len(chains))
+	}
+}
+
+// Filter expressions on rules: syntax and value errors reject the rules
+// file with filter: L:C positions (the -check contract); valid filters
+// select events at the rule level.
+func TestParseRulesFilterErrors(t *testing.T) {
+	const doc = `version: 0
+chains:
+  - name: a
+    rules:
+      - id: r
+        filter: %s
+`
+	tests := []struct {
+		name    string
+		filter  string // YAML-quoted
+		wantErr string
+	}{
+		{"unknown keyword", `'bogus'`, `rule "r": filter: 1:1: unknown keyword "bogus"`},
+		{"trailing token", `'any any'`, `rule "r": filter: 1:5: unexpected "any", expected end of filter`},
+		{"missing operand", `'any and'`, `rule "r": filter: 1:8: unexpected end of filter, expected an operand`},
+		{"bad src", `'src 10.0.0.0/33'`, `rule "r": filter: 1:5: invalid IP address or prefix "10.0.0.0/33"`},
+		{"status value out of range", `'status 20'`, `rule "r": filter: 1:8: status must be within [100, 599]`},
+		{"bad size unit spelling", `'sent >= 10MB'`, `rule "r": filter: 1:9: expected a size after "sent", got "10MB"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseRules([]byte(fmt.Sprintf(doc, tt.filter)))
+			if err == nil {
+				t.Fatalf("ParseRules succeeded, want error containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q does not contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseRulesFilterSelectsEvents(t *testing.T) {
+	chains, err := ParseRules([]byte(`version: 0
+chains:
+  - name: a
+    rules:
+      - id: r
+        filter: 'path prefix "/releases" and method GET'
+`))
+	if err != nil {
+		t.Fatalf("ParseRules error: %v", err)
+	}
+	rule := chains[0].Rules[0]
+	if !rule.Filter.Match(&bandage.Event{Method: "GET", Path: "/releases/24.04.iso"}) {
+		t.Error("filter does not match a selected event")
+	}
+	if rule.Filter.Match(&bandage.Event{Method: "GET", Path: "/api/data"}) {
+		t.Error("filter matches a non-matching path")
+	}
+	if rule.Filter.Match(&bandage.Event{Method: "POST", Path: "/releases/24.04.iso"}) {
+		t.Error("filter matches a non-matching method")
+	}
+}
+
+// The -check plan prints each rule's filter source expression (the
+// effective one: "any" where the rule omits it).
+func TestCheckPrintsFilterSource(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "bandage.yml")
+	rulesPath := filepath.Join(dir, "rules.yml")
+	if err := os.WriteFile(cfgPath, []byte(validConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rulesPath, []byte(`version: 0
+chains:
+  - name: a
+    rules:
+      - id: selected
+        filter: 'src 10.0.0.0/8 and path prefix "/api"'
+      - id: defaulted
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := Check(cfgPath, rulesPath)
+	if err != nil {
+		t.Fatalf("Check error: %v", err)
+	}
+	for _, want := range []string{
+		"rule selected",
+		`filter: src 10.0.0.0/8 and path prefix "/api"`,
+		"rule defaulted",
+		"filter: any",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Errorf("plan does not contain %q:\n%s", want, plan)
+		}
+	}
+}
+
+// Unparseable filters reject the rules file at load: -check reports
+// filter: L:C with the rule id and no sockets open.
+func TestCheckReportsFilterErrorPosition(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "bandage.yml")
+	rulesPath := filepath.Join(dir, "rules.yml")
+	if err := os.WriteFile(cfgPath, []byte(validConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rulesPath, []byte(`version: 0
+chains:
+  - name: a
+    rules:
+      - id: typo
+        filter: 'status class 9'
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Check(cfgPath, rulesPath)
+	if err == nil {
+		t.Fatal("Check succeeded, want error")
+	}
+	want := `rule "typo": filter: 1:14: class must be within [1, 5]`
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("error %q does not contain %q", err, want)
 	}
 }
