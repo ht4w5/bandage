@@ -159,11 +159,9 @@ func TestTestModeShorthandsMatchLongForms(t *testing.T) {
 	if longOut.String() != shortOut.String() {
 		t.Errorf("short plan output\n%q\n!= long form\n%q", shortOut.String(), longOut.String())
 	}
-	// The plan output opens with the build identity header (spec story
-	// 6); its contents are asserted at the app seam.
-	if !strings.HasPrefix(longOut.String(), identity.Header()+"\n") {
-		t.Errorf("plan = %q, want it to open with the identity header %q", longOut.String(), identity.Header())
-	}
+	// The plan content itself — including that it opens with the build
+	// identity header (spec story 6) — is asserted at the app seam (the
+	// --test plan tests), never through run().
 }
 
 func TestTestModeFailsNonZeroOnInvalidInput(t *testing.T) {
