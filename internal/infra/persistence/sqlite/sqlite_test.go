@@ -89,7 +89,7 @@ func TestConcurrentUpsertsAreDeterministic(t *testing.T) {
 func singleColumnIndexes(t *testing.T, repo *ReportRepository) map[string]bool {
 	t.Helper()
 	out := map[string]bool{}
-	rows, err := repo.db.Query(`SELECT name FROM pragma_index_list('reports')`)
+	rows, err := repo.read.Query(`SELECT name FROM pragma_index_list('reports')`)
 	if err != nil {
 		t.Fatalf("pragma_index_list: %v", err)
 	}
@@ -106,7 +106,7 @@ func singleColumnIndexes(t *testing.T, repo *ReportRepository) map[string]bool {
 		t.Fatal(err)
 	}
 	for _, name := range names {
-		cols, err := repo.db.Query(`SELECT name FROM pragma_index_info(?)`, name)
+		cols, err := repo.read.Query(`SELECT name FROM pragma_index_info(?)`, name)
 		if err != nil {
 			t.Fatalf("pragma_index_info(%q): %v", name, err)
 		}
@@ -147,7 +147,7 @@ func TestSchemaHasStandaloneIndexesOnRuleTargetAndExpiry(t *testing.T) {
 // statement.
 func queryPlan(t *testing.T, repo *ReportRepository, query string, args ...any) []string {
 	t.Helper()
-	rows, err := repo.db.Query("EXPLAIN QUERY PLAN "+query, args...)
+	rows, err := repo.read.Query("EXPLAIN QUERY PLAN "+query, args...)
 	if err != nil {
 		t.Fatalf("EXPLAIN QUERY PLAN %s: %v", query, err)
 	}
@@ -230,5 +230,234 @@ func TestTargetOnlyListAndDelete(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("Delete by target = %d, want 1", n)
+	}
+}
+
+// WAL and the split read/write paths (ADR 0009): file databases run
+// journal_mode=WAL with synchronous=NORMAL — a written report survives
+// a process crash, losing only the final moments on power failure —
+// while writes keep the single connection (ADR 0007) and queries run
+// on their own connections, so neither path queues behind the other.
+
+// File databases open in journal_mode=WAL with synchronous=NORMAL:
+// commits survive process crashes (ADR 0009).
+func TestFileDatabaseRunsInWALSynchronousNormal(t *testing.T) {
+	repo, err := Open(filepath.Join(t.TempDir(), "reports.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { repo.Close() })
+
+	var mode string
+	if err := repo.write.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatalf("journal_mode: %v", err)
+	}
+	if mode != "wal" {
+		t.Errorf("journal_mode = %q, want %q", mode, "wal")
+	}
+	var syncMode int64
+	if err := repo.write.QueryRow(`PRAGMA synchronous`).Scan(&syncMode); err != nil {
+		t.Fatalf("synchronous: %v", err)
+	}
+	if syncMode != 1 {
+		t.Errorf("synchronous = %d, want 1 (NORMAL)", syncMode)
+	}
+}
+
+// A written report survives reopening the database (the restart
+// durability promise behind WAL + synchronous=NORMAL, ADR 0009): the
+// row comes back with its original created_at.
+func TestWrittenReportSurvivesReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reports.db")
+	ctx := context.Background()
+	base := time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)
+	rec := bandage.Report{
+		Rule: "r", Chain: "c", Reason: "why", Target: "203.0.113.7/32",
+		CreatedAt: base, UpdatedAt: base, ExpiresAt: base.Add(time.Hour),
+	}
+
+	repo, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := repo.Upsert(ctx, rec); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if err := repo.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer reopened.Close()
+	got, err := reopened.List(ctx, report.Query{Now: base})
+	if err != nil {
+		t.Fatalf("List after reopen: %v", err)
+	}
+	if len(got) != 1 || got[0].CreatedAt != rec.CreatedAt {
+		t.Errorf("rows after reopen = %+v, want the written report with created_at %v", got, rec.CreatedAt)
+	}
+}
+
+// A query does not wait for an in-flight write: holding the sole write
+// connection mid-write never blocks List, which runs on the read
+// path's own connections (ADR 0009). Before the split this hung:
+// List queued behind the held connection.
+func TestQueryDoesNotWaitBehindInflightWrite(t *testing.T) {
+	repo, err := Open(filepath.Join(t.TempDir(), "reports.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { repo.Close() })
+	ctx := context.Background()
+	base := time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)
+	rec := bandage.Report{
+		Rule: "r", Chain: "c", Reason: "why", Target: "203.0.113.7/32",
+		CreatedAt: base, UpdatedAt: base, ExpiresAt: base.Add(time.Hour),
+	}
+	if err := repo.Upsert(ctx, rec); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	// The in-flight write holds the write connection.
+	conn, err := repo.write.Conn(ctx)
+	if err != nil {
+		t.Fatalf("write conn: %v", err)
+	}
+	defer conn.Close()
+
+	type result struct {
+		reports []bandage.Report
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		got, err := repo.List(ctx, report.Query{Now: base})
+		done <- result{got, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("List: %v", r.err)
+		}
+		if len(r.reports) != 1 {
+			t.Errorf("List during the in-flight write = %+v, want the committed row", r.reports)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("List waited for the in-flight write")
+	}
+}
+
+// A write does not wait for an in-flight query: a query holding its
+// connection never blocks Upsert on the single write connection (ADR
+// 0007 keeps writes deterministic on their own connection; ADR 0009
+// gives reads theirs).
+func TestWriteDoesNotWaitBehindInflightQuery(t *testing.T) {
+	repo, err := Open(filepath.Join(t.TempDir(), "reports.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { repo.Close() })
+	ctx := context.Background()
+	base := time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)
+	rec := bandage.Report{
+		Rule: "r", Chain: "c", Reason: "why", Target: "203.0.113.7/32",
+		CreatedAt: base, UpdatedAt: base, ExpiresAt: base.Add(time.Hour),
+	}
+
+	// The in-flight query holds the read path's connection.
+	conn, err := repo.read.Conn(ctx)
+	if err != nil {
+		t.Fatalf("read conn: %v", err)
+	}
+	defer conn.Close()
+
+	done := make(chan error, 1)
+	go func() { done <- repo.Upsert(ctx, rec) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Upsert waited for the in-flight query")
+	}
+
+	got, err := repo.List(ctx, report.Query{Now: base})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("rows after the concurrent write = %+v, want the upserted report", got)
+	}
+}
+
+// :memory: databases cannot split connections — every connection is
+// its own database — so the read path falls back to the single write
+// connection and tests keep working unchanged (ADR 0009
+// consequences).
+func TestMemoryDatabaseWorksAcrossSplitPaths(t *testing.T) {
+	repo := openTestRepo(t)
+	if repo.read != repo.write {
+		t.Fatalf(":memory: read path = %p, want the write-connection fallback %p", repo.read, repo.write)
+	}
+	ctx := context.Background()
+	base := time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)
+	rec := bandage.Report{
+		Rule: "r", Chain: "c", Reason: "why", Target: "203.0.113.7/32",
+		CreatedAt: base, UpdatedAt: base, ExpiresAt: base.Add(time.Hour),
+	}
+	if err := repo.Upsert(ctx, rec); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	got, err := repo.List(ctx, report.Query{Now: base})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 || got[0].Target != rec.Target {
+		t.Errorf("rows = %+v, want the upserted report", got)
+	}
+}
+
+// Upsert preserves created_at on update through the upsert statement
+// itself: a later Trigger overwrites updated_at, expiry, tracker and
+// sample but never the first-trigger timestamp (spec: The report
+// store — the statement preserves it, no read precedes the write).
+func TestUpsertPreservesCreatedAtOnUpdate(t *testing.T) {
+	repo := openTestRepo(t)
+	ctx := context.Background()
+	first := time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)
+	second := first.Add(time.Hour)
+	rec := bandage.Report{
+		Rule: "r", Chain: "c", Reason: "why", Target: "203.0.113.7/32",
+		CreatedAt: first, UpdatedAt: first, ExpiresAt: first.Add(24 * time.Hour),
+	}
+	if err := repo.Upsert(ctx, rec); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	// The update arrives with a different CreatedAt (a fresh record
+	// would say otherwise): the row's first-trigger timestamp wins.
+	rec.CreatedAt = second
+	rec.UpdatedAt = second
+	rec.ExpiresAt = second.Add(24 * time.Hour)
+	if err := repo.Upsert(ctx, rec); err != nil {
+		t.Fatalf("Upsert update: %v", err)
+	}
+
+	got, err := repo.List(ctx, report.Query{Now: second})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("rows = %+v, want one", got)
+	}
+	if got[0].CreatedAt != first {
+		t.Errorf("created_at = %v, want the first-trigger %v", got[0].CreatedAt, first)
+	}
+	if got[0].UpdatedAt != second {
+		t.Errorf("updated_at = %v, want the update %v", got[0].UpdatedAt, second)
 	}
 }

@@ -1,17 +1,23 @@
 // Package sqlite is the sqlite report repository adapter (modernc.org/sqlite,
 // pure Go). One row per (rule, target) with indexed rule/target/expiry
 // columns and a JSON record body; reports survive restarts while tracker
-// state stays memory-only (ADR 0002). The store opens a single
-// connection for every path (file and memory alike), so concurrent
-// writes serialize through it and land deterministically (ADR 0007).
+// state stays memory-only (ADR 0002). Writes flow through a single
+// connection so concurrent writes serialize through it and land
+// deterministically (ADR 0007); queries run on their own connections so
+// the API never queues behind upserts (ADR 0009). File databases run
+// journal_mode=WAL with synchronous=NORMAL: a commit survives a process
+// crash, losing only the final moments on power failure. :memory:
+// databases (tests) ignore WAL and treat every connection as a separate
+// database, so the read path falls back to the single write connection
+// there.
 package sqlite
 
 import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	bandage "github.com/HT4w5/bandage/internal/domain"
@@ -24,24 +30,81 @@ const driverName = "sqlite"
 
 // ReportRepository is a report.Repository backed by a sqlite database.
 type ReportRepository struct {
-	db *sql.DB
+	// write is the sole writer: exactly one connection, so every write
+	// serializes through it and lands deterministically (ADR 0007).
+	write *sql.DB
+	// read serves the query paths on its own connections (ADR 0009).
+	// For a :memory: database it is write — every connection to an
+	// in-memory database would be its own private database.
+	read *sql.DB
+	// upsert is prepared once at Open and reused by every Upsert.
+	upsert *sql.Stmt
 }
 
-// Open opens (creating if needed) the report database at path and ensures
-// the schema exists. One connection serves every path — the special
-// ":memory:" (tests) and file databases alike — making writes
-// deterministic under concurrency (ADR 0007).
+// upsertSQL inserts the row or refreshes the mutable columns on
+// conflict. created_at is deliberately absent from the UPDATE set: the
+// statement preserves it on update without reading the row first (spec:
+// Upsert sheds its pre-read).
+const upsertSQL = `
+INSERT INTO reports (rule, target, created_at, updated_at, expires_at, body)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (rule, target) DO UPDATE SET
+	updated_at = excluded.updated_at,
+	expires_at = excluded.expires_at,
+	body       = excluded.body`
+
+// Open opens (creating if needed) the report database at path and
+// ensures the schema exists. File databases run in journal_mode=WAL
+// with synchronous=NORMAL (ADR 0009); writes keep one connection
+// (ADR 0007) and queries get their own. A :memory: path (tests) keeps
+// everything on the single write connection.
 func Open(path string) (*ReportRepository, error) {
-	db, err := sql.Open(driverName, path)
+	write, err := sql.Open(driverName, path)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: open: %w", err)
 	}
-	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
+	write.SetMaxOpenConns(1)
+	if !isMemory(path) {
+		if _, err := write.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+			write.Close()
+			return nil, fmt.Errorf("sqlite: journal mode: %w", err)
+		}
+	}
+	// synchronous is per connection; the write connection is the only
+	// one that commits. NORMAL in WAL mode is durable across process
+	// crashes — only power failure can lose the final moments (ADR 0009).
+	if _, err := write.Exec(`PRAGMA synchronous=NORMAL`); err != nil {
+		write.Close()
+		return nil, fmt.Errorf("sqlite: synchronous: %w", err)
+	}
+	if _, err := write.Exec(schema); err != nil {
+		write.Close()
 		return nil, fmt.Errorf("sqlite: schema: %w", err)
 	}
-	return &ReportRepository{db: db}, nil
+	read := write
+	if !isMemory(path) {
+		// Opened after the pragmas: journal_mode=WAL is a property of
+		// the database file, so every read connection sees it.
+		read, err = sql.Open(driverName, path)
+		if err != nil {
+			write.Close()
+			return nil, fmt.Errorf("sqlite: open read path: %w", err)
+		}
+	}
+	upsert, err := write.Prepare(upsertSQL)
+	if err != nil {
+		read.Close()
+		write.Close()
+		return nil, fmt.Errorf("sqlite: prepare upsert: %w", err)
+	}
+	return &ReportRepository{write: write, read: read, upsert: upsert}, nil
+}
+
+// isMemory reports whether path names an in-memory database: WAL does
+// not apply there and each connection would be a separate database
+// (ADR 0009 consequences), so reads fall back to the write connection.
+func isMemory(path string) bool {
+	return path == ":memory:" || strings.Contains(path, "mode=memory")
 }
 
 const schema = `
@@ -68,31 +131,19 @@ type body struct {
 }
 
 func (r *ReportRepository) Close() error {
-	return r.db.Close()
+	err := r.read.Close()
+	if r.read != r.write {
+		if werr := r.write.Close(); err == nil {
+			err = werr
+		}
+	}
+	return err
 }
 
-// Upsert inserts or overwrites the report for (rule, target). created_at
-// is fixed at the row's first insert.
+// Upsert inserts or overwrites the report for (rule, target) in one
+// prepared statement: created_at is fixed at the row's first insert by
+// the statement itself — no read precedes the write.
 func (r *ReportRepository) Upsert(ctx context.Context, rec bandage.Report) error {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("sqlite: upsert: %w", err)
-	}
-	defer tx.Rollback()
-
-	var createdNS int64
-	err = tx.QueryRowContext(ctx,
-		`SELECT created_at FROM reports WHERE rule = ? AND target = ?`, rec.Rule, rec.Target).
-		Scan(&createdNS)
-	switch {
-	case err == nil:
-		rec.CreatedAt = time.Unix(0, createdNS).UTC()
-	case errors.Is(err, sql.ErrNoRows):
-		// First trigger: keep rec.CreatedAt.
-	default:
-		return fmt.Errorf("sqlite: upsert: %w", err)
-	}
-
 	rawBody, err := json.Marshal(body{
 		Chain:   rec.Chain,
 		Reason:  rec.Reason,
@@ -102,28 +153,19 @@ func (r *ReportRepository) Upsert(ctx context.Context, rec bandage.Report) error
 	if err != nil {
 		return fmt.Errorf("sqlite: upsert: %w", err)
 	}
-
-	_, err = tx.ExecContext(ctx, `
-INSERT INTO reports (rule, target, created_at, updated_at, expires_at, body)
-VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT (rule, target) DO UPDATE SET
-	updated_at = excluded.updated_at,
-	expires_at = excluded.expires_at,
-	body       = excluded.body`,
+	_, err = r.upsert.ExecContext(ctx,
 		rec.Rule, rec.Target,
 		rec.CreatedAt.UnixNano(), rec.UpdatedAt.UnixNano(), rec.ExpiresAt.UnixNano(),
 		string(rawBody))
 	if err != nil {
 		return fmt.Errorf("sqlite: upsert: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("sqlite: upsert: %w", err)
-	}
 	return nil
 }
 
 // List returns matching, unexpired reports sorted by created_at
-// descending (ties broken by rule, target for determinism).
+// descending (ties broken by rule, target for determinism). It runs on
+// the read path's own connections (ADR 0009).
 func (r *ReportRepository) List(ctx context.Context, q report.Query) ([]bandage.Report, error) {
 	query := `SELECT rule, target, created_at, updated_at, expires_at, body FROM reports WHERE expires_at > ?`
 	args := []any{q.Now.UnixNano()}
@@ -137,7 +179,7 @@ func (r *ReportRepository) List(ctx context.Context, q report.Query) ([]bandage.
 	}
 	query += ` ORDER BY created_at DESC, rule ASC, target ASC`
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.read.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list: %w", err)
 	}
@@ -195,7 +237,7 @@ func (r *ReportRepository) Delete(ctx context.Context, q report.Query) (int, err
 	default:
 		return 0, fmt.Errorf("sqlite: delete: %w", report.ErrUnfiltered)
 	}
-	res, err := r.db.ExecContext(ctx, query, args...)
+	res, err := r.write.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, fmt.Errorf("sqlite: delete: %w", err)
 	}
@@ -208,7 +250,7 @@ func (r *ReportRepository) Delete(ctx context.Context, q report.Query) (int, err
 
 // DeleteExpired deletes rows whose expires_at has passed.
 func (r *ReportRepository) DeleteExpired(ctx context.Context, now time.Time) (int, error) {
-	res, err := r.db.ExecContext(ctx, `DELETE FROM reports WHERE expires_at <= ?`, now.UnixNano())
+	res, err := r.write.ExecContext(ctx, `DELETE FROM reports WHERE expires_at <= ?`, now.UnixNano())
 	if err != nil {
 		return 0, fmt.Errorf("sqlite: delete expired: %w", err)
 	}

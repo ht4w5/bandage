@@ -146,7 +146,7 @@ func BenchmarkReportDeleteExpired(b *testing.B) {
 				// The expiring case re-seeds every op (its rows are gone
 				// after each sweep), so pre-seeding would collide on the
 				// (rule, target) primary key.
-				if _, err := repo.db.Exec(seed); err != nil {
+				if _, err := repo.write.Exec(seed); err != nil {
 					b.Fatalf("seed: %v", err)
 				}
 			}
@@ -154,7 +154,7 @@ func BenchmarkReportDeleteExpired(b *testing.B) {
 			for b.Loop() {
 				if tc.expiring {
 					b.StopTimer()
-					if _, err := repo.db.Exec(seed); err != nil {
+					if _, err := repo.write.Exec(seed); err != nil {
 						b.Fatalf("seed: %v", err)
 					}
 					b.StartTimer()
