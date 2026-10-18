@@ -16,7 +16,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"runtime"
 	"syscall"
 	"time"
 
@@ -41,13 +40,13 @@ const (
 const shutdownTimeout = 10 * time.Second
 
 // options is the resolved command line: paths and mode plus the values
-// an operator can override per run, resolved with flag > config >
-// default precedence.
+// an operator can override per run, resolved with flag > config
+// precedence (the built-in defaults belong to config.go alone).
 type options struct {
 	configPath string
 	rulesPath  string
 	test       bool
-	logLevel   string
+	logLevel   bandage.Level
 	workers    int
 }
 
@@ -56,11 +55,12 @@ func main() {
 	os.Exit(code)
 }
 
-// run is the command's testable seam: flag parsing, shorthands, exit
-// behavior and flag > config > default precedence (spec Testing
-// Decisions — nothing else is tested through it). It writes operator
-// output to stdout, errors and usage to the given writers, and returns
-// the process exit code plus the resolved options.
+// run is the command's testable seam: flag parsing and shorthands,
+// -v/-h exit behavior, --test failure exit codes and flag > config
+// precedence (spec Testing Decisions — nothing else may be tested
+// through it; the plan content is asserted at the app seam). It writes
+// operator output to stdout, errors and usage to the given writers, and
+// returns the process exit code plus the resolved options.
 func run(args []string, stdout, stderr io.Writer) (int, options) {
 	fs := flag.NewFlagSet("bandage", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -91,32 +91,31 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	if err != nil {
 		return fail(stderr, err), options{}
 	}
+	level, err := resolveLogLevel(*logLevel, fs.Changed("log-level"), cfg.Log.Level)
+	if err != nil {
+		return fail(stderr, err), options{}
+	}
 	opts := options{
 		configPath: *configPath,
 		rulesPath:  *rulesPath,
 		test:       *testMode,
-		// Precedence: the explicit flag wins, then the config value,
-		// then the built-in default — decided by whether the flag was
-		// set. log.level and pipeline.workers both come from the config
-		// here; the flags above override them when passed.
-		logLevel: resolveLogLevel(*logLevel, fs.Changed("log-level"), string(cfg.Log.Level)),
+		// Precedence for the two per-run overrides is flag over config,
+		// decided by whether the flag was set (spec story 9). The
+		// built-in defaults live with the config decoder alone —
+		// validateConfig fills log.level (info) and pipeline.workers (the
+		// machine's CPU count) before this point — so config.go is their
+		// single owner and there is no third tier here.
+		logLevel: level,
 		workers:  resolveWorkers(*workers, fs.Changed("workers"), cfg.Pipeline.Workers),
 	}
-	// The resolved worker count must be at least 1 (spec story 16):
-	// config load rejects an invalid pipeline.workers, an explicit -w
-	// value is validated here, and the daemon receives the resolved
-	// count either way.
-	if opts.workers < 1 {
-		return fail(stderr, fmt.Errorf("pipeline.workers: must be positive (got %d)", opts.workers)), opts
-	}
+	// The resolved values ride the validated config to the daemon.
+	// pipeline.workers keeps exactly its load-time rejection and app.New's
+	// invariant (spec story 16) — no third check lives here.
+	cfg.Log.Level = opts.logLevel
 	cfg.Pipeline.Workers = opts.workers
-	level, err := bandage.ParseLevel(opts.logLevel)
-	if err != nil {
-		return fail(stderr, err), opts
-	}
 	// The one program-wide logger (ADR 0005): built from the resolved
 	// config here and passed to the daemon and its adapters.
-	logger := app.NewLogger(stderr, level)
+	logger := app.NewLogger(stderr, opts.logLevel)
 
 	if opts.test {
 		plan, err := app.Test(opts.configPath, opts.rulesPath)
@@ -163,33 +162,27 @@ func usage(w io.Writer, fs *flag.FlagSet) {
 	fmt.Fprintf(w, "%s\n\nUsage:\n  bandage [flags]\n\nFlags:\n%s", identity.Header(), fs.FlagUsages())
 }
 
-// resolveLogLevel applies flag > config > default precedence to the log
-// level: the flag wins when explicitly set, then the config value, then
-// the built-in default.
-func resolveLogLevel(flagValue string, flagSet bool, configValue string) string {
-	switch {
-	case flagSet:
-		return flagValue
-	case configValue != "":
-		return configValue
-	default:
-		return "info"
+// resolveLogLevel resolves the log level straight to a domain Level
+// (nothing re-parses it downstream): the flag wins when explicitly set —
+// it must then name one of the four level words — otherwise the config
+// value stands (config.go owns the info default).
+func resolveLogLevel(flagValue string, flagSet bool, configValue bandage.Level) (bandage.Level, error) {
+	if flagSet {
+		return bandage.ParseLevel(flagValue)
 	}
+	return configValue, nil
 }
 
-// resolveWorkers applies flag > config > default precedence to the
-// worker count: the flag wins when explicitly set, then the config
-// value, then the built-in default — the machine's CPU count (spec
-// story 15, ADR 0007).
+// resolveWorkers applies flag > config precedence to the worker count:
+// the flag wins when explicitly set, otherwise the config value stands
+// (config.go owns the CPU-count default, spec story 15 / ADR 0007). The
+// resolved count's invariant (at least 1) is guarded where workers are
+// built: app.New.
 func resolveWorkers(flagValue int, flagSet bool, configValue int) int {
-	switch {
-	case flagSet:
+	if flagSet {
 		return flagValue
-	case configValue != 0:
-		return configValue
-	default:
-		return runtime.NumCPU()
 	}
+	return configValue
 }
 
 // fail reports err on the error stream and returns the exit code.

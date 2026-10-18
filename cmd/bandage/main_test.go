@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	bandage "github.com/HT4w5/bandage/internal/domain"
 	"github.com/HT4w5/bandage/internal/identity"
 )
 
@@ -205,19 +206,19 @@ func TestTestModeFailsNonZeroOnInvalidInput(t *testing.T) {
 func TestLogLevelPrecedence(t *testing.T) {
 	cfgPath, rulesPath := writeConfig(t)
 
-	// Flag > config > default: the explicit -l wins, then log.level,
-	// then the built-in default (spec: precedence).
+	// Flag > config: the explicit -l wins over log.level; validateConfig
+	// owns the info default (spec story 9).
 	tests := []struct {
 		name   string
 		config string // empty: the default valid fixture
 		extra  []string
-		want   string
+		want   bandage.Level
 	}{
-		{name: "default", want: "info"},
-		{name: "config over default", config: testConfig + "\nlog:\n  level: warn\n", want: "warn"},
-		{name: "flag over config", config: testConfig + "\nlog:\n  level: warn\n", extra: []string{"-l", "error"}, want: "error"},
-		{name: "short flag", extra: []string{"-l", "warn"}, want: "warn"},
-		{name: "long flag", extra: []string{"--log-level", "debug"}, want: "debug"},
+		{name: "default", want: bandage.LevelInfo},
+		{name: "config over default", config: testConfig + "\nlog:\n  level: warn\n", want: bandage.LevelWarn},
+		{name: "flag over config", config: testConfig + "\nlog:\n  level: warn\n", extra: []string{"-l", "error"}, want: bandage.LevelError},
+		{name: "short flag", extra: []string{"-l", "warn"}, want: bandage.LevelWarn},
+		{name: "long flag", extra: []string{"--log-level", "debug"}, want: bandage.LevelDebug},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -232,7 +233,7 @@ func TestLogLevelPrecedence(t *testing.T) {
 				t.Fatalf("code = %d, want 0 (stderr %q)", code, stderr.String())
 			}
 			if opts.logLevel != tt.want {
-				t.Errorf("logLevel = %q, want %q (flag > config > default)", opts.logLevel, tt.want)
+				t.Errorf("logLevel = %q, want %q (flag > config)", opts.logLevel, tt.want)
 			}
 		})
 	}
@@ -241,7 +242,7 @@ func TestLogLevelPrecedence(t *testing.T) {
 func TestWorkersPrecedence(t *testing.T) {
 	cfgPath, rulesPath := writeConfig(t)
 	// A config value exercises the middle precedence tier (flag >
-	// config > default, spec story 9).
+	// config, spec story 9; config.go owns the CPU-count default).
 	cfg4Path := writeTemp(t, strings.Replace(testConfig, "cache:", "pipeline:\n  workers: 4\n\ncache:", 1))
 
 	tests := []struct {
@@ -265,28 +266,20 @@ func TestWorkersPrecedence(t *testing.T) {
 				t.Fatalf("code = %d, want 0 (stderr %q)", code, stderr.String())
 			}
 			if opts.workers != tt.want {
-				t.Errorf("workers = %d, want %d (flag > config > default)", opts.workers, tt.want)
+				t.Errorf("workers = %d, want %d (flag > config)", opts.workers, tt.want)
 			}
 		})
 	}
 }
 
-// The resolved worker count must be at least 1: an invalid -w value
-// fails loudly instead of reaching the daemon (spec story 16).
-func TestInvalidWorkersFails(t *testing.T) {
-	for _, w := range []string{"0", "-1"} {
-		cfgPath, rulesPath := writeConfig(t)
-		var stdout, stderr bytes.Buffer
-		code, _ := run([]string{"-t", "-c", cfgPath, "-r", rulesPath, "-w", w}, &stdout, &stderr)
-		if code != 1 {
-			t.Errorf("run(-w %s) code = %d, want 1", w, code)
-		}
-		if !strings.Contains(stderr.String(), "pipeline.workers") {
-			t.Errorf("stderr = %q, want the pipeline.workers error", stderr.String())
-		}
-	}
-}
+// The resolved worker count's invariant (at least 1, spec story 16) is
+// guarded in exactly two places: config load rejects an invalid
+// pipeline.workers (the strict-config table tests) and app.New guards
+// the invariant (TestNewRejectsNonPositiveWorkerCount) — run() does
+// neither, so nothing validates it a third time.
 
+// An invalid -l flag value fails loudly instead of reaching the daemon
+// (flag parsing at the run seam).
 func TestInvalidLogLevelFails(t *testing.T) {
 	cfgPath, rulesPath := writeConfig(t)
 	var stdout, stderr bytes.Buffer
