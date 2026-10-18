@@ -128,7 +128,9 @@ increments by 1, `bandwidth` by `sent`, `replay` by `min(sent/size, 1)` —
 skipped when `event.SizeBytes` is `FilesizeUnknown`. Decay uses **event
 time** (the log timestamp, flux parity); out-of-order events do not decay.
 Rules without a tracker match on filter alone (flux `ALL` rule analogue)
-and carry routing actions only — `report` requires a tracker.
+and carry routing actions; `report` on them is legal (the tracker-less
+tripwire — one report per (rule, Target) while it is alive,
+docs/rules.md).
 
 ## 2. Ingress event fields (v0)
 
@@ -429,8 +431,8 @@ No `/v1` prefix, no debug endpoints. The API never writes reports; only
   filters (with `ParseError` line/col), dangling `goto`/`jump` targets,
   cyclic `goto`/`jump` graphs (the chain graph must be acyclic), duplicate
   rule IDs, `report` actions missing `reason`/`ttl`, `reason` not a slug
-  (`^[a-z0-9][a-z0-9_-]*$`), non-positive `ttl`, `report` on a tracker-less
-  rule, out-of-range `target_prefix` (ipv4 ≤ 32, ipv6 ≤ 64).
+  (`^[a-z0-9][a-z0-9_-]*$`), non-positive `ttl`, out-of-range `target_prefix`
+  (ipv4 ≤ 32, ipv6 ≤ 64).
 - No hot reload in v0: config and rules changes take effect on restart.
 - `bandage -t` (`--test`) prints the validated chain plan, headed by the
   build identity header, and exits without ingesting. Command-line

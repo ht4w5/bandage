@@ -11,7 +11,7 @@ then make the easy change").
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] Every write, delete and expiry deletion of reports passes through
       the report service; no caller mutates report rows around it
