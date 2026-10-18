@@ -2,6 +2,7 @@ package evaluation
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"testing"
 	"time"
@@ -22,15 +23,21 @@ type matchAll struct{}
 
 func (matchAll) Match(*bandage.Event) bool { return true }
 
-// stubCache is a TrackerCache test double recording every update.
+// stubCache is a TrackerCache test double recording every update and
+// every clear.
 type stubCache struct {
 	records map[string]bandage.Record
 	updates []stubUpdate
+	clears  []stubClear
 }
 
 type stubUpdate struct {
 	ns, key string
 	ttl     time.Duration
+}
+
+type stubClear struct {
+	ns, key string
 }
 
 func (c *stubCache) Update(_ context.Context, ns, key string, ttl time.Duration, fn func(*bandage.Record)) (bandage.Record, error) {
@@ -45,15 +52,39 @@ func (c *stubCache) Update(_ context.Context, ns, key string, ttl time.Duration,
 	return r, nil
 }
 
+// Clear empties the record for (ns, key) and records the call — the
+// Trigger reset cadence is observable at this seam (spec Testing
+// Decisions: "reset cadence and action runs").
+func (c *stubCache) Clear(_ context.Context, ns, key string) error {
+	c.clears = append(c.clears, stubClear{ns: ns, key: key})
+	delete(c.records, ns+"\x00"+key)
+	return nil
+}
+
 // stubSink is a ReportSink test double capturing the reports a Trigger
-// writes.
+// writes; the next failures writes fail (the failed-write retry seam).
 type stubSink struct {
-	upserts []bandage.Report
+	upserts  []bandage.Report
+	attempts int
+	failures int
 }
 
 func (s *stubSink) Trigger(_ context.Context, rec bandage.Report) error {
+	s.attempts++
+	if s.failures > 0 {
+		s.failures--
+		return errors.New("report write failed")
+	}
 	s.upserts = append(s.upserts, rec)
 	return nil
+}
+
+// captureLogger is a Logger test double recording every record's fields
+// (what actions see is the contract — the Trigger-time reading seam).
+type captureLogger struct{ records []map[string]any }
+
+func (l *captureLogger) Log(_ bandage.Level, _ string, fields map[string]any) {
+	l.records = append(l.records, fields)
 }
 
 // constVolume is a bandage.VolumeMethod test double: one tolerated
@@ -114,6 +145,41 @@ func (h *harness) evaluate(t *testing.T, ev *bandage.Event) {
 	t.Helper()
 	if err := h.svc.Evaluate(context.Background(), ev); err != nil {
 		t.Fatalf("Evaluate error: %v", err)
+	}
+}
+
+// evaluateErr evaluates one event expecting the report write to fail
+// and propagate (a failed write aborts the action list).
+func (h *harness) evaluateErr(t *testing.T, ev *bandage.Event) {
+	t.Helper()
+	if err := h.svc.Evaluate(context.Background(), ev); err == nil {
+		t.Fatalf("Evaluate error = nil, want the failed report write to propagate")
+	}
+}
+
+// newRuleHarness assembles the service around one rule with the given
+// tracker and actions (the Trigger-semantics seam: reset cadence, retry
+// and action runs over the stub ports).
+func newRuleHarness(t *testing.T, cfg *bandage.TrackerConfig, actions ...bandage.Action) *harness {
+	t.Helper()
+	if cfg != nil && cfg.TargetPrefix == (bandage.TargetPrefix{}) {
+		cfg.TargetPrefix = bandage.DefaultTargetPrefix
+	}
+	sink := &stubSink{}
+	cache := &stubCache{}
+	chains := []bandage.Chain{{
+		Name: "abuse",
+		Rules: []bandage.Rule{{
+			ID:      "rate-overflow",
+			Filter:  matchAll{},
+			Tracker: cfg,
+			Actions: actions,
+		}},
+	}}
+	return &harness{
+		svc:  NewService(chains, cache, sink, func() time.Time { return time.Unix(1000, 0) }, nil),
+		sink: sink,
+		cch:  cache,
 	}
 }
 
@@ -286,5 +352,180 @@ func TestReplayTTLDerivedPerEvent(t *testing.T) {
 	h0.evaluate(t, event(100, "/a", 100, 100))
 	if got := h0.cch.updates[0].ttl; got != bandage.DefaultTTL {
 		t.Errorf("leak 0 TTL = %v, want %v", got, bandage.DefaultTTL)
+	}
+}
+
+// --- Trigger semantics (GLOSSARY Trigger, ADR 0008, ticket 02) ---
+//
+// A Trigger is a match that ran the rule's report action; it empties
+// the matched rule's tracker record for the match's key (the Target,
+// per (Target, path) for replay trackers), so a flagged Target must
+// accumulate a full volume of abuse again before it can Trigger again.
+// A failed write is not a Trigger outcome: the record stays intact and
+// the next matching event retries the report. These tests observe the
+// reset cadence at the stub ports and through subsequent Triggers —
+// never the tracker record's internal state.
+
+// A Trigger empties the matched rule's tracker record for the match's
+// key: one Trigger per accumulation episode, not per event.
+func TestTriggerEmptiesTrackerRecord(t *testing.T) {
+	h := newRuleHarness(t, &bandage.TrackerConfig{Kind: bandage.TrackRate, Leak: 0, Volume: 2},
+		bandage.Action{Report: &bandage.ReportAction{Reason: "overflow", TTL: time.Hour}})
+
+	// 1 + 1 + 1 = 3 > 2 overflows on the third event: one Trigger.
+	for i := 0; i < 3; i++ {
+		h.evaluate(t, event(int64(100+i), "/a", 100, 0))
+	}
+	if h.sink.attempts != 1 {
+		t.Fatalf("report writes = %d, want 1 (one Trigger per episode)", h.sink.attempts)
+	}
+	if got := h.sink.upserts[0].Tracker.Value; got != 3 {
+		t.Errorf("trigger reading = %v, want 3 (the Trigger-time reading, pre-reset)", got)
+	}
+	if got := h.cch.clears; len(got) != 1 || got[0].ns != "rate-overflow" || got[0].key != "203.0.113.7/32" {
+		t.Errorf("tracker clears = %+v, want the match's Target key emptied once", got)
+	}
+
+	// The bucket re-armed: two more events accumulate 2 — no Trigger,
+	// because a full volume must recur — and the third Triggers again.
+	for i := 0; i < 2; i++ {
+		h.evaluate(t, event(int64(200+i), "/a", 100, 0))
+	}
+	if h.sink.attempts != 1 {
+		t.Fatalf("report writes = %d, want still 1 (a full volume must recur)", h.sink.attempts)
+	}
+	h.evaluate(t, event(300, "/a", 100, 0))
+	if h.sink.attempts != 2 {
+		t.Fatalf("report writes = %d, want 2 (second episode Triggered)", h.sink.attempts)
+	}
+}
+
+// A replay rule's Trigger empties the (Target, path) record the match
+// keyed on: per-path accumulation re-arms while other paths keep their
+// state (spec story 16).
+func TestTriggerEmptiesReplayTrackerPerPath(t *testing.T) {
+	h := newHarness(t, &bandage.TrackerConfig{Kind: bandage.TrackReplay, Leak: 0, Volume: 2})
+
+	// /a and /b accumulate a full download each per event. /a reaches
+	// 3 > 2 and Triggers; /b sits at 2.
+	for i, path := range []string{"/a", "/b", "/a", "/b", "/a"} {
+		h.evaluate(t, event(int64(100+i), path, 100, 100))
+	}
+	if h.sink.attempts != 1 {
+		t.Fatalf("report writes = %d, want 1 (/a overflows)", h.sink.attempts)
+	}
+	want := "203.0.113.7/32\x00/a"
+	if got := h.cch.clears; len(got) != 1 || got[0].ns != "iso-replay" || got[0].key != want {
+		t.Fatalf("tracker clears = %+v, want only (%q, %q) emptied", got, "iso-replay", want)
+	}
+
+	// /b kept its accumulation: its next download overflows (3 > 2)…
+	h.evaluate(t, event(105, "/b", 100, 100))
+	if h.sink.attempts != 2 {
+		t.Fatalf("report writes = %d, want 2 (/b kept its state)", h.sink.attempts)
+	}
+	// …while /a re-armed and needs a full volume again.
+	h.evaluate(t, event(106, "/a", 100, 100))
+	if h.sink.attempts != 2 {
+		t.Fatalf("report writes = %d, want still 2 (/a re-arms from empty)", h.sink.attempts)
+	}
+}
+
+// A failed report write leaves the tracker record intact and the next
+// matching event retries the report (spec story 5): the detection is
+// never lost to a store outage.
+func TestFailedReportWriteLeavesTrackerRecordIntact(t *testing.T) {
+	h := newRuleHarness(t, &bandage.TrackerConfig{Kind: bandage.TrackRate, Leak: 0, Volume: 2},
+		bandage.Action{Report: &bandage.ReportAction{Reason: "overflow", TTL: time.Hour}})
+	h.sink.failures = 1
+
+	h.evaluate(t, event(100, "/a", 100, 0))
+	h.evaluate(t, event(101, "/a", 100, 0))
+	h.evaluateErr(t, event(102, "/a", 100, 0))
+	if h.sink.attempts != 1 || len(h.sink.upserts) != 0 {
+		t.Fatalf("attempts = %d, upserts = %d, want one failed write", h.sink.attempts, len(h.sink.upserts))
+	}
+	if got := h.cch.clears; len(got) != 0 {
+		t.Fatalf("tracker clears = %+v, want none (a failed write is not a Trigger outcome)", got)
+	}
+
+	// The episode was kept: the next matching event overflows again
+	// (4 > 2) and retries the write — which lands.
+	h.evaluate(t, event(200, "/a", 100, 0))
+	if h.sink.attempts != 2 || len(h.sink.upserts) != 1 {
+		t.Fatalf("attempts = %d, upserts = %d, want the retry to land", h.sink.attempts, len(h.sink.upserts))
+	}
+	// The landed Trigger emptied the record: a lone event no longer
+	// overflows.
+	h.evaluate(t, event(300, "/a", 100, 0))
+	if h.sink.attempts != 2 {
+		t.Fatalf("attempts = %d, want still 2 (the landed Trigger emptied the record)", h.sink.attempts)
+	}
+}
+
+// A match whose actions contain no report action never empties the
+// tracker: log/goto/stop-only rules accumulate as before.
+func TestMatchWithoutReportActionKeepsTracker(t *testing.T) {
+	h := newRuleHarness(t, &bandage.TrackerConfig{Kind: bandage.TrackRate, Leak: 0, Volume: 100},
+		bandage.Action{Log: &bandage.LogAction{Level: bandage.LevelDebug, Message: "SEEN:"}})
+	for i := 0; i < 5; i++ {
+		h.evaluate(t, event(int64(100+i), "/a", 100, 0))
+	}
+	if got := h.cch.clears; len(got) != 0 {
+		t.Errorf("tracker clears = %+v, want none (no report action ran)", got)
+	}
+	for full, r := range h.cch.records {
+		if r.Value != 5 {
+			t.Errorf("record %q = %+v, want value 5 (log-only rules accumulate as before)", full, r)
+		}
+	}
+	if h.sink.attempts != 0 {
+		t.Errorf("report writes = %d, want 0", h.sink.attempts)
+	}
+}
+
+// Tracker-less rules have nothing to empty: every match Triggers on
+// filter alone and no record is ever cleared.
+func TestTrackerlessRuleClearsNothing(t *testing.T) {
+	h := newRuleHarness(t, nil,
+		bandage.Action{Report: &bandage.ReportAction{Reason: "tripwire", TTL: time.Hour}})
+	for i := 0; i < 3; i++ {
+		h.evaluate(t, event(int64(100+i), "/a", 100, 0))
+	}
+	if h.sink.attempts != 3 {
+		t.Errorf("report writes = %d, want 3 (tracker-less rules match on filter alone)", h.sink.attempts)
+	}
+	if got := h.cch.clears; len(got) != 0 {
+		t.Errorf("tracker clears = %+v, want none (nothing to clear)", got)
+	}
+}
+
+// Actions see the Trigger-time tracker reading (pre-reset): the log
+// action after the report action logs the reading that overflowed,
+// never the emptied bucket.
+func TestActionsSeeTriggerTimeReading(t *testing.T) {
+	log := &captureLogger{}
+	sink, cache := &stubSink{}, &stubCache{}
+	cfg := &bandage.TrackerConfig{Kind: bandage.TrackRate, Leak: 0, Volume: 2, TargetPrefix: bandage.DefaultTargetPrefix}
+	chains := []bandage.Chain{{Name: "abuse", Rules: []bandage.Rule{{
+		ID: "rate-overflow", Filter: matchAll{}, Tracker: cfg,
+		Actions: []bandage.Action{
+			{Report: &bandage.ReportAction{Reason: "overflow", TTL: time.Hour}},
+			{Log: &bandage.LogAction{Level: bandage.LevelInfo, Message: "OVERFLOW:"}},
+		},
+	}}}}
+	svc := NewService(chains, cache, sink, func() time.Time { return time.Unix(1000, 0) }, log)
+
+	for i := 0; i < 3; i++ {
+		if err := svc.Evaluate(context.Background(), event(int64(100+i), "/a", 100, 0)); err != nil {
+			t.Fatalf("Evaluate error: %v", err)
+		}
+	}
+	if len(log.records) != 1 {
+		t.Fatalf("log records = %d, want 1 (the match's log action)", len(log.records))
+	}
+	want := bandage.TrackerReading{Track: "rate", Value: 3, Volume: 2}
+	if got := log.records[0]["tracker"]; got != want {
+		t.Errorf("logged tracker reading = %+v, want %+v (the Trigger-time reading, pre-reset)", got, want)
 	}
 }

@@ -259,6 +259,33 @@ func TestStoreNoTTLEntrySurvivesSweeps(t *testing.T) {
 	}
 }
 
+// Clear empties the record for (ns, key) — the Trigger reset — so later
+// updates start from zero; clearing an absent key is a no-op, and a
+// clear counts in no statistics (neither a get nor a set, never an
+// eviction — the entry simply leaves with the reset).
+func TestStoreClearEmptiesRecord(t *testing.T) {
+	s := newStore(3, 1, newTestClock(time.Time{}).Now, testLogger(&bytes.Buffer{}))
+
+	update(t, s, "rule-one", "a", time.Hour, 5)
+	if err := s.Clear(context.Background(), "rule-one", "a"); err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+	if st := s.Statistics(); st != (track.Statistics{Gets: 1, Sets: 1, Misses: 1, EntryCap: 3}) {
+		t.Errorf("after clear = %+v, want {1 1 1 0 0 3} (a clear is not a get, set or eviction)", st)
+	}
+	if rec := update(t, s, "rule-one", "a", time.Hour, 1); rec.Value != 1 {
+		t.Errorf("update after clear = %v, want 1 (the bucket restarts from zero)", rec.Value)
+	}
+
+	// Clearing an absent key is a no-op.
+	if err := s.Clear(context.Background(), "rule-one", "nope"); err != nil {
+		t.Fatalf("Clear(absent): %v", err)
+	}
+	if st := s.Statistics(); st != (track.Statistics{Gets: 2, Sets: 2, Misses: 2, Size: 1, EntryCap: 3}) {
+		t.Errorf("after absent clear = %+v, want {2 2 2 0 1 3}", st)
+	}
+}
+
 // The statistics counters: gets and sets count lookups and writes,
 // misses count lookups without a live entry, evictions count entries
 // removed by the entry cap, size counts entries (TTL removals are not

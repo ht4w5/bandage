@@ -87,22 +87,22 @@ func TestWorkerPoolCountsEveryLineOnce(t *testing.T) {
 }
 
 // Concurrent Events for one Target never corrupt tracker state: the
-// per-key update is atomic (no update lost or double-applied) and a
-// duplicate concurrent trigger just refreshes the same (rule, Target)
-// report (spec story 18, ADR 0007).
+// per-key update is atomic (no update lost or double-applied),
+// concurrent Triggers converge on the same (rule, Target) report, and
+// each Trigger empties the bucket (spec story 18, ADR 0007; ticket 02).
 func TestWorkerPoolConcurrentEventsOneTarget(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	d := startTestDaemonCfg(t, clock, "unixgram", ":memory:", poolRules, func(c *Config) {
 		c.Pipeline = Pipeline{Workers: 4}
 	})
 
-	// Every event past the tenth overflows on its own, so concurrent
-	// triggers race to upsert the same (rule, Target) report. Timestamps
-	// alternate out of order on purpose.
+	// Every event overflows on its own (2000 > 1000), so concurrent
+	// triggers race to upsert the same (rule, Target) report and each
+	// empties the bucket. Timestamps alternate out of order on purpose.
 	const events = 24
 	times := []string{eventTime1, "1734346934.123"}
 	for i := range events {
-		d.send(nginxLine(times[i%2], "203.0.113.7", "GET", "/big", 200, 100))
+		d.send(nginxLine(times[i%2], "203.0.113.7", "GET", "/big", 200, 2000))
 	}
 	d.waitProcessed(t, events)
 
@@ -111,24 +111,28 @@ func TestWorkerPoolConcurrentEventsOneTarget(t *testing.T) {
 		t.Fatalf("reports = %+v, want exactly one (a duplicate concurrent trigger refreshes the same row)", doc.Reports)
 	}
 
-	// One more event reads back the exact accumulated total: every
-	// concurrent update landed exactly once (leak 0, so the total is
-	// order-independent).
-	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 100))
-	d.waitProcessed(t, events+1)
+	// Every concurrent update lands exactly once: the next events
+	// accumulate on the emptied bucket — 5×100 + 600 = 1100 > 1000
+	// overflows on the last and reads back the exact total (leak 0, so
+	// the total is order-independent).
+	for range 5 {
+		d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/small", 200, 100))
+	}
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/small", 200, 600))
+	d.waitProcessed(t, events+6)
 
 	doc = d.getReports(t, nil)
 	if len(doc.Reports) != 1 {
 		t.Fatalf("reports = %+v, want exactly one", doc.Reports)
 	}
-	if v := doc.Reports[0].Tracker.Value; v != (events+1)*100 {
-		t.Errorf("tracker value = %v, want %v (atomic accumulation: every event counted once)", v, (events+1)*100)
+	if v := doc.Reports[0].Tracker.Value; v != 1100 {
+		t.Errorf("tracker value = %v, want 1100 (atomic accumulation: every event counted once)", v)
 	}
 }
 
 // pipeline.workers: 1 processes Events strictly in arrival order (spec
-// story 19): the accumulated value and the last upserted sample pin
-// the processing order exactly — every other order changes one of them.
+// story 19): the Trigger reading and its sample pin the processing
+// order exactly — every other order changes one of them.
 func TestWorkersOneProcessesInArrivalOrder(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -137,16 +141,18 @@ chains:
   - name: abuse
     rules:
       - id: egress
-        tracker: {track: bandwidth, leak: 1, volume: 500}
+        tracker: {track: bandwidth, leak: 1, volume: 1500}
         actions: [{report: {reason: egress-overflow, ttl: 1h}}]
 `
 	d := startTestDaemonCfg(t, clock, "unixgram", ":memory:", rules, func(c *Config) {
 		c.Pipeline = Pipeline{Workers: 1}
 	})
 
-	// Arrival order t1 < t2 < t3, each event overflowing. Strict
-	// arrival order accumulates 1000 → 2000−100 → 2900−100 = 2800 and
-	// the last upsert is t3's.
+	// Arrival order t1 < t2 < t3. Strict arrival accumulates
+	// 1000 → 2000−100 = 1900, which overflows 1500 and empties the
+	// bucket (the trigger reading, pre-reset); t3 accumulates 1000 alone
+	// and stays quiet. Every other processing order changes the reading
+	// (decay vs out-of-order increments) or the sample.
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 1000))
 	d.send(nginxLine("1734346034.123", "203.0.113.7", "GET", "/big", 200, 1000))
 	d.send(nginxLine("1734346134.123", "203.0.113.7", "GET", "/big", 200, 1000))
@@ -157,12 +163,12 @@ chains:
 		t.Fatalf("reports = %+v, want exactly one", doc.Reports)
 	}
 	r := doc.Reports[0]
-	if r.Tracker.Value != 2800 {
-		t.Errorf("tracker value = %v, want 2800 (strict arrival order)", r.Tracker.Value)
+	if r.Tracker.Value != 1900 {
+		t.Errorf("tracker value = %v, want 1900 (strict arrival order)", r.Tracker.Value)
 	}
-	wantTime := time.Unix(1734345934+200, 123000000).UTC().Format(time.RFC3339)
+	wantTime := time.Unix(1734345934+100, 123000000).UTC().Format(time.RFC3339)
 	if r.Sample.Time != wantTime {
-		t.Errorf("sample time = %q, want %q (the last-arriving event's)", r.Sample.Time, wantTime)
+		t.Errorf("sample time = %q, want %q (the triggering event's)", r.Sample.Time, wantTime)
 	}
 }
 

@@ -38,6 +38,12 @@ func (c *benchCache) Update(_ context.Context, ns, key string, _ time.Duration, 
 	return r, nil
 }
 
+// Clear empties the record for (ns, key) — the Trigger reset.
+func (c *benchCache) Clear(_ context.Context, ns, key string) error {
+	delete(c.records, ns+bandage.KeySep+key)
+	return nil
+}
+
 // benchSink is a counting ReportSink double.
 type benchSink struct{ triggers int }
 
