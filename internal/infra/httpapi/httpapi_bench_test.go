@@ -46,14 +46,16 @@ func benchListReport(target string) bandage.Report {
 	}
 }
 
-// seedReports fills the repository with rows distinct reports and
-// checks the read path really returns every one of them.
+// seedReports fills the repository with rows distinct reports through
+// the report service (every report write goes through it) and checks
+// the read path really returns every one of them.
 func seedReports(b *testing.B, repo *sqlite.ReportRepository, rows int) {
 	b.Helper()
 	ctx := context.Background()
+	svc := report.NewService(repo)
 	for i := 0; i < rows; i++ {
-		if err := repo.Upsert(ctx, benchListReport("bench-target-"+strconv.Itoa(i)+"/32")); err != nil {
-			b.Fatalf("seed Upsert: %v", err)
+		if err := svc.Trigger(ctx, benchListReport("bench-target-"+strconv.Itoa(i)+"/32")); err != nil {
+			b.Fatalf("seed Trigger: %v", err)
 		}
 	}
 	got, err := repo.List(ctx, report.Query{Now: benchNow()})
@@ -77,7 +79,7 @@ func BenchmarkReportsList(b *testing.B) {
 			}
 			b.Cleanup(func() { repo.Close() })
 			seedReports(b, repo, tt.rows)
-			srv := New(repo, benchStats{}, benchNow)
+			srv := New(report.NewService(repo), benchStats{}, benchNow)
 			req := httptest.NewRequest(http.MethodGet, "/reports", nil)
 			w := httptest.NewRecorder()
 			for b.Loop() {

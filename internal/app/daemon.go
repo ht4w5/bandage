@@ -77,7 +77,10 @@ func WithLogger(l zerolog.Logger) Option {
 }
 
 // reportStore is the daemon's report persistence: the domain report
-// port plus Close. The sqlite adapter satisfies it.
+// port plus Close. The sqlite adapter satisfies it. The raw store sits
+// behind the report service: every report mutation goes through the
+// service, and the daemon holds the store itself for Close (and for the
+// direct reads in tests and benchmarks).
 type reportStore interface {
 	report.Repository
 	Close() error
@@ -103,12 +106,15 @@ type Daemon struct {
 	enrich  *enrichment.FilesizeEnricher
 	workers int
 
-	repo   reportStore
-	cache  *memory.Store
-	eval   *evaluation.Service
-	src    *syslog.Source
-	apiSrv *http.Server
-	apiLn  net.Listener
+	// repo is the raw report store, kept for Close; report mutations go
+	// through reports (the report service).
+	repo    reportStore
+	reports *report.Service
+	cache   *memory.Store
+	eval    *evaluation.Service
+	src     *syslog.Source
+	apiSrv  *http.Server
+	apiLn   net.Listener
 
 	// ctx/cancel is the daemon-lifetime context threaded through the
 	// pipeline and sweeper; cancel is the bounded-shutdown backstop.
@@ -169,13 +175,14 @@ func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
 		enrich:    enricher,
 		workers:   cfg.Pipeline.Workers,
 		repo:      repo,
+		reports:   reports,
 		cache:     cache,
 		eval:      evaluation.NewService(chains, cache, reports, o.now, domainLogger{o.logger}),
 		lines:     make(chan string),
 		processed: newProgress(),
 		stopSweep: make(chan struct{}),
 	}
-	d.apiSrv = &http.Server{Handler: httpapi.New(repo, d, o.now)}
+	d.apiSrv = &http.Server{Handler: httpapi.New(reports, d, o.now)}
 	return d, nil
 }
 
@@ -288,12 +295,12 @@ func (d *Daemon) logStatistics() {
 		Msg("statistics")
 }
 
-// sweepOnce runs one sweeper pass: it deletes expired reports at the
-// injected wall clock and returns the number of deleted rows. The
-// periodic sweeper calls it once per tick; tests drive a pass directly,
-// so expiry behavior needs no sleeping.
+// sweepOnce runs one sweeper pass: it deletes expired reports through
+// the report service at the injected wall clock and returns the number
+// of deleted rows. The periodic sweeper calls it once per tick; tests
+// drive a pass directly, so expiry behavior needs no sleeping.
 func (d *Daemon) sweepOnce(ctx context.Context) (int, error) {
-	return d.repo.DeleteExpired(ctx, d.now())
+	return d.reports.DeleteExpired(ctx, d.now())
 }
 
 // Shutdown drains the pipeline and closes every resource, in that

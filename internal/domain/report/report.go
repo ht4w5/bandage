@@ -1,6 +1,8 @@
-// Package report holds the report write path: the ReportService a Trigger
-// writes through, and the persistence port behind it. The report action is
-// the only write path to the report table (spec: Reports).
+// Package report holds the report lifecycle: the Service every report
+// mutation flows through — the Trigger write, delete-by-filter (the API)
+// and expiry deletion (the sweeper) — and the persistence port behind
+// it. The report action is the only write path to the report table
+// (spec: Reports).
 package report
 
 import (
@@ -45,8 +47,15 @@ type Repository interface {
 	DeleteExpired(ctx context.Context, now time.Time) (int, error)
 }
 
-// Service is the named write path: a Trigger upserts exactly one report
-// per (rule, target).
+// Service is the one report lifecycle module: a Trigger upserts exactly
+// one report per (rule, target), delete-by-filter and expiry deletion
+// remove rows. Every report mutation goes through it — the API and the
+// sweeper call the service, never the repository directly — so later
+// lifecycle rules can hang off these methods.
+//
+// Delete and DeleteExpired pass repository errors through unwrapped:
+// the repository's error contract (ErrUnfiltered, the adapter's error
+// strings) is operator-visible and unchanged.
 type Service struct {
 	repo Repository
 }
@@ -61,4 +70,24 @@ func (s *Service) Trigger(ctx context.Context, rec bandage.Report) error {
 		return fmt.Errorf("trigger report: %w", err)
 	}
 	return nil
+}
+
+// List returns matching, unexpired reports sorted by created_at
+// descending (Repository.List).
+func (s *Service) List(ctx context.Context, q Query) ([]bandage.Report, error) {
+	return s.repo.List(ctx, q)
+}
+
+// Delete removes reports matching the query and returns the number of
+// deleted rows. At least one of Rule or Target must be set
+// (ErrUnfiltered otherwise); rows match regardless of expiry and
+// tracker state is untouched (Repository.Delete).
+func (s *Service) Delete(ctx context.Context, q Query) (int, error) {
+	return s.repo.Delete(ctx, q)
+}
+
+// DeleteExpired deletes rows whose expires_at has passed and returns
+// the number of deleted rows (Repository.DeleteExpired).
+func (s *Service) DeleteExpired(ctx context.Context, now time.Time) (int, error) {
+	return s.repo.DeleteExpired(ctx, now)
 }
