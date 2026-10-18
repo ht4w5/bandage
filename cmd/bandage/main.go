@@ -114,7 +114,7 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	cfg.Log.Level = opts.logLevel
 	cfg.Pipeline.Workers = opts.workers
 	// The one program-wide logger (ADR 0005): built from the resolved
-	// config here and passed to the daemon and its adapters.
+	// config here and passed to the daemon and the infra tree.
 	logger := app.NewLogger(stderr, opts.logLevel)
 
 	if opts.test {

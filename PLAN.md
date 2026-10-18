@@ -319,8 +319,9 @@ no TTL). TTL is flux's `volume/leak`, passed by the tracker on each update
 - **Memory bound** — `cache.max_entries` (default 65536) across all
   shards/namespaces, enforced by per-shard LRU under pressure (flux's ccache
   `MaxSize` precedent, hand-rolled to keep deps small). Removing an entry
-  resets that key's bucket, so **every eviction is logged** (namespace,
-  Target) and counted in stats.
+  resets that key's bucket, so **every eviction is logged** (its tracker
+  namespace and its key — the Target for tracker entries, the path for
+  filesize entries, which are keyed by paths) and counted in stats.
 - **Statistics** — gets/sets/misses/evictions, current size and the
   entry cap, logged periodically via the program-wide zerolog logger
   (ADR 0005; flux's `Statistics` precedent) and served in `GET /stats`'s

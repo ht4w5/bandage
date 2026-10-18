@@ -14,8 +14,8 @@ import (
 // NewLogger builds the program-wide logger (spec: Logging, ADR 0005):
 // zerolog rendering is fixed console-style text on w with timestamps,
 // filtered at the given level. Construction and level policy live here
-// alone — the command resolves the level (flag > config > default) and
-// passes the one logger to the daemon and the adapters; tests capture
+// alone — the command resolves the level (flag over config) and
+// passes the one logger to the daemon and the infra tree; tests capture
 // records at the daemon's logger option.
 func NewLogger(w io.Writer, level bandage.Level) zerolog.Logger {
 	return zerolog.New(zerolog.ConsoleWriter{

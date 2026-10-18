@@ -79,10 +79,11 @@ func TestStoreCapEvictsLeastRecentlyUsed(t *testing.T) {
 	}
 }
 
-// Every eviction is logged with its tracker namespace and Target and
+// Every eviction is logged with its tracker namespace and its key and
 // counted in statistics (spec: evictions are the one place where log
-// text IS the contract — every eviction is logged with its tracker
-// namespace and Target).
+// text IS the contract). The key is spelled out per namespace: tracker
+// entries log the Target (and the path where the key has one), the
+// filesize namespace is keyed by paths and logs the path.
 func TestStoreEvictionLoggedWithNamespaceAndTarget(t *testing.T) {
 	buf := &bytes.Buffer{}
 	s := newStore(1, 1, newTestClock(time.Time{}).Now, testLogger(buf))
@@ -104,8 +105,8 @@ func TestStoreEvictionLoggedWithNamespaceAndTarget(t *testing.T) {
 
 // The logged Target is the true Target split from the key convention —
 // never the raw cache key — and per-(Target, path) keys carry their path
-// as its own attribute (the eviction log must name the tracker
-// namespace and Target).
+// as its own attribute (the record always carries the namespace and its
+// key: Target and path here).
 func TestStoreEvictionLogsTrueTargetAndPath(t *testing.T) {
 	buf := &bytes.Buffer{}
 	s := newStore(1, 1, newTestClock(time.Time{}).Now, testLogger(buf))
@@ -128,8 +129,9 @@ func TestStoreEvictionLogsTrueTargetAndPath(t *testing.T) {
 	}
 }
 
-// The filesize namespace has no Target: its evictions are their own
-// case, logging the path (the key) instead of inventing a Target.
+// The filesize namespace is keyed by paths, so its evictions carry the
+// path as the record's key and never invent a Target (the namespace is
+// named either way).
 func TestStoreEvictionFilesizeLogsPathOnly(t *testing.T) {
 	buf := &bytes.Buffer{}
 	s := newStore(1, 1, newTestClock(time.Time{}).Now, testLogger(buf))
