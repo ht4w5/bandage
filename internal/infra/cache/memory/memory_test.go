@@ -149,6 +149,49 @@ func TestStoreEvictionFilesizeLogsPathOnly(t *testing.T) {
 	}
 }
 
+// reenterWriter proves where the eviction record is emitted from: its
+// Write re-enters the store (Statistics locks every shard). Re-entry
+// succeeds only while the evicting Update holds no shard lock — if the
+// record were rendered under the lock, the probe would deadlock against
+// the very shard being evicted.
+type reenterWriter struct {
+	s *Store
+}
+
+func (w reenterWriter) Write(p []byte) (int, error) {
+	w.s.Statistics()
+	return len(p), nil
+}
+
+// The eviction record is emitted after the shard lock is released
+// (PLAN house rule: no I/O under the store's lock) — a log sink is free
+// to call back into the store while rendering the record.
+func TestStoreEvictionLogEmittedAfterUnlock(t *testing.T) {
+	w := &reenterWriter{}
+	s := newStore(1, 1, newTestClock(time.Time{}).Now, zerolog.New(w))
+	w.s = s
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for _, k := range [][2]string{{"rule-one", "203.0.113.7"}, {"rule-two", "203.0.113.8"}} {
+			if _, err := s.Update(context.Background(), k[0], k[1], time.Hour, func(r *track.Record) {
+				r.Value++
+			}); err != nil {
+				t.Errorf("Update(%q, %q): %v", k[0], k[1], err)
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("eviction record rendering deadlocked against the shard lock")
+	}
+	if st := s.Statistics(); st.Evictions != 1 {
+		t.Errorf("evictions = %d, want 1 (eviction logged and counted together)", st.Evictions)
+	}
+}
+
 // TTL expiry is enforced lazily on access: an expired entry restarts
 // from zero and is counted as a miss, not an eviction.
 func TestStoreLazyTTLExpiry(t *testing.T) {
