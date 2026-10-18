@@ -24,18 +24,35 @@ import (
 // seam); the connection-level split they rely on is pinned by the
 // report repository's own contract tests in the sqlite package.
 
-// gatedListStore wedges every List on entry so a query stays in flight
-// while the write path runs; upserts pass straight through to the real
-// repository. (The write-side wedge is workerpool_test.go's
-// blockingStore.)
+// gatedListStore wedges every List it is armed for on entry so a
+// served query stays in flight while the write path runs; upserts pass
+// straight through to the real repository. The daemon's startup
+// live-report rebuild is a List of its own and passes through before
+// the test arms the wedge. (The write-side wedge is
+// workerpool_test.go's blockingStore.)
 type gatedListStore struct {
 	*sqlite.ReportRepository
+	mu      sync.Mutex
+	armed   bool
 	entered chan struct{}
 	gate    chan struct{}
 	once    sync.Once
 }
 
+// arm wedges subsequent List calls; before it, they pass through.
+func (g *gatedListStore) arm() {
+	g.mu.Lock()
+	g.armed = true
+	g.mu.Unlock()
+}
+
 func (g *gatedListStore) List(ctx context.Context, q report.Query) ([]bandage.Report, error) {
+	g.mu.Lock()
+	armed := g.armed
+	g.mu.Unlock()
+	if !armed {
+		return g.ReportRepository.List(ctx, q)
+	}
 	g.entered <- struct{}{}
 	<-g.gate
 	return g.ReportRepository.List(ctx, q)
@@ -173,6 +190,7 @@ func TestWriteDuringInflightQueryDoesNotWait(t *testing.T) {
 	d := startTestDaemonCfg(t, clock, "unixgram", dbPath, bandwidthRules, nil, withStore(store))
 
 	// The query is in flight inside the store and stays there.
+	store.arm()
 	res := make(chan queryResult, 1)
 	go func() {
 		status, doc, err := fetchReports(d.apiAddr())
