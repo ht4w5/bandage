@@ -13,3 +13,6 @@ reproduces results.
 Consequences: `pipeline.workers: 1` is the strict-arrival-order escape
 hatch for reproducible runs; live and replayed runs with N workers may
 differ marginally in accumulated tracker values.
+
+Amended by ADR 0008: a duplicate trigger is suppressed while the report
+is alive — it no longer refreshes the row.

@@ -376,3 +376,52 @@ every profile kind (20 extracts): the ticket-04 pass collected
 `block-{mn1,me1,tcpmn8}` (raw profiles stay uncommitted; the added
 extracts come from fresh runs of the same commands and carry
 run-to-run timing differences in absolute delay values).
+
+## Dispositions (discussion round — inputs for `/to-spec`)
+
+The follow-up candidates above were decided in a grilling session after
+this report landed; the decisions are recorded in `GLOSSARY.md`
+(**Trigger**) and `docs/adr/0008`/`0009`. Fate of each candidate:
+
+1. **Batch report persistence** — *shelved*. Write-behind is not built;
+   report writes stay synchronous (ADR 0008 records the accepted
+   deferral window as policy only). The cheap synchronous levers remain
+   work: WAL + split read path (ADR 0009), drop the pre-SELECT in
+   `Upsert`, prepared statements.
+2. **Cut parse allocations** — *reshaped*: rewrite the parser on
+   `encoding/json/v2` (stdlib in Go 1.27), keeping the Event mapping and
+   `FieldError` validation identical.
+3. **Ingest tcp framing** — *docs-only*: deployments feed over udp or
+   unixgram; document the guidance (unixgram preferred at high rate;
+   note UDP kernel-buffer drops) instead of changing framing code.
+4. **De-globalize progress bump** and 5. **alloc-free store keys** —
+   unchanged small cleanups; the new Trigger semantics below lower their
+   urgency further.
+
+New work decided (to be specced first — it is the largest lever and it
+re-models the benchmarks):
+
+- **Trigger semantics** (ADR 0008): a Trigger empties the matched rule's
+  tracker for the Target; while a report for (rule, Target) is alive the
+  rule skips that Target's events entirely. The skip set is derived from
+  the report table (rebuilt at startup, maintained on Trigger, delete and
+  expiry). Supersedes candidate 1's churn rationale: re-Trigger churn
+  disappears by construction (one write per report lifetime).
+- **Tracker-less tripwire pattern** (`agent keyword "…"` + report, no
+  tracker) is a supported shape worth documenting alongside the rules
+  docs.
+
+Carry-over design notes for `/to-spec` and `/to-tickets`:
+
+- Benchmark fixtures must be re-modeled: `match-every`'s `volume: 0.5`
+  overflow-every-event trick breaks under reset + skip semantics; new
+  scenarios are first-Trigger vs re-arm-after-delete/expiry.
+- Skip-set placement is open (in-memory cache in front of the report
+  repository is the obvious shape; correctness source is the report
+  table).
+- The split sqlite connections need `:memory:` handling in tests
+  (shared-cache URI or single-connection fallback) — ADR 0009.
+- Rule-skip precision: "skips that Target's events entirely" means the
+  whole action list (including goto/jump/stop) does not run for that
+  Target while the report is alive — ADR 0008 states it; flip only if
+  report-write-only suppression was meant.

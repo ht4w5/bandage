@@ -45,7 +45,9 @@ _Avoid_: fire, hit
 
 **Trigger**:
 A match that wrote a report; its event becomes the report's sample and its
-wall-clock time stamps the report.
+wall-clock time stamps the report. While that report is alive the rule
+skips that Target's events entirely, and each Trigger empties the rule's
+tracker for the Target.
 _Avoid_: firing, hit
 
 ### Trackers
