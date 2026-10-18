@@ -1,0 +1,592 @@
+goos: linux
+goarch: amd64
+pkg: github.com/HT4w5/bandage/internal/app
+cpu: Intel(R) Core(TM) Ultra 9 185H
+                                                          │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                                                          │                      sec/op                       │
+ProgressBump/serial-22                                                                            48.36n ± 3%
+ProgressBump/parallel-22                                                                          107.5n ± 3%
+EvaluateMemory/fires-22                                                                           1.505µ ± 1%
+EvaluateMemory/never-fires-22                                                                     739.0n ± 2%
+EvaluateSQLite/fires-22                                                                           118.9µ ± 2%
+EvaluateSQLite/never-fires-22                                                                     753.9n ± 3%
+Pipeline/match-every/workers=1-22                                                                 42.37µ ± 2%
+Pipeline/match-every/workers=2-22                                                                 45.82µ ± 1%
+Pipeline/match-every/workers=4-22                                                                 45.48µ ± 1%
+Pipeline/match-every/workers=8-22                                                                 45.64µ ± 2%
+Pipeline/match-every-evicting/workers=1-22                                                        42.67µ ± 2%
+Pipeline/match-every-evicting/workers=2-22                                                        46.37µ ± 2%
+Pipeline/match-every-evicting/workers=4-22                                                        45.83µ ± 2%
+Pipeline/match-every-evicting/workers=8-22                                                        45.74µ ± 3%
+Pipeline/match-never/workers=1-22                                                                 4.901µ ± 2%
+Pipeline/match-never/workers=2-22                                                                 4.461µ ± 4%
+Pipeline/match-never/workers=4-22                                                                 3.682µ ± 1%
+Pipeline/match-never/workers=8-22                                                                 2.523µ ± 1%
+Pipeline/match-never-evicting/workers=1-22                                                        5.010µ ± 4%
+Pipeline/match-never-evicting/workers=2-22                                                        4.608µ ± 2%
+Pipeline/match-never-evicting/workers=4-22                                                        3.791µ ± 2%
+Pipeline/match-never-evicting/workers=8-22                                                        2.595µ ± 1%
+PipelineIngest/tcp/match-every/workers=1-22                                                       47.77µ ± 2%
+PipelineIngest/tcp/match-every/workers=2-22                                                       50.84µ ± 2%
+PipelineIngest/tcp/match-every/workers=4-22                                                       50.89µ ± 2%
+PipelineIngest/tcp/match-every/workers=8-22                                                       51.14µ ± 2%
+PipelineIngest/tcp/match-every-evicting/workers=1-22                                              47.61µ ± 2%
+PipelineIngest/tcp/match-every-evicting/workers=2-22                                              51.79µ ± 3%
+PipelineIngest/tcp/match-every-evicting/workers=4-22                                              50.93µ ± 1%
+PipelineIngest/tcp/match-every-evicting/workers=8-22                                              51.75µ ± 2%
+PipelineIngest/tcp/match-never/workers=1-22                                                       6.768µ ± 2%
+PipelineIngest/tcp/match-never/workers=2-22                                                       5.817µ ± 1%
+PipelineIngest/tcp/match-never/workers=4-22                                                       4.716µ ± 1%
+PipelineIngest/tcp/match-never/workers=8-22                                                       4.492µ ± 2%
+PipelineIngest/tcp/match-never-evicting/workers=1-22                                              6.986µ ± 1%
+PipelineIngest/tcp/match-never-evicting/workers=2-22                                              5.990µ ± 1%
+PipelineIngest/tcp/match-never-evicting/workers=4-22                                              4.822µ ± 1%
+PipelineIngest/tcp/match-never-evicting/workers=8-22                                              4.554µ ± 1%
+PipelineIngest/unixgram/match-every/workers=1-22                                                  44.70µ ± 2%
+PipelineIngest/unixgram/match-every/workers=2-22                                                  49.92µ ± 2%
+PipelineIngest/unixgram/match-every/workers=4-22                                                  50.12µ ± 2%
+PipelineIngest/unixgram/match-every/workers=8-22                                                  49.43µ ± 2%
+PipelineIngest/unixgram/match-every-evicting/workers=1-22                                         45.54µ ± 2%
+PipelineIngest/unixgram/match-every-evicting/workers=2-22                                         50.25µ ± 2%
+PipelineIngest/unixgram/match-every-evicting/workers=4-22                                         50.39µ ± 2%
+PipelineIngest/unixgram/match-every-evicting/workers=8-22                                         51.08µ ± 2%
+PipelineIngest/unixgram/match-never/workers=1-22                                                  5.988µ ± 1%
+PipelineIngest/unixgram/match-never/workers=2-22                                                  5.395µ ± 1%
+PipelineIngest/unixgram/match-never/workers=4-22                                                  4.194µ ± 1%
+PipelineIngest/unixgram/match-never/workers=8-22                                                  2.813µ ± 1%
+PipelineIngest/unixgram/match-never-evicting/workers=1-22                                         6.197µ ± 1%
+PipelineIngest/unixgram/match-never-evicting/workers=2-22                                         5.556µ ± 1%
+PipelineIngest/unixgram/match-never-evicting/workers=4-22                                         4.295µ ± 1%
+PipelineIngest/unixgram/match-never-evicting/workers=8-22                                         2.921µ ± 0%
+geomean                                                                                           10.81µ
+
+                                                          │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                                                          │                      lines/s                      │
+ProgressBump/serial-22                                                                            20.68M ± 3%
+ProgressBump/parallel-22                                                                          9.302M ± 3%
+EvaluateMemory/fires-22                                                                           664.7k ± 1%
+EvaluateMemory/never-fires-22                                                                     1.353M ± 2%
+EvaluateSQLite/fires-22                                                                           8.414k ± 2%
+EvaluateSQLite/never-fires-22                                                                     1.326M ± 3%
+Pipeline/match-every/workers=1-22                                                                 23.60k ± 1%
+Pipeline/match-every/workers=2-22                                                                 21.82k ± 1%
+Pipeline/match-every/workers=4-22                                                                 21.99k ± 1%
+Pipeline/match-every/workers=8-22                                                                 21.91k ± 2%
+Pipeline/match-every-evicting/workers=1-22                                                        23.44k ± 2%
+Pipeline/match-every-evicting/workers=2-22                                                        21.56k ± 2%
+Pipeline/match-every-evicting/workers=4-22                                                        21.82k ± 2%
+Pipeline/match-every-evicting/workers=8-22                                                        21.86k ± 3%
+Pipeline/match-never/workers=1-22                                                                 204.1k ± 2%
+Pipeline/match-never/workers=2-22                                                                 224.2k ± 3%
+Pipeline/match-never/workers=4-22                                                                 271.6k ± 1%
+Pipeline/match-never/workers=8-22                                                                 396.4k ± 1%
+Pipeline/match-never-evicting/workers=1-22                                                        199.6k ± 4%
+Pipeline/match-never-evicting/workers=2-22                                                        217.0k ± 2%
+Pipeline/match-never-evicting/workers=4-22                                                        263.8k ± 2%
+Pipeline/match-never-evicting/workers=8-22                                                        385.3k ± 1%
+PipelineIngest/tcp/match-every/workers=1-22                                                       20.94k ± 2%
+PipelineIngest/tcp/match-every/workers=2-22                                                       19.67k ± 2%
+PipelineIngest/tcp/match-every/workers=4-22                                                       19.65k ± 2%
+PipelineIngest/tcp/match-every/workers=8-22                                                       19.55k ± 2%
+PipelineIngest/tcp/match-every-evicting/workers=1-22                                              21.01k ± 2%
+PipelineIngest/tcp/match-every-evicting/workers=2-22                                              19.31k ± 3%
+PipelineIngest/tcp/match-every-evicting/workers=4-22                                              19.63k ± 1%
+PipelineIngest/tcp/match-every-evicting/workers=8-22                                              19.32k ± 2%
+PipelineIngest/tcp/match-never/workers=1-22                                                       147.8k ± 2%
+PipelineIngest/tcp/match-never/workers=2-22                                                       171.9k ± 1%
+PipelineIngest/tcp/match-never/workers=4-22                                                       212.1k ± 1%
+PipelineIngest/tcp/match-never/workers=8-22                                                       222.6k ± 2%
+PipelineIngest/tcp/match-never-evicting/workers=1-22                                              143.2k ± 1%
+PipelineIngest/tcp/match-never-evicting/workers=2-22                                              166.9k ± 1%
+PipelineIngest/tcp/match-never-evicting/workers=4-22                                              207.4k ± 1%
+PipelineIngest/tcp/match-never-evicting/workers=8-22                                              219.6k ± 1%
+PipelineIngest/unixgram/match-every/workers=1-22                                                  22.37k ± 2%
+PipelineIngest/unixgram/match-every/workers=2-22                                                  20.03k ± 2%
+PipelineIngest/unixgram/match-every/workers=4-22                                                  19.95k ± 2%
+PipelineIngest/unixgram/match-every/workers=8-22                                                  20.23k ± 2%
+PipelineIngest/unixgram/match-every-evicting/workers=1-22                                         21.96k ± 2%
+PipelineIngest/unixgram/match-every-evicting/workers=2-22                                         19.90k ± 2%
+PipelineIngest/unixgram/match-every-evicting/workers=4-22                                         19.84k ± 2%
+PipelineIngest/unixgram/match-every-evicting/workers=8-22                                         19.58k ± 2%
+PipelineIngest/unixgram/match-never/workers=1-22                                                  167.0k ± 1%
+PipelineIngest/unixgram/match-never/workers=2-22                                                  185.4k ± 1%
+PipelineIngest/unixgram/match-never/workers=4-22                                                  238.5k ± 1%
+PipelineIngest/unixgram/match-never/workers=8-22                                                  355.5k ± 1%
+PipelineIngest/unixgram/match-never-evicting/workers=1-22                                         161.4k ± 1%
+PipelineIngest/unixgram/match-never-evicting/workers=2-22                                         180.0k ± 1%
+PipelineIngest/unixgram/match-never-evicting/workers=4-22                                         232.8k ± 1%
+PipelineIngest/unixgram/match-never-evicting/workers=8-22                                         342.3k ± 0%
+geomean                                                                                           92.50k
+
+                                                          │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                                                          │                       B/op                        │
+ProgressBump/serial-22                                                                             112.0 ± 0%
+ProgressBump/parallel-22                                                                           112.0 ± 0%
+EvaluateMemory/fires-22                                                                          1.010Ki ± 0%
+EvaluateMemory/never-fires-22                                                                      461.0 ± 0%
+EvaluateSQLite/fires-22                                                                          12.03Ki ± 0%
+EvaluateSQLite/never-fires-22                                                                      461.0 ± 0%
+Pipeline/match-every/workers=1-22                                                                5.752Ki ± 0%
+Pipeline/match-every/workers=2-22                                                                5.912Ki ± 0%
+Pipeline/match-every/workers=4-22                                                                5.914Ki ± 0%
+Pipeline/match-every/workers=8-22                                                                5.918Ki ± 0%
+Pipeline/match-every-evicting/workers=1-22                                                       5.812Ki ± 0%
+Pipeline/match-every-evicting/workers=2-22                                                       5.976Ki ± 0%
+Pipeline/match-every-evicting/workers=4-22                                                       5.977Ki ± 0%
+Pipeline/match-every-evicting/workers=8-22                                                       5.983Ki ± 0%
+Pipeline/match-never/workers=1-22                                                                2.140Ki ± 0%
+Pipeline/match-never/workers=2-22                                                                2.149Ki ± 0%
+Pipeline/match-never/workers=4-22                                                                2.158Ki ± 0%
+Pipeline/match-never/workers=8-22                                                                2.169Ki ± 0%
+Pipeline/match-never-evicting/workers=1-22                                                       2.216Ki ± 0%
+Pipeline/match-never-evicting/workers=2-22                                                       2.227Ki ± 0%
+Pipeline/match-never-evicting/workers=4-22                                                       2.237Ki ± 0%
+Pipeline/match-never-evicting/workers=8-22                                                       2.249Ki ± 0%
+PipelineIngest/tcp/match-every/workers=1-22                                                      8.658Ki ± 1%
+PipelineIngest/tcp/match-every/workers=2-22                                                      8.857Ki ± 2%
+PipelineIngest/tcp/match-every/workers=4-22                                                      8.784Ki ± 1%
+PipelineIngest/tcp/match-every/workers=8-22                                                      8.792Ki ± 1%
+PipelineIngest/tcp/match-every-evicting/workers=1-22                                             8.690Ki ± 1%
+PipelineIngest/tcp/match-every-evicting/workers=2-22                                             8.941Ki ± 2%
+PipelineIngest/tcp/match-every-evicting/workers=4-22                                             8.848Ki ± 1%
+PipelineIngest/tcp/match-every-evicting/workers=8-22                                             8.928Ki ± 2%
+PipelineIngest/tcp/match-never/workers=1-22                                                      4.867Ki ± 0%
+PipelineIngest/tcp/match-never/workers=2-22                                                      4.809Ki ± 0%
+PipelineIngest/tcp/match-never/workers=4-22                                                      4.760Ki ± 0%
+PipelineIngest/tcp/match-never/workers=8-22                                                      4.803Ki ± 1%
+PipelineIngest/tcp/match-never-evicting/workers=1-22                                             4.957Ki ± 0%
+PipelineIngest/tcp/match-never-evicting/workers=2-22                                             4.911Ki ± 0%
+PipelineIngest/tcp/match-never-evicting/workers=4-22                                             4.855Ki ± 0%
+PipelineIngest/tcp/match-never-evicting/workers=8-22                                             4.919Ki ± 0%
+PipelineIngest/unixgram/match-every/workers=1-22                                                 7.725Ki ± 0%
+PipelineIngest/unixgram/match-every/workers=2-22                                                 7.865Ki ± 1%
+PipelineIngest/unixgram/match-every/workers=4-22                                                 7.869Ki ± 0%
+PipelineIngest/unixgram/match-every/workers=8-22                                                 7.872Ki ± 0%
+PipelineIngest/unixgram/match-every-evicting/workers=1-22                                        7.792Ki ± 1%
+PipelineIngest/unixgram/match-every-evicting/workers=2-22                                        7.969Ki ± 1%
+PipelineIngest/unixgram/match-every-evicting/workers=4-22                                        7.929Ki ± 1%
+PipelineIngest/unixgram/match-every-evicting/workers=8-22                                        7.953Ki ± 1%
+PipelineIngest/unixgram/match-never/workers=1-22                                                 4.016Ki ± 0%
+PipelineIngest/unixgram/match-never/workers=2-22                                                 4.058Ki ± 0%
+PipelineIngest/unixgram/match-never/workers=4-22                                                 4.108Ki ± 0%
+PipelineIngest/unixgram/match-never/workers=8-22                                                 4.196Ki ± 0%
+PipelineIngest/unixgram/match-never-evicting/workers=1-22                                        4.095Ki ± 0%
+PipelineIngest/unixgram/match-never-evicting/workers=2-22                                        4.142Ki ± 0%
+PipelineIngest/unixgram/match-never-evicting/workers=4-22                                        4.200Ki ± 0%
+PipelineIngest/unixgram/match-never-evicting/workers=8-22                                        4.309Ki ± 0%
+geomean                                                                                          4.002Ki
+
+                                                          │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                                                          │                     allocs/op                     │
+ProgressBump/serial-22                                                                             1.000 ± 0%
+ProgressBump/parallel-22                                                                           1.000 ± 0%
+EvaluateMemory/fires-22                                                                            25.00 ± 0%
+EvaluateMemory/never-fires-22                                                                      13.00 ± 0%
+EvaluateSQLite/fires-22                                                                            239.0 ± 0%
+EvaluateSQLite/never-fires-22                                                                      13.00 ± 0%
+Pipeline/match-every/workers=1-22                                                                  111.0 ± 0%
+Pipeline/match-every/workers=2-22                                                                  114.0 ± 0%
+Pipeline/match-every/workers=4-22                                                                  114.0 ± 0%
+Pipeline/match-every/workers=8-22                                                                  114.0 ± 0%
+Pipeline/match-every-evicting/workers=1-22                                                         112.0 ± 0%
+Pipeline/match-every-evicting/workers=2-22                                                         115.0 ± 0%
+Pipeline/match-every-evicting/workers=4-22                                                         115.0 ± 0%
+Pipeline/match-every-evicting/workers=8-22                                                         115.0 ± 1%
+Pipeline/match-never/workers=1-22                                                                  41.00 ± 0%
+Pipeline/match-never/workers=2-22                                                                  41.00 ± 0%
+Pipeline/match-never/workers=4-22                                                                  41.00 ± 0%
+Pipeline/match-never/workers=8-22                                                                  41.00 ± 0%
+Pipeline/match-never-evicting/workers=1-22                                                         43.00 ± 0%
+Pipeline/match-never-evicting/workers=2-22                                                         43.00 ± 0%
+Pipeline/match-never-evicting/workers=4-22                                                         43.00 ± 0%
+Pipeline/match-never-evicting/workers=8-22                                                         43.00 ± 0%
+PipelineIngest/tcp/match-every/workers=1-22                                                        127.0 ± 1%
+PipelineIngest/tcp/match-every/workers=2-22                                                        130.5 ± 2%
+PipelineIngest/tcp/match-every/workers=4-22                                                        129.5 ± 1%
+PipelineIngest/tcp/match-every/workers=8-22                                                        129.5 ± 1%
+PipelineIngest/tcp/match-every-evicting/workers=1-22                                               128.0 ± 2%
+PipelineIngest/tcp/match-every-evicting/workers=2-22                                               132.0 ± 2%
+PipelineIngest/tcp/match-every-evicting/workers=4-22                                               131.0 ± 2%
+PipelineIngest/tcp/match-every-evicting/workers=8-22                                               132.0 ± 3%
+PipelineIngest/tcp/match-never/workers=1-22                                                        58.00 ± 0%
+PipelineIngest/tcp/match-never/workers=2-22                                                        58.00 ± 0%
+PipelineIngest/tcp/match-never/workers=4-22                                                        58.00 ± 0%
+PipelineIngest/tcp/match-never/workers=8-22                                                        58.00 ± 2%
+PipelineIngest/tcp/match-never-evicting/workers=1-22                                               60.00 ± 0%
+PipelineIngest/tcp/match-never-evicting/workers=2-22                                               60.00 ± 0%
+PipelineIngest/tcp/match-never-evicting/workers=4-22                                               60.00 ± 0%
+PipelineIngest/tcp/match-never-evicting/workers=8-22                                               60.00 ± 0%
+PipelineIngest/unixgram/match-every/workers=1-22                                                   124.0 ± 1%
+PipelineIngest/unixgram/match-every/workers=2-22                                                   127.0 ± 1%
+PipelineIngest/unixgram/match-every/workers=4-22                                                   126.0 ± 1%
+PipelineIngest/unixgram/match-every/workers=8-22                                                   126.0 ± 1%
+PipelineIngest/unixgram/match-every-evicting/workers=1-22                                          125.0 ± 1%
+PipelineIngest/unixgram/match-every-evicting/workers=2-22                                          128.5 ± 0%
+PipelineIngest/unixgram/match-every-evicting/workers=4-22                                          128.0 ± 1%
+PipelineIngest/unixgram/match-every-evicting/workers=8-22                                          128.0 ± 1%
+PipelineIngest/unixgram/match-never/workers=1-22                                                   55.00 ± 0%
+PipelineIngest/unixgram/match-never/workers=2-22                                                   55.00 ± 0%
+PipelineIngest/unixgram/match-never/workers=4-22                                                   55.00 ± 0%
+PipelineIngest/unixgram/match-never/workers=8-22                                                   55.50 ± 1%
+PipelineIngest/unixgram/match-never-evicting/workers=1-22                                          57.00 ± 0%
+PipelineIngest/unixgram/match-never-evicting/workers=2-22                                          57.00 ± 0%
+PipelineIngest/unixgram/match-never-evicting/workers=4-22                                          57.00 ± 0%
+PipelineIngest/unixgram/match-never-evicting/workers=8-22                                          57.00 ± 0%
+geomean                                                                                            63.42
+
+                                                          │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                                                          │                   evictions/op                    │
+Pipeline/match-every/workers=1-22                                                                0.000 ± 0%
+Pipeline/match-every/workers=2-22                                                                0.000 ± 0%
+Pipeline/match-every/workers=4-22                                                                0.000 ± 0%
+Pipeline/match-every/workers=8-22                                                                0.000 ± 0%
+Pipeline/match-every-evicting/workers=1-22                                                      481.2m ± 0%
+Pipeline/match-every-evicting/workers=2-22                                                      480.9m ± 0%
+Pipeline/match-every-evicting/workers=4-22                                                      481.4m ± 0%
+Pipeline/match-every-evicting/workers=8-22                                                      481.2m ± 0%
+Pipeline/match-never/workers=1-22                                                                0.000 ± 0%
+Pipeline/match-never/workers=2-22                                                                0.000 ± 0%
+Pipeline/match-never/workers=4-22                                                                0.000 ± 0%
+Pipeline/match-never/workers=8-22                                                                0.000 ± 0%
+Pipeline/match-never-evicting/workers=1-22                                                      506.9m ± 0%
+Pipeline/match-never-evicting/workers=2-22                                                      507.0m ± 0%
+Pipeline/match-never-evicting/workers=4-22                                                      507.1m ± 0%
+Pipeline/match-never-evicting/workers=8-22                                                      507.1m ± 0%
+PipelineIngest/tcp/match-every/workers=1-22                                                      0.000 ± 0%
+PipelineIngest/tcp/match-every/workers=2-22                                                      0.000 ± 0%
+PipelineIngest/tcp/match-every/workers=4-22                                                      0.000 ± 0%
+PipelineIngest/tcp/match-every/workers=8-22                                                      0.000 ± 0%
+PipelineIngest/tcp/match-every-evicting/workers=1-22                                            481.8m ± 0%
+PipelineIngest/tcp/match-every-evicting/workers=2-22                                            480.6m ± 0%
+PipelineIngest/tcp/match-every-evicting/workers=4-22                                            480.6m ± 0%
+PipelineIngest/tcp/match-every-evicting/workers=8-22                                            480.6m ± 0%
+PipelineIngest/tcp/match-never/workers=1-22                                                      0.000 ± 0%
+PipelineIngest/tcp/match-never/workers=2-22                                                      0.000 ± 0%
+PipelineIngest/tcp/match-never/workers=4-22                                                      0.000 ± 0%
+PipelineIngest/tcp/match-never/workers=8-22                                                      0.000 ± 0%
+PipelineIngest/tcp/match-never-evicting/workers=1-22                                            506.8m ± 0%
+PipelineIngest/tcp/match-never-evicting/workers=2-22                                            506.8m ± 0%
+PipelineIngest/tcp/match-never-evicting/workers=4-22                                            506.8m ± 0%
+PipelineIngest/tcp/match-never-evicting/workers=8-22                                            506.9m ± 0%
+PipelineIngest/unixgram/match-every/workers=1-22                                                 0.000 ± 0%
+PipelineIngest/unixgram/match-every/workers=2-22                                                 0.000 ± 0%
+PipelineIngest/unixgram/match-every/workers=4-22                                                 0.000 ± 0%
+PipelineIngest/unixgram/match-every/workers=8-22                                                 0.000 ± 0%
+PipelineIngest/unixgram/match-every-evicting/workers=1-22                                       481.3m ± 0%
+PipelineIngest/unixgram/match-every-evicting/workers=2-22                                       480.7m ± 0%
+PipelineIngest/unixgram/match-every-evicting/workers=4-22                                       480.7m ± 0%
+PipelineIngest/unixgram/match-every-evicting/workers=8-22                                       480.8m ± 0%
+PipelineIngest/unixgram/match-never/workers=1-22                                                 0.000 ± 0%
+PipelineIngest/unixgram/match-never/workers=2-22                                                 0.000 ± 0%
+PipelineIngest/unixgram/match-never/workers=4-22                                                 0.000 ± 0%
+PipelineIngest/unixgram/match-never/workers=8-22                                                 0.000 ± 0%
+PipelineIngest/unixgram/match-never-evicting/workers=1-22                                       506.7m ± 0%
+PipelineIngest/unixgram/match-never-evicting/workers=2-22                                       507.0m ± 0%
+PipelineIngest/unixgram/match-never-evicting/workers=4-22                                       506.9m ± 0%
+PipelineIngest/unixgram/match-never-evicting/workers=8-22                                       507.2m ± 0%
+geomean                                                                                                     ¹
+¹ summaries must be >0 to compute geomean
+
+                                                          │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                                                          │                   gc-pause-frac                   │
+Pipeline/match-every/workers=1-22                                                                8.060m ± 16%
+Pipeline/match-every/workers=2-22                                                                7.932m ±  8%
+Pipeline/match-every/workers=4-22                                                                7.353m ± 10%
+Pipeline/match-every/workers=8-22                                                                7.708m ±  7%
+Pipeline/match-every-evicting/workers=1-22                                                       8.438m ± 10%
+Pipeline/match-every-evicting/workers=2-22                                                       8.057m ±  5%
+Pipeline/match-every-evicting/workers=4-22                                                       8.058m ± 10%
+Pipeline/match-every-evicting/workers=8-22                                                       8.090m ±  7%
+Pipeline/match-never/workers=1-22                                                                12.16m ±  5%
+Pipeline/match-never/workers=2-22                                                                19.36m ±  4%
+Pipeline/match-never/workers=4-22                                                                29.38m ±  3%
+Pipeline/match-never/workers=8-22                                                                47.24m ±  2%
+Pipeline/match-never-evicting/workers=1-22                                                       12.98m ±  6%
+Pipeline/match-never-evicting/workers=2-22                                                       20.61m ±  2%
+Pipeline/match-never-evicting/workers=4-22                                                       31.30m ±  2%
+Pipeline/match-never-evicting/workers=8-22                                                       50.43m ±  3%
+PipelineIngest/tcp/match-every/workers=1-22                                                      12.94m ±  7%
+PipelineIngest/tcp/match-every/workers=2-22                                                      13.08m ±  6%
+PipelineIngest/tcp/match-every/workers=4-22                                                      13.29m ±  7%
+PipelineIngest/tcp/match-every/workers=8-22                                                      13.66m ±  5%
+PipelineIngest/tcp/match-every-evicting/workers=1-22                                             14.07m ±  5%
+PipelineIngest/tcp/match-every-evicting/workers=2-22                                             13.39m ±  7%
+PipelineIngest/tcp/match-every-evicting/workers=4-22                                             13.74m ±  6%
+PipelineIngest/tcp/match-every-evicting/workers=8-22                                             14.04m ±  5%
+PipelineIngest/tcp/match-never/workers=1-22                                                      32.00m ±  4%
+PipelineIngest/tcp/match-never/workers=2-22                                                      45.62m ±  2%
+PipelineIngest/tcp/match-never/workers=4-22                                                      57.23m ±  1%
+PipelineIngest/tcp/match-never/workers=8-22                                                      60.38m ±  7%
+PipelineIngest/tcp/match-never-evicting/workers=1-22                                             32.80m ±  3%
+PipelineIngest/tcp/match-never-evicting/workers=2-22                                             49.09m ±  2%
+PipelineIngest/tcp/match-never-evicting/workers=4-22                                             61.23m ±  2%
+PipelineIngest/tcp/match-never-evicting/workers=8-22                                             66.56m ±  5%
+PipelineIngest/unixgram/match-every/workers=1-22                                                 8.668m ±  8%
+PipelineIngest/unixgram/match-every/workers=2-22                                                 7.667m ±  7%
+PipelineIngest/unixgram/match-every/workers=4-22                                                 7.871m ±  9%
+PipelineIngest/unixgram/match-every/workers=8-22                                                 7.911m ±  8%
+PipelineIngest/unixgram/match-every-evicting/workers=1-22                                        9.128m ±  9%
+PipelineIngest/unixgram/match-every-evicting/workers=2-22                                        8.181m ±  7%
+PipelineIngest/unixgram/match-every-evicting/workers=4-22                                        8.292m ±  6%
+PipelineIngest/unixgram/match-every-evicting/workers=8-22                                        8.444m ±  4%
+PipelineIngest/unixgram/match-never/workers=1-22                                                 22.32m ±  2%
+PipelineIngest/unixgram/match-never/workers=2-22                                                 28.80m ±  3%
+PipelineIngest/unixgram/match-never/workers=4-22                                                 41.31m ±  1%
+PipelineIngest/unixgram/match-never/workers=8-22                                                 64.12m ±  3%
+PipelineIngest/unixgram/match-never-evicting/workers=1-22                                        22.45m ±  3%
+PipelineIngest/unixgram/match-never-evicting/workers=2-22                                        30.28m ±  2%
+PipelineIngest/unixgram/match-never-evicting/workers=4-22                                        43.49m ±  2%
+PipelineIngest/unixgram/match-never-evicting/workers=8-22                                        67.20m ±  1%
+geomean                                                                                          18.46m
+
+pkg: github.com/HT4w5/bandage/internal/bench
+               │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+               │                      sec/op                       │
+CorpusBuild-22                                         1.024m ± 1%
+
+               │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+               │                       B/op                        │
+CorpusBuild-22                                        509.9Ki ± 0%
+
+               │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+               │                     allocs/op                     │
+CorpusBuild-22                                         10.88k ± 0%
+
+pkg: github.com/HT4w5/bandage/internal/domain/evaluation
+                        │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                        │                      sec/op                       │
+Evaluate/fires-22                                               668.6n ± 3%
+Evaluate/never-fires-22                                         403.9n ± 2%
+geomean                                                         519.7n
+
+                        │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                        │                      lines/s                      │
+Evaluate/fires-22                                               1.496M ± 3%
+Evaluate/never-fires-22                                         2.476M ± 2%
+geomean                                                         1.924M
+
+                        │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                        │                       B/op                        │
+Evaluate/fires-22                                                796.0 ± 0%
+Evaluate/never-fires-22                                          446.0 ± 0%
+geomean                                                          595.8
+
+                        │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                        │                     allocs/op                     │
+Evaluate/fires-22                                                19.00 ± 0%
+Evaluate/never-fires-22                                          13.00 ± 0%
+geomean                                                          15.72
+
+pkg: github.com/HT4w5/bandage/internal/domain/filter
+                                           │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                                           │                      sec/op                       │
+FilterMatch/leaf/remote-addr/match-22                                              4.362n ± 3%
+FilterMatch/leaf/remote-addr/no-match-22                                           4.476n ± 1%
+FilterMatch/leaf/method/match-22                                                   3.312n ± 1%
+FilterMatch/leaf/method/no-match-22                                                1.236n ± 8%
+FilterMatch/leaf/path/match-22                                                     3.522n ± 1%
+FilterMatch/leaf/path/no-match-22                                                  3.001n ± 2%
+FilterMatch/leaf/path-prefix/match-22                                              2.695n ± 2%
+FilterMatch/leaf/path-prefix/no-match-22                                           3.379n ± 4%
+FilterMatch/leaf/path-suffix/match-22                                              3.849n ± 2%
+FilterMatch/leaf/path-suffix/no-match-22                                           3.881n ± 2%
+FilterMatch/leaf/path-keyword/match-22                                             4.381n ± 0%
+FilterMatch/leaf/path-keyword/no-match-22                                          5.414n ± 1%
+FilterMatch/leaf/agent/match-22                                                    2.701n ± 3%
+FilterMatch/leaf/agent/no-match-22                                                 1.244n ± 8%
+FilterMatch/leaf/agent-keyword/match-22                                            3.667n ± 1%
+FilterMatch/leaf/agent-keyword/no-match-22                                         6.162n ± 2%
+FilterMatch/leaf/status/match-22                                                  0.9529n ± 1%
+FilterMatch/leaf/status/no-match-22                                               0.9564n ± 3%
+FilterMatch/leaf/status-class/match-22                                             1.220n ± 1%
+FilterMatch/leaf/status-class/no-match-22                                          1.224n ± 4%
+FilterMatch/leaf/sent-at-least/match-22                                            1.028n ± 1%
+FilterMatch/leaf/sent-at-least/no-match-22                                         1.029n ± 3%
+FilterMatch/leaf/sent-at-most/match-22                                             1.019n ± 1%
+FilterMatch/leaf/sent-at-most/no-match-22                                          1.020n ± 3%
+FilterMatch/chain/1-rules/match-22                                                 15.72n ± 3%
+FilterMatch/chain/1-rules/no-match-22                                              13.28n ± 2%
+FilterMatch/chain/10-rules/match-22                                                129.8n ± 1%
+FilterMatch/chain/10-rules/no-match-22                                             129.0n ± 2%
+FilterMatch/chain/100-rules/match-22                                               1.247µ ± 2%
+FilterMatch/chain/100-rules/no-match-22                                            1.255µ ± 2%
+geomean                                                                            5.101n
+
+                                           │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                                           │                       B/op                        │
+FilterMatch/leaf/remote-addr/match-22                                             0.000 ± 0%
+FilterMatch/leaf/remote-addr/no-match-22                                          0.000 ± 0%
+FilterMatch/leaf/method/match-22                                                  0.000 ± 0%
+FilterMatch/leaf/method/no-match-22                                               0.000 ± 0%
+FilterMatch/leaf/path/match-22                                                    0.000 ± 0%
+FilterMatch/leaf/path/no-match-22                                                 0.000 ± 0%
+FilterMatch/leaf/path-prefix/match-22                                             0.000 ± 0%
+FilterMatch/leaf/path-prefix/no-match-22                                          0.000 ± 0%
+FilterMatch/leaf/path-suffix/match-22                                             0.000 ± 0%
+FilterMatch/leaf/path-suffix/no-match-22                                          0.000 ± 0%
+FilterMatch/leaf/path-keyword/match-22                                            0.000 ± 0%
+FilterMatch/leaf/path-keyword/no-match-22                                         0.000 ± 0%
+FilterMatch/leaf/agent/match-22                                                   0.000 ± 0%
+FilterMatch/leaf/agent/no-match-22                                                0.000 ± 0%
+FilterMatch/leaf/agent-keyword/match-22                                           0.000 ± 0%
+FilterMatch/leaf/agent-keyword/no-match-22                                        0.000 ± 0%
+FilterMatch/leaf/status/match-22                                                  0.000 ± 0%
+FilterMatch/leaf/status/no-match-22                                               0.000 ± 0%
+FilterMatch/leaf/status-class/match-22                                            0.000 ± 0%
+FilterMatch/leaf/status-class/no-match-22                                         0.000 ± 0%
+FilterMatch/leaf/sent-at-least/match-22                                           0.000 ± 0%
+FilterMatch/leaf/sent-at-least/no-match-22                                        0.000 ± 0%
+FilterMatch/leaf/sent-at-most/match-22                                            0.000 ± 0%
+FilterMatch/leaf/sent-at-most/no-match-22                                         0.000 ± 0%
+FilterMatch/chain/1-rules/match-22                                                0.000 ± 0%
+FilterMatch/chain/1-rules/no-match-22                                             0.000 ± 0%
+FilterMatch/chain/10-rules/match-22                                               0.000 ± 0%
+FilterMatch/chain/10-rules/no-match-22                                            0.000 ± 0%
+FilterMatch/chain/100-rules/match-22                                              0.000 ± 0%
+FilterMatch/chain/100-rules/no-match-22                                           0.000 ± 0%
+geomean                                                                                      ¹
+¹ summaries must be >0 to compute geomean
+
+                                           │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                                           │                     allocs/op                     │
+FilterMatch/leaf/remote-addr/match-22                                             0.000 ± 0%
+FilterMatch/leaf/remote-addr/no-match-22                                          0.000 ± 0%
+FilterMatch/leaf/method/match-22                                                  0.000 ± 0%
+FilterMatch/leaf/method/no-match-22                                               0.000 ± 0%
+FilterMatch/leaf/path/match-22                                                    0.000 ± 0%
+FilterMatch/leaf/path/no-match-22                                                 0.000 ± 0%
+FilterMatch/leaf/path-prefix/match-22                                             0.000 ± 0%
+FilterMatch/leaf/path-prefix/no-match-22                                          0.000 ± 0%
+FilterMatch/leaf/path-suffix/match-22                                             0.000 ± 0%
+FilterMatch/leaf/path-suffix/no-match-22                                          0.000 ± 0%
+FilterMatch/leaf/path-keyword/match-22                                            0.000 ± 0%
+FilterMatch/leaf/path-keyword/no-match-22                                         0.000 ± 0%
+FilterMatch/leaf/agent/match-22                                                   0.000 ± 0%
+FilterMatch/leaf/agent/no-match-22                                                0.000 ± 0%
+FilterMatch/leaf/agent-keyword/match-22                                           0.000 ± 0%
+FilterMatch/leaf/agent-keyword/no-match-22                                        0.000 ± 0%
+FilterMatch/leaf/status/match-22                                                  0.000 ± 0%
+FilterMatch/leaf/status/no-match-22                                               0.000 ± 0%
+FilterMatch/leaf/status-class/match-22                                            0.000 ± 0%
+FilterMatch/leaf/status-class/no-match-22                                         0.000 ± 0%
+FilterMatch/leaf/sent-at-least/match-22                                           0.000 ± 0%
+FilterMatch/leaf/sent-at-least/no-match-22                                        0.000 ± 0%
+FilterMatch/leaf/sent-at-most/match-22                                            0.000 ± 0%
+FilterMatch/leaf/sent-at-most/no-match-22                                         0.000 ± 0%
+FilterMatch/chain/1-rules/match-22                                                0.000 ± 0%
+FilterMatch/chain/1-rules/no-match-22                                             0.000 ± 0%
+FilterMatch/chain/10-rules/match-22                                               0.000 ± 0%
+FilterMatch/chain/10-rules/no-match-22                                            0.000 ± 0%
+FilterMatch/chain/100-rules/match-22                                              0.000 ± 0%
+FilterMatch/chain/100-rules/no-match-22                                           0.000 ± 0%
+geomean                                                                                      ¹
+¹ summaries must be >0 to compute geomean
+
+pkg: github.com/HT4w5/bandage/internal/infra/cache/memory
+                                │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                                │                      sec/op                       │
+StoreUpdate/uniform-22                                                  78.85n ± 2%
+StoreUpdate/zipf-22                                                     69.71n ± 2%
+StoreUpdate/hot-22                                                      59.41n ± 1%
+StoreUpdate/evicting-22                                                 172.9n ± 1%
+StoreUpdateParallel/uniform-22                                          83.42n ± 2%
+StoreUpdateParallel/zipf-22                                             98.20n ± 1%
+StoreUpdateParallel/hot-22                                              215.1n ± 3%
+StoreUpdateParallel/evicting-22                                         175.0n ± 3%
+geomean                                                                 107.2n
+
+                                │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                                │                       B/op                        │
+StoreUpdate/uniform-22                                                   32.00 ± 0%
+StoreUpdate/zipf-22                                                      32.00 ± 0%
+StoreUpdate/hot-22                                                       32.00 ± 0%
+StoreUpdate/evicting-22                                                  171.0 ± 0%
+StoreUpdateParallel/uniform-22                                           32.00 ± 0%
+StoreUpdateParallel/zipf-22                                              32.00 ± 0%
+StoreUpdateParallel/hot-22                                               32.00 ± 0%
+StoreUpdateParallel/evicting-22                                          172.0 ± 0%
+geomean                                                                  48.69
+
+                                │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                                │                     allocs/op                     │
+StoreUpdate/uniform-22                                                   1.000 ± 0%
+StoreUpdate/zipf-22                                                      1.000 ± 0%
+StoreUpdate/hot-22                                                       1.000 ± 0%
+StoreUpdate/evicting-22                                                  3.000 ± 0%
+StoreUpdateParallel/uniform-22                                           1.000 ± 0%
+StoreUpdateParallel/zipf-22                                              1.000 ± 0%
+StoreUpdateParallel/hot-22                                               1.000 ± 0%
+StoreUpdateParallel/evicting-22                                          3.000 ± 0%
+geomean                                                                  1.316
+
+pkg: github.com/HT4w5/bandage/internal/infra/httpapi
+                        │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                        │                      sec/op                       │
+ReportsList/10-rows-22                                          78.84µ ± 2%
+ReportsList/1k-rows-22                                          7.049m ± 3%
+ReportsList/10k-rows-22                                         64.84m ± 2%
+geomean                                                         3.303m
+
+                        │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                        │                       B/op                        │
+ReportsList/10-rows-22                                         51.10Ki ± 0%
+ReportsList/1k-rows-22                                         5.129Mi ± 0%
+ReportsList/10k-rows-22                                        56.40Mi ± 0%
+geomean                                                        2.435Mi
+
+                        │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                        │                     allocs/op                     │
+ReportsList/10-rows-22                                           304.0 ± 0%
+ReportsList/1k-rows-22                                          26.14k ± 0%
+ReportsList/10k-rows-22                                         260.2k ± 0%
+geomean                                                         12.74k
+
+pkg: github.com/HT4w5/bandage/internal/infra/parse/nginx
+                 │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                 │                      sec/op                       │
+Parse/minimal-22                                         1.804µ ± 1%
+Parse/full-22                                            3.019µ ± 3%
+geomean                                                  2.333µ
+
+                 │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                 │                      lines/s                      │
+Parse/minimal-22                                         554.5k ± 1%
+Parse/full-22                                            331.2k ± 3%
+geomean                                                  428.6k
+
+                 │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                 │                       B/op                        │
+Parse/minimal-22                                          696.0 ± 0%
+Parse/full-22                                           1.508Ki ± 0%
+geomean                                                 1.012Ki
+
+                 │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                 │                     allocs/op                     │
+Parse/minimal-22                                          23.00 ± 0%
+Parse/full-22                                             32.00 ± 0%
+geomean                                                   27.13
+
+pkg: github.com/HT4w5/bandage/internal/infra/persistence/sqlite
+                              │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                              │                      sec/op                       │
+ReportUpsert/memory/insert-22                                         31.37µ ± 3%
+ReportUpsert/memory/update-22                                         25.34µ ± 2%
+ReportUpsert/file/insert-22                                           75.94µ ± 3%
+ReportUpsert/file/update-22                                           63.20µ ± 5%
+geomean                                                               44.20µ
+
+                              │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                              │                       B/op                        │
+ReportUpsert/memory/insert-22                                        2.725Ki ± 0%
+ReportUpsert/memory/update-22                                        2.731Ki ± 0%
+ReportUpsert/file/insert-22                                          2.723Ki ± 0%
+ReportUpsert/file/update-22                                          2.730Ki ± 0%
+geomean                                                              2.727Ki
+
+                              │ .scratch/v0-benchmarks/baseline/bench-count10.txt │
+                              │                     allocs/op                     │
+ReportUpsert/memory/insert-22                                          53.00 ± 0%
+ReportUpsert/memory/update-22                                          54.00 ± 0%
+ReportUpsert/file/insert-22                                            53.00 ± 0%
+ReportUpsert/file/update-22                                            54.00 ± 0%
+geomean                                                                53.50

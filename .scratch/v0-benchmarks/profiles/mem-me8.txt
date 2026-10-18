@@ -1,0 +1,43 @@
+# mem-me8.out — alloc_objects (top) then alloc_space (top)
+File: app.test
+Build ID: 8e91155ddfe4fb40ade4e74b4ed31adf460284bb
+Type: alloc_objects
+Time: 2026-10-18 10:59:06 CST
+Showing nodes accounting for 8620311, 65.72% of 13115897 total
+Dropped 105 nodes (cum <= 65579)
+Showing top 15 nodes out of 99
+      flat  flat%   sum%        cum   cum%
+   1283879  9.79%  9.79%    1283879  9.79%  modernc.org/sqlite.interruptOnDone
+   1186222  9.04% 18.83%    1186222  9.04%  encoding/json/jsontext.(*Value).UnmarshalJSON
+    972589  7.42% 26.25%    7971860 60.78%  github.com/HT4w5/bandage/internal/infra/persistence/sqlite.(*ReportRepository).Upsert
+    622600  4.75% 31.00%     622600  4.75%  database/sql.(*Rows).close
+    606218  4.62% 35.62%     606218  4.62%  modernc.org/sqlite.(*conn).bind
+    584394  4.46% 40.07%     584394  4.46%  reflect.unsafe_New
+    491541  3.75% 43.82%     557078  4.25%  modernc.org/sqlite.newRows
+    487190  3.71% 47.53%     487190  3.71%  reflect.mapassign_faststr0
+    458758  3.50% 51.03%     720905  5.50%  github.com/HT4w5/bandage/internal/infra/parse/nginx.parseString
+    371374  2.83% 53.86%     371374  2.83%  net/netip.Prefix.String
+    331345  2.53% 56.39%    1118281  8.53%  database/sql.(*DB).beginDC
+    327685  2.50% 58.89%     491527  3.75%  github.com/HT4w5/bandage/internal/infra/parse/nginx.parseTime
+    321150  2.45% 61.34%     321150  2.45%  context.withCancel (inline)
+    293369  2.24% 63.57%     489980  3.74%  database/sql.(*DB).conn
+    281997  2.15% 65.72%     281997  2.15%  bytes.Clone (inline)
+
+File: app.test
+Build ID: 8e91155ddfe4fb40ade4e74b4ed31adf460284bb
+Type: alloc_space
+Time: 2026-10-18 10:59:06 CST
+Showing nodes accounting for 523.13MB, 67.80% of 771.59MB total
+Dropped 113 nodes (cum <= 3.86MB)
+Showing top 10 nodes out of 91
+      flat  flat%   sum%        cum   cum%
+  140.08MB 18.15% 18.15%   140.08MB 18.15%  reflect.mapassign_faststr0
+   78.01MB 10.11% 28.26%    78.01MB 10.11%  modernc.org/sqlite.interruptOnDone
+   64.01MB  8.30% 36.56%   462.06MB 59.88%  github.com/HT4w5/bandage/internal/infra/persistence/sqlite.(*ReportRepository).Upsert
+   57.51MB  7.45% 44.01%    57.51MB  7.45%  bytes.Clone (inline)
+   41.51MB  5.38% 49.39%    41.51MB  5.38%  database/sql.driverArgsConnLocked
+   36.01MB  4.67% 54.06%   742.18MB 96.19%  github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+      33MB  4.28% 58.34%       33MB  4.28%  reflect.unsafe_New
+   25.50MB  3.31% 61.64%    63.01MB  8.17%  database/sql.(*DB).beginDC
+   24.50MB  3.18% 64.82%    24.50MB  3.18%  context.withCancel (inline)
+      23MB  2.98% 67.80%       23MB  2.98%  context.(*cancelCtx).Done

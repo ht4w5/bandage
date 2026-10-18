@@ -1,0 +1,36 @@
+# cpu-mn8.out — go tool pprof -top -cum -nodecount=25
+# (cpu profile, run: go test -bench ... -benchtime=5s -cpuprofile; see findings.md)
+File: app.test
+Build ID: 8e91155ddfe4fb40ade4e74b4ed31adf460284bb
+Type: cpu
+Time: 2026-10-18 10:58:51 CST
+Duration: 6.03s, Total samples = 20.60s (341.85%)
+Showing nodes accounting for 2.30s, 11.17% of 20.60s total
+Dropped 371 nodes (cum <= 0.10s)
+Showing top 25 nodes out of 230
+      flat  flat%   sum%        cum   cum%
+     0.28s  1.36%  1.36%     15.87s 77.04%  github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+     0.04s  0.19%  1.55%     12.42s 60.29%  github.com/HT4w5/bandage/internal/infra/parse/nginx.(*Parser).Parse
+     0.01s 0.049%  1.60%     10.95s 53.16%  encoding/json.Unmarshal (inline)
+     0.07s  0.34%  1.94%     10.94s 53.11%  encoding/json/v2.Unmarshal
+     0.14s  0.68%  2.62%        10s 48.54%  encoding/json/v2.unmarshalDecode
+     0.24s  1.17%  3.79%      7.40s 35.92%  encoding/json/v2.makeMapArshaler.func3
+         0     0%  3.79%      2.81s 13.64%  runtime.systemstack
+     0.01s 0.049%  3.83%      2.45s 11.89%  github.com/HT4w5/bandage/internal/infra/parse/nginx.parseString
+     0.13s  0.63%  4.47%      2.40s 11.65%  reflect.Value.SetMapIndex
+     0.15s  0.73%  5.19%      2.40s 11.65%  runtime.mallocgc
+     0.06s  0.29%  5.49%      2.18s 10.58%  encoding/json/v2.makeMethodArshaler.func6
+     0.07s  0.34%  5.83%      2.12s 10.29%  reflect.mapassign_faststr
+     0.05s  0.24%  6.07%      2.03s  9.85%  reflect.mapassign_faststr0
+     0.23s  1.12%  7.18%      1.91s  9.27%  encoding/json/v2.makeStringArshaler.func2
+     0.06s  0.29%  7.48%      1.87s  9.08%  runtime.mapassign_faststr
+     0.02s 0.097%  7.57%      1.83s  8.88%  runtime.schedule
+     0.01s 0.049%  7.62%      1.80s  8.74%  runtime.mcall
+     0.01s 0.049%  7.67%      1.79s  8.69%  runtime.park_m
+     0.32s  1.55%  9.22%      1.71s  8.30%  encoding/json/jsontext.(*decoderState).consumeValue
+     0.01s 0.049%  9.27%      1.69s  8.20%  runtime.gcBgMarkWorker
+     0.05s  0.24%  9.51%      1.55s  7.52%  runtime.findRunnable
+         0     0%  9.51%      1.44s  6.99%  runtime.gcBgMarkWorker.func2
+     0.02s 0.097%  9.61%      1.44s  6.99%  runtime.gcDrain
+         0     0%  9.61%      1.38s  6.70%  runtime.gcDrainMarkWorkerDedicated (inline)
+     0.32s  1.55% 11.17%      1.17s  5.68%  encoding/json/jsontext.(*decoderState).ReadValue

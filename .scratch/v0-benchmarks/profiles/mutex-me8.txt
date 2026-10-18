@@ -1,0 +1,24 @@
+# mutex-me8.out — go tool pprof -top (contended delay by call site)
+File: app.test
+Build ID: 8e91155ddfe4fb40ade4e74b4ed31adf460284bb
+Type: delay
+Time: 2026-10-18 10:59:08 CST
+Showing nodes accounting for 15607.93us, 99.82% of 15635.90us total
+Dropped 125 nodes (cum <= 78.18us)
+Showing top 15 nodes out of 57
+      flat  flat%   sum%        cum   cum%
+13793.55us 88.22% 88.22% 13793.55us 88.22%  runtime.unlock (inline)
+ 1814.38us 11.60% 99.82%  1814.38us 11.60%  sync.(*Mutex).Unlock (partial-inline)
+         0     0% 99.82%  1359.45us  8.69%  context.(*cancelCtx).Done
+         0     0% 99.82%   388.05us  2.48%  database/sql.(*DB).BeginTx
+         0     0% 99.82%   388.05us  2.48%  database/sql.(*DB).BeginTx.func1
+         0     0% 99.82%   388.05us  2.48%  database/sql.(*DB).begin
+         0     0% 99.82%   665.36us  4.26%  database/sql.(*DB).beginDC.gowrap1
+         0     0% 99.82%   385.32us  2.46%  database/sql.(*DB).conn
+         0     0% 99.82%   388.05us  2.48%  database/sql.(*DB).retry
+         0     0% 99.82%   347.20us  2.22%  database/sql.(*Rows).awaitDone
+         0     0% 99.82%   345.18us  2.21%  database/sql.(*Rows).initContextClose.gowrap1
+         0     0% 99.82%   356.80us  2.28%  database/sql.(*Tx).Commit
+         0     0% 99.82%   665.36us  4.26%  database/sql.(*Tx).awaitDone
+         0     0% 99.82%   835.33us  5.34%  github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+         0     0% 99.82%   218.41us  1.40%  github.com/HT4w5/bandage/internal/app.BenchmarkPipeline.func1

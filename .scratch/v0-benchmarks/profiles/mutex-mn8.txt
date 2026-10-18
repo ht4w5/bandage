@@ -1,0 +1,24 @@
+# mutex-mn8.out — go tool pprof -top (contended delay by call site)
+File: app.test
+Build ID: 8e91155ddfe4fb40ade4e74b4ed31adf460284bb
+Type: delay
+Time: 2026-10-18 10:59:00 CST
+Showing nodes accounting for 541.42ms, 100% of 541.42ms total
+Dropped 176 nodes (cum <= 2.71ms)
+Showing top 15 nodes out of 66
+      flat  flat%   sum%        cum   cum%
+  394.70ms 72.90% 72.90%   394.70ms 72.90%  runtime.unlock
+  138.87ms 25.65% 98.55%   138.87ms 25.65%  sync.(*Mutex).Unlock
+    7.85ms  1.45%   100%     7.85ms  1.45%  runtime._LostContendedRuntimeLock
+         0     0%   100%    15.44ms  2.85%  encoding/json.Unmarshal (inline)
+         0     0%   100%     5.21ms  0.96%  encoding/json/jsontext.(*Value).UnmarshalJSON
+         0     0%   100%    15.44ms  2.85%  encoding/json/v2.Unmarshal
+         0     0%   100%    14.68ms  2.71%  encoding/json/v2.makeMapArshaler.func3
+         0     0%   100%     5.21ms  0.96%  encoding/json/v2.makeMethodArshaler.func6
+         0     0%   100%    14.72ms  2.72%  encoding/json/v2.unmarshalDecode
+         0     0%   100%   163.94ms 30.28%  github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+         0     0%   100%   138.30ms 25.54%  github.com/HT4w5/bandage/internal/app.(*progress).bump
+         0     0%   100%   138.86ms 25.65%  github.com/HT4w5/bandage/internal/app.startBenchPipeline.gowrap1
+         0     0%   100%     3.31ms  0.61%  github.com/HT4w5/bandage/internal/domain/enrichment.(*FilesizeEnricher).Enrich
+         0     0%   100%     3.87ms  0.71%  github.com/HT4w5/bandage/internal/infra/cache/memory.(*Store).Update
+         0     0%   100%     3.04ms  0.56%  github.com/HT4w5/bandage/internal/infra/cache/memory.Filesize.Update
