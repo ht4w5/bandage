@@ -5,8 +5,10 @@
 // reports.
 //
 // Deletion semantics, plainly: deleting reports does not touch tracker
-// state, so a Target that still overflows is reported again on the next
-// trigger.
+// state, and it re-arms the suppressed report write (ADR 0008): a
+// still-abusive Target is reported again on the next trigger once its
+// report is deleted — immediately for tracker-less rules, after a
+// fresh accumulation episode for tracker rules.
 //
 // /stats is human-facing and unversioned — explicitly not a stable
 // machine contract (ADR 0006). Machine-readable metric gathering would

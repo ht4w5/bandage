@@ -175,9 +175,9 @@ func buildRule(chainName string, raw *rawRule, seen map[string]bool) (bandage.Ru
 		if err != nil {
 			return bandage.Rule{}, err
 		}
-		if action.Report != nil && rule.Tracker == nil {
-			return bandage.Rule{}, fmt.Errorf("rules: rule %q: report requires a tracker", id)
-		}
+		// A report action needs no tracker: tracker-less rules (the
+		// tripwire pattern) match on the filter alone and their writes
+		// are bounded by report suppression (spec stories 12, 29).
 		rule.Actions = append(rule.Actions, action)
 	}
 	return rule, nil

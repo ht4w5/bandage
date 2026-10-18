@@ -197,6 +197,12 @@ func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
 func (d *Daemon) Start(lifetime context.Context) error {
 	d.ctx, d.cancel = context.WithCancel(context.WithoutCancel(lifetime))
 	d.startedAt = d.now()
+	// Suppression state is re-derived from the report table at startup
+	// (spec story 13, ADR 0008): alive reports suppress the next
+	// Trigger's write, deleted or expired ones do not.
+	if err := d.reports.Rebuild(d.ctx, d.now()); err != nil {
+		return fmt.Errorf("reports: rebuild live-report set: %w", err)
+	}
 	// The startup record names the running build: the log stream itself
 	// identifies what is deployed (spec story 14).
 	d.logger.Info().
