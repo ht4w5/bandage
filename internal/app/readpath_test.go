@@ -29,14 +29,12 @@ import (
 // straight through to the real repository. The daemon's startup
 // live-report rebuild is a List of its own and passes through before
 // the test arms the wedge. (The write-side wedge is
-// workerpool_test.go's blockingStore.)
+// workerpool_test.go's blockingStore; both share its storeGate.)
 type gatedListStore struct {
 	*sqlite.ReportRepository
-	mu      sync.Mutex
-	armed   bool
-	entered chan struct{}
-	gate    chan struct{}
-	once    sync.Once
+	storeGate
+	mu    sync.Mutex
+	armed bool
 }
 
 // arm wedges subsequent List calls; before it, they pass through.
@@ -53,13 +51,8 @@ func (g *gatedListStore) List(ctx context.Context, q report.Query) ([]bandage.Re
 	if !armed {
 		return g.ReportRepository.List(ctx, q)
 	}
-	g.entered <- struct{}{}
-	<-g.gate
+	g.enter()
 	return g.ReportRepository.List(ctx, q)
-}
-
-func (g *gatedListStore) release() {
-	g.once.Do(func() { close(g.gate) })
 }
 
 // fetchReports issues GET /reports off the test goroutine and hands
@@ -82,17 +75,6 @@ func fetchReports(addr string) (int, reportDoc, error) {
 		}
 	}
 	return resp.StatusCode, doc, nil
-}
-
-// waitListEntered blocks until the wedged query is in flight inside the
-// store (guard timeout only — never a sleep).
-func waitListEntered(t *testing.T, g *gatedListStore) {
-	t.Helper()
-	select {
-	case <-g.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the report query never entered the store")
-	}
 }
 
 // queryResult is the async GET outcome handed back to the test
@@ -131,8 +113,7 @@ func TestQueryDuringInflightWriteDoesNotWait(t *testing.T) {
 	}
 	store := &blockingStore{
 		ReportRepository: inner,
-		entered:          make(chan struct{}, 8),
-		gate:             make(chan struct{}),
+		storeGate:        newStoreGate(),
 	}
 	t.Cleanup(store.release)
 	d := startTestDaemonCfg(t, clock, "unixgram", dbPath, bandwidthRules, nil, withStore(store))
@@ -141,26 +122,17 @@ func TestQueryDuringInflightWriteDoesNotWait(t *testing.T) {
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/releases/24.04.iso", 200, 6000))
 	d.waitProcessed(t, 1)
 	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/releases/24.04.iso", 200, 6000))
-	waitEntered(t, store, 1)
+	waitEntered(t, &store.storeGate, 1)
 
 	res := make(chan queryResult, 1)
 	go func() {
 		status, doc, err := fetchReports(d.apiAddr())
 		res <- queryResult{status, doc, err}
 	}()
-	select {
-	case r := <-res:
-		if r.err != nil {
-			t.Fatalf("GET /reports: %v", r.err)
-		}
-		if r.status != http.StatusOK {
-			t.Fatalf("GET /reports status = %d, want 200", r.status)
-		}
-		if len(r.doc.Reports) != 0 {
-			t.Errorf("query during the in-flight write saw %d reports, want 0 (the write has not landed)", len(r.doc.Reports))
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("GET /reports waited for the in-flight report write")
+	if status, doc := waitQuery(t, res); status != http.StatusOK {
+		t.Errorf("GET /reports status = %d, want 200", status)
+	} else if len(doc.Reports) != 0 {
+		t.Errorf("query during the in-flight write saw %d reports, want 0 (the write has not landed)", len(doc.Reports))
 	}
 
 	// Once released, the write lands and the report is served.
@@ -183,8 +155,7 @@ func TestWriteDuringInflightQueryDoesNotWait(t *testing.T) {
 	}
 	store := &gatedListStore{
 		ReportRepository: inner,
-		entered:          make(chan struct{}, 8),
-		gate:             make(chan struct{}),
+		storeGate:        newStoreGate(),
 	}
 	t.Cleanup(store.release)
 	d := startTestDaemonCfg(t, clock, "unixgram", dbPath, bandwidthRules, nil, withStore(store))
@@ -196,7 +167,7 @@ func TestWriteDuringInflightQueryDoesNotWait(t *testing.T) {
 		status, doc, err := fetchReports(d.apiAddr())
 		res <- queryResult{status, doc, err}
 	}()
-	waitListEntered(t, store)
+	waitEntered(t, &store.storeGate, 1)
 
 	// The write path runs to completion regardless: two events overflow
 	// and the report lands while the query is still in flight.

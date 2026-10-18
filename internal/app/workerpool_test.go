@@ -179,26 +179,62 @@ chains:
 	}
 }
 
-// blockingStore wedges the report write path on demand: every Upsert
-// signals entry and then blocks until the test releases it, however
-// long that takes. It stands both for in-flight report upserts
-// observed mid-write and for a store call that never returns (spec
-// stories 31–32). failErr, when set, fails exactly the first write
-// that passes the gate instead of landing it: the wedged write errors
-// after release, standing in for a report write that fails while a
-// concurrent Trigger watches (spec stories 4, 5, 14).
+// storeGate wedges store calls on demand: every gated call signals
+// enter() and then blocks until release(), however long that takes. It
+// stands both for in-flight report calls observed mid-write and for a
+// store call that never returns (spec stories 31–32); the write-side
+// user is blockingStore, the read-side user gatedListStore
+// (readpath_test.go).
+type storeGate struct {
+	entered chan struct{}
+	gate    chan struct{}
+	once    sync.Once
+}
+
+// newStoreGate returns a fresh gate with its own entry channel.
+func newStoreGate() storeGate {
+	return storeGate{entered: make(chan struct{}, 32), gate: make(chan struct{})}
+}
+
+// enter signals the wedge and blocks until release.
+func (g *storeGate) enter() {
+	g.entered <- struct{}{}
+	<-g.gate
+}
+
+// release opens the gate once: every wedged call resumes and later
+// calls pass straight through.
+func (g *storeGate) release() {
+	g.once.Do(func() { close(g.gate) })
+}
+
+// waitEntered blocks until n gated store calls are in flight inside
+// the wedge (guard timeout only — never a sleep).
+func waitEntered(t *testing.T, g *storeGate, n int) {
+	t.Helper()
+	for i := range n {
+		select {
+		case <-g.entered:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d of %d store calls entered the wedge", i, n)
+		}
+	}
+}
+
+// blockingStore wedges the report write path on demand (storeGate).
+// failErr, when set, fails exactly the first write that passes the
+// gate instead of landing it: the wedged write errors after release,
+// standing in for a report write that fails while a concurrent Trigger
+// watches (spec stories 4, 5, 14).
 type blockingStore struct {
 	*sqlite.ReportRepository
-	entered  chan struct{}
-	gate     chan struct{}
-	once     sync.Once
+	storeGate
 	failErr  error
 	failOnce sync.Once
 }
 
 func (b *blockingStore) Upsert(ctx context.Context, rec bandage.Report) error {
-	b.entered <- struct{}{}
-	<-b.gate
+	b.enter()
 	var err error
 	b.failOnce.Do(func() {
 		if b.failErr != nil {
@@ -233,8 +269,7 @@ func startWedgeDaemon(t *testing.T, clock *testClock, workers int) *wedgeDaemon 
 	}
 	store := &blockingStore{
 		ReportRepository: inner,
-		entered:          make(chan struct{}, 32),
-		gate:             make(chan struct{}),
+		storeGate:        newStoreGate(),
 	}
 	t.Cleanup(store.release)
 
@@ -271,19 +306,6 @@ func startWedgeDaemon(t *testing.T, clock *testClock, workers int) *wedgeDaemon 
 		send:   func(line string) { conn.Write([]byte(line)) },
 		store:  store,
 		dbPath: dbPath,
-	}
-}
-
-// waitEntered blocks until n report upserts are in flight inside the
-// wedged store (guard timeout only — never a sleep).
-func waitEntered(t *testing.T, s *blockingStore, n int) {
-	t.Helper()
-	for i := range n {
-		select {
-		case <-s.entered:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("only %d of %d report upserts entered the store", i, n)
-		}
 	}
 }
 
@@ -330,7 +352,7 @@ func TestShutdownDrainsInFlightReportUpserts(t *testing.T) {
 	// in flight inside the store when shutdown begins.
 	w.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 2000))
 	w.send(nginxLine(eventTime1, "203.0.113.8", "GET", "/big", 200, 2000))
-	waitEntered(t, w.store, 2)
+	waitEntered(t, &w.store.storeGate, 2)
 
 	shutdownErr := make(chan error, 1)
 	go func() {
@@ -365,7 +387,7 @@ func TestShutdownIsBoundedWhenStoreCallHangs(t *testing.T) {
 	w := startWedgeDaemon(t, clock, 2)
 
 	w.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 2000))
-	waitEntered(t, w.store, 1) // the store call is wedged in flight
+	waitEntered(t, &w.store.storeGate, 1) // the store call is wedged in flight
 
 	ctx, cancel := context.WithCancel(context.Background())
 	shutdownErr := make(chan error, 1)

@@ -24,6 +24,14 @@ type Query struct {
 	Now time.Time
 }
 
+// Matches reports whether a (rule, target) pair falls in the query's
+// filter: an empty Rule or Target matches everything. It is the one
+// filter predicate — the service applies it to the live set, the
+// repositories to their rows.
+func (q Query) Matches(rule, target string) bool {
+	return (q.Rule == "" || q.Rule == rule) && (q.Target == "" || q.Target == target)
+}
+
 // ErrUnfiltered is returned by Repository.Delete when neither Rule nor
 // Target is set: deletion is by filter, never delete-all.
 var ErrUnfiltered = errors.New("report: delete requires a rule or target filter")
@@ -209,7 +217,7 @@ func (s *Service) Delete(ctx context.Context, q Query) (int, error) {
 	}
 	s.mu.Lock()
 	for key := range s.live {
-		if (q.Rule == "" || q.Rule == key.rule) && (q.Target == "" || q.Target == key.target) {
+		if q.Matches(key.rule, key.target) {
 			delete(s.live, key)
 		}
 	}

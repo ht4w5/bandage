@@ -68,8 +68,7 @@ func TestE2EFailedConcurrentWriteDoesNotLoseTheDetection(t *testing.T) {
 	}
 	store := &blockingStore{
 		ReportRepository: inner,
-		entered:          make(chan struct{}, 8),
-		gate:             make(chan struct{}),
+		storeGate:        newStoreGate(),
 		failErr:          errWriteFailed,
 	}
 	t.Cleanup(store.release)
@@ -80,7 +79,7 @@ func TestE2EFailedConcurrentWriteDoesNotLoseTheDetection(t *testing.T) {
 	// The first event's report write wedges in flight: its (rule,
 	// Target) write is pending inside the store.
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 2000))
-	waitEntered(t, store, 1)
+	waitEntered(t, &store.storeGate, 1)
 
 	// The second event overflows on its own and Triggers while the
 	// first write is still pending — and must not finish while it is:
