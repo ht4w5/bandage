@@ -41,9 +41,12 @@ reproduction commands live there.
 **Baseline (committed)** — `GOMAXPROCS=22 go test -run=^$ -bench=.
 -benchmem -count=10 -p=1 ./...` (whole suite, packages serial),
 benchstat summary beside it: `baseline/bench-count10.txt` +
-`baseline/benchstat.txt`. Key medians: match-never 204.1k → 396.4k
-lines/s (workers 1 → 8); match-every flat 23.6k → 21.9k;
-tcp/match-never 147.8k → 222.6k (flatten at workers = 4). Profile
+`baseline/benchstat.txt` (regenerated wholesale by the code-review
+pass after the benchmark renames, the added stage benchmarks, the
+honest-counting fix and the gc-pause-frac → gc-cpu-frac swap). Key
+medians: match-never 206.9k → 404.5k
+lines/s (workers 1 → 8); match-every flat 23.3k → 21.7k;
+tcp/match-never 150.9k → 224.5k (flatten at workers = 4). Profile
 extracts (`-cpuprofile/-memprofile/-mutexprofile/-blockprofile`,
 selections mn1/mn8/me1/me8/tcpmn8) committed under `profiles/`.
 
@@ -53,10 +56,12 @@ for pipeline rows): 1) **report write (on match)** 31.4µs/upsert
 (`:memory:`) / 75.9µs (file), 53–54 allocs — **82% of write-path CPU**,
 31.9k lines/sec/core; 2) **parse** 3.019µs (full), 32 allocs/1.5KiB —
 **83% of fast-path CPU**, 331k lines/sec/core; 3) **tcp ingest** ≈
-+1.9µs/line, ceiling 222.6k lines/s; 4) **evaluate** 739ns/1.505µs —
-5–6%; 5) **enrich + 2× store update** ≈ 230ns — ~4%; 6)
++1.8µs/line, ceiling 224.5k lines/s (isolated Source loop alone: 625k
+tcp / 572k unixgram); 4) **evaluate** 725ns/1.485µs —
+5–6%; 5) **enrich + store update** 192ns (measured
+`BenchmarkEnrichMemory`) — ~4%; 6)
 **`progress.bump`** 48.4ns + 112B/line — 2% CPU but 25.5% of mutex
-contention. GC is the cross-cutting tail: gc-pause-frac 1.2% → 4.7%
+contention. GC is the cross-cutting tail: gc-cpu-frac 1.9% → 6.0%
 with worker count.
 
 **Worker-scaling attribution** — match-every's workers=1 saturation is
@@ -75,11 +80,20 @@ site, 112B/line churn — but ~20M lines/s serialization ceiling is not
 today's flatten); H3 **partial** (per-call 32B concat confirmed and
 small; hot-key contention refuted at pipeline scale — 0.7% of mutex
 delay despite the Zipf corpus); H4 **confirmed/dominant** (see above;
-match-every costs 8.6× match-never and never scales); H5 **partial**
+match-every costs 8.9× match-never and never scales); H5 **partial**
 (ingest-before-pipeline ceiling confirmed for tcp, −44% at workers = 8;
-the unbuffered handoff itself is minor — same handoff carries 396k
+the unbuffered handoff itself is minor — same handoff carries 405k
 lines/s); H6 **partial** (clean O(rules) at ~12.5ns/rule, zero allocs,
 but <1% at realistic rule counts; material only at ≥100 rules/chain).
+
+**Code-review pass note** — the numbers above were refreshed by the
+code-review pass where benchmarks were renamed (`match-every`/
+`match-never` evaluate fixtures), re-semanticked (throughput counting
+fix, gc-cpu-frac metric) or added (isolated ingest, enrich, sweep
+cadence); profile-derived shares quote the committed extracts and are
+unchanged. `findings.md` now carries the explicit spec → benchmark
+coverage map (Phase 1 rows and hot-path stages, with the domain-lint
+split marked).
 
 **Follow-up issues filed from evidence, ordered by measured impact**
 (the standing `.scratch/v0-followups/issues/` tracker, continuing its

@@ -44,8 +44,9 @@ by tests/benchmarks, never by production code):
   head). Generation is deterministic by construction: a self-contained
   splitmix64 PRNG, so the same seed yields byte-identical corpora on
   every Go version and platform.
-- **Parseable-by-construction**: each internal record renders both the
-  raw line and its Event; `TestCorpusLinesParseToTheirEvents` pins that
+- **Parseable-by-construction**: each fixture event content renders
+  both the raw line and its Event;
+  `TestCorpusLinesParseToTheirEvents` pins that
   `nginx.Parser.Parse(Line(i)) == Event(i)` for every shape ×
   distribution, so no fixture line can drop and the two renderings
   cannot drift.
