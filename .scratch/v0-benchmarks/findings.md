@@ -401,12 +401,14 @@ this report landed; the decisions are recorded in `GLOSSARY.md`
 New work decided (to be specced first — it is the largest lever and it
 re-models the benchmarks):
 
-- **Trigger semantics** (ADR 0008): a Trigger empties the matched rule's
-  tracker for the Target; while a report for (rule, Target) is alive the
-  rule skips that Target's events entirely. The skip set is derived from
-  the report table (rebuilt at startup, maintained on Trigger, delete and
-  expiry). Supersedes candidate 1's churn rationale: re-Trigger churn
-  disappears by construction (one write per report lifetime).
+- **Trigger semantics** (ADR 0008): a Trigger (a match that ran the
+  rule's report action) empties the rule's tracker for the Target; while
+  a report for (rule, Target) is alive, further Triggers write nothing —
+  the rule keeps matching and its other actions keep running. The
+  live-report set is derived from the report table (rebuilt at startup,
+  maintained on Trigger, delete and expiry). Supersedes candidate 1's
+  churn rationale: re-Trigger churn disappears by construction (one write
+  per report lifetime).
 - **Tracker-less tripwire pattern** (`agent keyword "…"` + report, no
   tracker) is a supported shape worth documenting alongside the rules
   docs.
@@ -421,7 +423,7 @@ Carry-over design notes for `/to-spec` and `/to-tickets`:
   table).
 - The split sqlite connections need `:memory:` handling in tests
   (shared-cache URI or single-connection fallback) — ADR 0009.
-- Rule-skip precision: "skips that Target's events entirely" means the
-  whole action list (including goto/jump/stop) does not run for that
-  Target while the report is alive — ADR 0008 states it; flip only if
-  report-write-only suppression was meant.
+- Suppression precision (settled): only the report write is suppressed
+  while a report is alive — the rule matches and all its actions run;
+  the tracker resets on every Trigger (write or suppressed), so action
+  cadence stays one run per accumulation episode.

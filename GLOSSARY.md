@@ -44,9 +44,10 @@ the rule's actions then run.
 _Avoid_: fire, hit
 
 **Trigger**:
-A match that wrote a report; its event becomes the report's sample and its
-wall-clock time stamps the report. While that report is alive the rule
-skips that Target's events entirely, and each Trigger empties the rule's
+A match that ran the rule's report action; when it writes, its event
+becomes the report's sample and its wall-clock time stamps the report.
+While that report is alive, further Triggers for the Target write nothing
+(the rule's other actions still run), and each Trigger empties the rule's
 tracker for the Target.
 _Avoid_: firing, hit
 
