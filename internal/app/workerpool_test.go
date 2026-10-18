@@ -273,6 +273,25 @@ func waitDone(t *testing.T, ch <-chan error) error {
 	}
 }
 
+// Shutdown cancels the daemon-lifetime context once the drain is done,
+// so no live context outlives a clean stop (context hygiene — the
+// context threading contract of the daemon seam).
+func TestShutdownCancelsLifetimeContext(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	d := startTestDaemon(t, clock, "unixgram", ":memory:", poolRules)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown error: %v", err)
+	}
+	select {
+	case <-d.ctx.Done():
+	default:
+		t.Error("daemon lifetime context still live after clean Shutdown (leaked)")
+	}
+}
+
 // Shutdown drains the pipeline first: report upserts already in flight
 // when shutdown begins complete before the resources close, and the
 // reports survive (spec story 32).
