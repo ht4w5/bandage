@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,23 +29,30 @@ import (
 // messages at a real ingest listener, asserted through GET /reports JSON,
 // with the wall clock injected (never sleep).
 
+// testClock is the injected wall clock every seam runs on (never
+// sleep). Reads are atomic and lock-free: the clock sits in the
+// measured benchmark path too (the tracker store reads it per event),
+// so a mutex here would tax every measured event.
 type testClock struct {
-	mu sync.Mutex
-	t  time.Time
+	t atomic.Pointer[time.Time]
 }
 
-func newTestClock(t time.Time) *testClock { return &testClock{t: t} }
-
-func (c *testClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.t
+func newTestClock(t time.Time) *testClock {
+	c := &testClock{}
+	c.t.Store(&t)
+	return c
 }
+
+func (c *testClock) Now() time.Time { return *c.t.Load() }
 
 func (c *testClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.t = c.t.Add(d)
+	for {
+		old := c.t.Load()
+		next := old.Add(d)
+		if c.t.CompareAndSwap(old, &next) {
+			return
+		}
+	}
 }
 
 const (

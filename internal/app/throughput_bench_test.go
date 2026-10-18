@@ -13,6 +13,7 @@ import (
 
 	"github.com/HT4w5/bandage/internal/bench"
 	"github.com/HT4w5/bandage/internal/domain/report"
+	"github.com/HT4w5/bandage/internal/infra/persistence/sqlite"
 )
 
 // Pipeline throughput and worker-scaling benchmarks (spec v0-benchmarks
@@ -37,13 +38,24 @@ import (
 // /stats snapshot are recorded beside them (reportBenchStats).
 //
 // The scenarios vary the match path (GLOSSARY: Match, Trigger) and the
-// tracker-cache cap:
+// tracker-cache cap. The write side is the v0-hot-path episode
+// re-modeling (spec stories 30–31): the retired overflow-every-event
+// trick — a report write per event — is gone, and the scenarios model
+// report episodes instead (one write per (rule, Target) per report
+// lifetime, visible in the baseline as writes/op):
 //
-//   - match-every / match-never differ only in the leaky-bucket
-//     volume: both run the filter and the tracker update per event, but
-//     match-every overflows on every event and so Triggers a report
-//     upsert per event while match-never never overflows. The delta
-//     between the two curves isolates the match/write path (H4).
+//   - first-trigger / rearm-delete run the episode fixture: every
+//     accumulation episode Triggers the rule's report action, but one
+//     write lands per (rule, Target) per report lifetime.
+//     first-trigger's lifetime is the whole run (the write falls
+//     silent after every Target's first Trigger), while rearm-delete
+//     deletes the scenario's reports at every drain boundary — the
+//     operator's re-arm lever (spec story 9) — so every episode writes
+//     again. Both are read against the retired trick's per-event write
+//     ceiling (≈23k lines/s, findings.md).
+//   - match-never is the fast-path floor: the same filter and tracker
+//     work per event with a volume nothing ever reaches, so no rule
+//     Matches and neither the Trigger nor the write path runs (H4).
 //   - *-evicting runs the same rules with a cache cap below the
 //     corpus's key cardinality (~512 distinct filesize paths plus
 //     tracker Targets), so the store evicts instead of holding state.
@@ -81,26 +93,30 @@ var benchWall = time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)
 
 func benchNow() time.Time { return benchWall }
 
-// benchMatchEveryRules triggers a report on every event: a rate tracker
-// that overflows from the first event on (volume must be positive at
-// load, and Overflow is strictly above it, so 0.5 overflows on the
-// increment of 1 every event carries). leak 0 pins the bucket against
-// decay, so every event Matches and Triggers (GLOSSARY).
-const benchMatchEveryRules = `
+// benchEpisodeRules is the episode fixture (the retired
+// overflow-every-event trick is not the episode model): a rate tracker
+// with volume above the per-event increment, so a Target accumulates
+// one episode per benchEpisodeLen events (Overflow is strictly above
+// volume; leak 0 pins the bucket against decay). Every episode
+// Triggers (GLOSSARY) and runs the report action — the Trigger empties
+// the tracker, so episodes recur at that cadence — while its write
+// lands once per report lifetime (benchScenarios).
+const benchEpisodeRules = `
 version: 0
 chains:
   - name: throughput
     rules:
-      - id: bench-every
-        tracker: {track: rate, leak: 0, volume: 0.5}
+      - id: bench-episode
+        tracker: {track: rate, leak: 0, volume: 3}
         actions: [{report: {reason: bench-overflow, ttl: 24h}}]
 `
 
 // benchMatchNeverRules is the same rule shape with the volume far above
 // anything the corpus accumulates: the filter and tracker-update paths
-// run per event exactly as in benchMatchEveryRules, but no event
+// run per event exactly as in benchEpisodeRules, but no event
 // overflows, so no rule ever Matches and no report is ever written.
-// The delta between the two scenarios is the match/write path alone.
+// The delta between it and the episode scenarios is the Trigger path
+// alone.
 const benchMatchNeverRules = `
 version: 0
 chains:
@@ -112,20 +128,25 @@ chains:
 `
 
 // benchScenario is one throughput scenario: rules shaping the match
-// path plus the tracker-cache entry cap.
+// path, the tracker-cache entry cap, the fixture's rule IDs (the
+// re-arm delete's filters) and the report-lifetime episode (nil for
+// match-never).
 type benchScenario struct {
 	name     string
 	rules    string
+	ruleIDs  []string
 	cacheMax int
+	ep       *benchEpisode
 }
 
 // benchScenarios is the scenario matrix every worker count runs
 // against. Names are stable: they are the benchmark sub-names.
 var benchScenarios = []benchScenario{
-	{name: "match-every", rules: benchMatchEveryRules, cacheMax: benchCacheRoomy},
-	{name: "match-every-evicting", rules: benchMatchEveryRules, cacheMax: benchCacheEvicting},
-	{name: "match-never", rules: benchMatchNeverRules, cacheMax: benchCacheRoomy},
-	{name: "match-never-evicting", rules: benchMatchNeverRules, cacheMax: benchCacheEvicting},
+	{name: "first-trigger", rules: benchEpisodeRules, ruleIDs: []string{"bench-episode"}, cacheMax: benchCacheRoomy, ep: &benchEpisodes[0]},
+	{name: "first-trigger-evicting", rules: benchEpisodeRules, ruleIDs: []string{"bench-episode"}, cacheMax: benchCacheEvicting, ep: &benchEpisodes[0]},
+	{name: "rearm-delete", rules: benchEpisodeRules, ruleIDs: []string{"bench-episode"}, cacheMax: benchCacheRoomy, ep: &benchEpisodes[1]},
+	{name: "match-never", rules: benchMatchNeverRules, ruleIDs: []string{"bench-never"}, cacheMax: benchCacheRoomy},
+	{name: "match-never-evicting", rules: benchMatchNeverRules, ruleIDs: []string{"bench-never"}, cacheMax: benchCacheEvicting},
 }
 
 // benchParams is the run-parameter clump every bench helper threads
@@ -170,8 +191,16 @@ func newBenchDaemon(tb testing.TB, p benchParams) *Daemon {
 	if err != nil {
 		tb.Fatalf("ParseRules: %v", err)
 	}
+	// The report store sits behind a write ledger so every run's
+	// writes/op is measurable — the episode write-rate evidence lives
+	// in the baseline itself.
+	repo, err := sqlite.Open(":memory:")
+	if err != nil {
+		tb.Fatalf("sqlite.Open: %v", err)
+	}
 	d, err := New(benchConfig(p), chains,
-		WithClock(benchNow), WithLogger(zerolog.Nop()))
+		WithClock(benchNow), WithLogger(zerolog.Nop()),
+		withStore(&writeLedger{reportStore: repo}))
 	if err != nil {
 		tb.Fatalf("New: %v", err)
 	}
@@ -262,25 +291,40 @@ func waitLines(tb testing.TB, d *Daemon, n int) {
 	}
 }
 
-// feedLines hands n corpus lines to the pipeline and waits until every
-// one is processed — the correctness-test driver.
-func feedLines(tb testing.TB, d *Daemon, corpus *bench.Corpus, n int) {
+// benchRearm returns the run's re-arm step at a drain boundary — a
+// report-lifetime boundary for the re-arm scenarios (spec stories
+// 9–10). rearm-delete deletes the scenario's reports like the API's
+// delete-by-filter — the operator's re-arm lever, so the next episode
+// writes again — and rolls the write ledger's report lifetime with it.
+// first-trigger and match-never never re-arm inside a run (nil step).
+func benchRearm(tb testing.TB, sc benchScenario, d *Daemon) func() {
 	tb.Helper()
-	for i := range n {
-		d.lines <- corpus.Line(i)
+	if sc.ep == nil || sc.ep.kind != rearmDelete {
+		return nil
 	}
-	waitLines(tb, d, n)
+	ledger := d.repo.(*writeLedger)
+	return func() {
+		for _, id := range sc.ruleIDs {
+			if _, err := d.reports.Delete(context.Background(), report.Query{Rule: id, Now: d.now()}); err != nil {
+				tb.Fatalf("re-arm delete %q: %v", id, err)
+			}
+		}
+		ledger.newLifetime()
+	}
 }
 
 // runPipelineBench is the timed feed: send hands line i to the daemon
 // (blocking on the unbuffered handoff, so the feed rate is the
 // pipeline's sustained rate), draining every drainEvery lines and
-// after the loop so the processed count always catches up. The final
-// drain runs inside the timed region (Loop stops the timer when it
-// returns, so it is restarted around the drain): every line counted in
-// lines/s and in ns/op, B/op, allocs/op is fully processed before the
-// timer stops. Returns the lines fed (one op each).
-func runPipelineBench(b *testing.B, d *Daemon, send func(i int)) int {
+// after the loop so the processed count always catches up. rearm runs
+// at every drain boundary — the episode scenario's report-lifetime
+// boundary — and is timed like everything else in the modeled
+// workload. The final drain runs inside the timed region (Loop stops
+// the timer when it returns, so it is restarted around the drain):
+// every line counted in lines/s and in ns/op, B/op, allocs/op is fully
+// processed before the timer stops. Returns the lines fed (one op
+// each).
+func runPipelineBench(b *testing.B, d *Daemon, send func(i int), rearm func()) int {
 	b.Helper()
 	var lines int
 	for b.Loop() {
@@ -288,6 +332,9 @@ func runPipelineBench(b *testing.B, d *Daemon, send func(i int)) int {
 		lines++
 		if lines%drainEvery == 0 {
 			waitLines(b, d, lines)
+			if rearm != nil {
+				rearm()
+			}
 		}
 	}
 	b.StartTimer()
@@ -330,14 +377,19 @@ func reportBenchStats(b *testing.B, d *Daemon, lines int, before, after benchGC)
 	b.Helper()
 	bench.ReportLinesPerSec(b, lines)
 	st := d.Stats()
+	writes := d.repo.(*writeLedger).total()
 	if lines > 0 {
 		b.ReportMetric(float64(st.TrackerCache.Evictions)/float64(lines), "evictions/op")
+		// writes/op is the episode evidence in the baseline itself:
+		// one write per (rule, Target) per report lifetime, never one
+		// per overflowing event.
+		b.ReportMetric(float64(writes)/float64(lines), "writes/op")
 	}
 	if dCPU := after.cpuSeconds - before.cpuSeconds; dCPU > 0 {
 		b.ReportMetric((after.gcSeconds-before.gcSeconds)/dCPU, "gc-cpu-frac")
 	}
-	b.Logf("/stats workers=%d received=%d parsed=%d dropped=%d cache={gets:%d sets:%d misses:%d evictions:%d size:%d cap:%d} gc=%d gomaxprocs=%d",
-		st.Pipeline.Workers, st.Pipeline.Received, st.Pipeline.Parsed, st.Pipeline.Dropped,
+	b.Logf("/stats workers=%d received=%d parsed=%d dropped=%d writes=%d cache={gets:%d sets:%d misses:%d evictions:%d size:%d cap:%d} gc=%d gomaxprocs=%d",
+		st.Pipeline.Workers, st.Pipeline.Received, st.Pipeline.Parsed, st.Pipeline.Dropped, writes,
 		st.TrackerCache.Gets, st.TrackerCache.Sets, st.TrackerCache.Misses,
 		st.TrackerCache.Evictions, st.TrackerCache.Size, st.TrackerCache.EntryCap,
 		int(after.cycles-before.cycles), runtime.GOMAXPROCS(0))
@@ -355,8 +407,9 @@ func BenchmarkPipeline(b *testing.B) {
 			b.Run(p.name(), func(b *testing.B) {
 				corpus := bench.NewCorpus(bench.Seed, bench.ShapeFull, bench.DistZipf, benchCorpusLines)
 				d := startBenchPipeline(b, p)
+				rearm := benchRearm(b, sc, d)
 				before := readGC()
-				lines := runPipelineBench(b, d, func(i int) { d.lines <- corpus.Line(i) })
+				lines := runPipelineBench(b, d, func(i int) { d.lines <- corpus.Line(i) }, rearm)
 				after := readGC()
 				reportBenchStats(b, d, lines, before, after)
 			})
@@ -379,12 +432,13 @@ func BenchmarkPipelineIngest(b *testing.B) {
 					corpus := bench.NewCorpus(bench.Seed, bench.ShapeFull, bench.DistZipf, benchCorpusLines)
 					d, conn := startBenchIngest(b, p)
 					wire := benchWire(corpus, network)
+					rearm := benchRearm(b, sc, d)
 					before := readGC()
 					lines := runPipelineBench(b, d, func(i int) {
 						if _, err := conn.Write(wire[i%len(wire)]); err != nil {
 							b.Fatalf("send: %v", err)
 						}
-					})
+					}, rearm)
 					after := readGC()
 					reportBenchStats(b, d, lines, before, after)
 				})
@@ -394,50 +448,106 @@ func BenchmarkPipelineIngest(b *testing.B) {
 }
 
 // TestBenchPipelineScenariosMatchTheirNames pins the benchmark
-// scenario contracts at the assembled seam: match-every Triggers one
-// report per event Target and match-never none, every line is counted
+// scenario contracts at the assembled seam: every line is counted
 // exactly once (received = parsed, nothing dropped), the roomy cap
-// never evicts and the evicting cap does. The expected report count is
-// derived from the fixture events alone, so it can disagree with the
-// pipeline.
+// never evicts and the evicting cap does, and the write cells follow
+// the episode contract — one write per (rule, Target) per report
+// lifetime, exactly where the fixture's episodes Trigger. Expected
+// Triggers and write cells are derived from the fixture events alone
+// (episodeOracle), so they can disagree with the pipeline. Under the
+// evicting cap cache churn resets accumulation episodes mid-flight, so
+// only the write contract and its bounds stay deterministic — the
+// exact counts live on the roomy cells.
 func TestBenchPipelineScenariosMatchTheirNames(t *testing.T) {
-	const lines = 1024
+	const batches = 2
+	lines := int64(batches * drainEvery)
 	// Distinct keys exercise both cache namespaces: ~250 filesize
 	// paths plus ~250 tracker Targets — above benchCacheEvicting.
-	corpus := bench.NewCorpus(bench.Seed, bench.ShapeFull, bench.DistUniform, lines)
-	targets := make(map[string]bool)
-	for i := range lines {
-		targets[corpus.Event(i).RemoteAddr.String()] = true
-	}
+	corpus := bench.NewCorpus(bench.Seed, bench.ShapeFull, bench.DistUniform, drainEvery)
 
 	tests := []struct {
 		name        string
 		sc          benchScenario
-		wantReports int
 		wantEvicted bool
 	}{
-		{name: "match-every", sc: benchScenarios[0], wantReports: len(targets)},
-		{name: "match-every-evicting", sc: benchScenarios[1], wantReports: len(targets), wantEvicted: true},
-		{name: "match-never", sc: benchScenarios[2], wantReports: 0},
-		{name: "match-never-evicting", sc: benchScenarios[3], wantReports: 0, wantEvicted: true},
+		{name: "first-trigger", sc: benchScenarios[0]},
+		{name: "first-trigger-evicting", sc: benchScenarios[1], wantEvicted: true},
+		{name: "rearm-delete", sc: benchScenarios[2]},
+		{name: "match-never", sc: benchScenarios[3]},
+		{name: "match-never-evicting", sc: benchScenarios[4], wantEvicted: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d := startBenchPipeline(t, benchParams{sc: tt.sc, workers: 4})
-			feedLines(t, d, corpus, lines)
+			ledger := d.repo.(*writeLedger)
+
+			var oracle *episodeOracle
+			if tt.sc.ep != nil {
+				oracle = newEpisodeOracle(benchRules(t, tt.sc.rules))
+			}
+			rearm := benchRearm(t, tt.sc, d)
+			for batch := range batches {
+				for i := range drainEvery {
+					j := batch*drainEvery + i
+					if oracle != nil {
+						oracle.event(corpus.Event(j), benchWall)
+					}
+					d.lines <- corpus.Line(j)
+				}
+				waitLines(t, d, (batch+1)*drainEvery)
+				if rearm != nil && batch < batches-1 {
+					rearm()
+					oracle.boundary()
+				}
+			}
 
 			c := d.counters()
 			if c.Received != lines || c.Parsed != lines || c.Dropped != 0 {
 				t.Errorf("counters = %+v, want {Received:%d Parsed:%d Dropped:0}", c, lines, lines)
 			}
 
+			switch {
+			case oracle == nil:
+				if n := ledger.total(); n != 0 {
+					t.Errorf("report writes = %d, want 0 (match-never never writes)", n)
+				}
+			case tt.wantEvicted:
+				// Cache churn resets accumulation episodes mid-flight:
+				// exact counts are gone, the write contract is not — one
+				// write per (rule, Target) per report lifetime, and never
+				// more writes than the un-evicting episodes have Triggers.
+				for cell, n := range ledger.counts() {
+					if n != 1 {
+						t.Errorf("write cell %+v = %d, want 1 (one write per (rule, Target) per report lifetime)", cell, n)
+					}
+				}
+				if got, want := ledger.total(), oracle.triggers; got > want {
+					t.Errorf("report writes = %d, want at most %d (one write per Trigger at most)", got, want)
+				}
+			default:
+				assertWrites(t, ledger, oracle.writes)
+			}
+
 			recs, err := d.repo.List(context.Background(), report.Query{Now: benchWall})
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
-			if len(recs) != tt.wantReports {
-				t.Errorf("reports = %d, want %d (one per event Target for match-every, none for match-never)",
-					len(recs), tt.wantReports)
+			// What GET /reports serves after the run: the final report
+			// lifetime's writes (earlier lifetimes' rows were deleted).
+			wantRecs := 0
+			if oracle != nil {
+				for cell := range oracle.writes {
+					if cell.life == oracle.life {
+						wantRecs++
+					}
+				}
+			}
+			if tt.wantEvicted {
+				if len(recs) > wantRecs {
+					t.Errorf("reports = %d, want at most %d (the final lifetime's writes)", len(recs), wantRecs)
+				}
+			} else if len(recs) != wantRecs {
+				t.Errorf("reports = %d, want %d (the final report lifetime's writes)", len(recs), wantRecs)
 			}
 
 			evicted := d.Stats().TrackerCache.Evictions > 0
