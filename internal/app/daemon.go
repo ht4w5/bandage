@@ -302,9 +302,16 @@ func (d *Daemon) sweepOnce(ctx context.Context) (int, error) {
 // — before the resources close. Shutdown is bounded by the caller's
 // deadline even if a store call never returns: only when ctx expires
 // does the daemon cancel the lifetime context to abort stragglers and
-// return without waiting for them (spec: Daemon context). Idempotent.
+// return without waiting for them (spec: Daemon context). The lifetime
+// context is cancelled either way before Shutdown returns, so none
+// leaks. Idempotent.
 func (d *Daemon) Shutdown(ctx context.Context) error {
 	d.once.Do(func() {
+		// Context hygiene: the lifetime context is cancelled before
+		// Shutdown returns — after the drain on the clean path, as the
+		// bounded backstop on the deadline path — so no live context
+		// outlives the daemon.
+		defer d.cancel()
 		done := make(chan error, 1)
 		go func() {
 			var err error
@@ -353,8 +360,9 @@ func (d *Daemon) waitProcessed(ctx context.Context, n int64) error {
 	return d.processed.wait(ctx, n)
 }
 
-// stats returns the drop accounting counters.
-func (d *Daemon) stats() counters {
+// counters returns the drop accounting counters — the internal
+// accessor, distinct from the exported Stats snapshot it feeds.
+func (d *Daemon) counters() counters {
 	return counters{
 		Received: d.received.Load(),
 		Parsed:   d.parsed.Load(),
@@ -368,7 +376,7 @@ func (d *Daemon) stats() counters {
 // periodic statistics log line renders from the same snapshot, so its
 // counters always agree with /stats.
 func (d *Daemon) Stats() httpapi.Stats {
-	c := d.stats()
+	c := d.counters()
 	cs := d.cache.Statistics()
 	return httpapi.Stats{
 		StartedAt: d.startedAt,

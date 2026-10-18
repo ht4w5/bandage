@@ -170,7 +170,8 @@ func validateConfig(raw rawConfig) (Config, error) {
 		Cache: Cache{MaxEntries: DefaultCacheEntries},
 		Log:   Log{Level: bandage.LevelInfo},
 		// pipeline.workers defaults to the machine's CPU count (spec
-		// story 15).
+		// story 15): config.go is the single owner of that default — the
+		// command's -w precedence resolves onto this value.
 		Pipeline: Pipeline{Workers: runtime.NumCPU()},
 	}
 

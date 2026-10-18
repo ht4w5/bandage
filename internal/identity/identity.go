@@ -5,9 +5,11 @@
 // All derived strings (the one-line summary and the short header) are
 // computed once at init; accessors expose the raw values. There is
 // deliberately no user-agent helper — bandage makes no outbound HTTP
-// requests. The identity surfaces in exactly four places: `-v` output,
-// the startup log record's fields, the `/stats` build block, and the
-// `--test` plan header.
+// requests. The identity surfaces in four places — `-v` output, the
+// startup log record's fields, the `/stats` build block, and the
+// `--test` plan header — and the short header also heads the `-h`
+// usage text (the spec's "exactly four" misses that fifth consumer of
+// the header).
 package identity
 
 import (
@@ -35,10 +37,19 @@ var (
 	platform  = runtime.GOOS + "/" + runtime.GOARCH
 )
 
+// Derived strings, computed once at init (spec: Implementation
+// Decisions).
+var (
+	summary string
+	header  string
+)
+
 func init() {
 	if b, err := strconv.ParseBool(dirtyFlag); err == nil {
 		dirty = b
 	}
+	summary = buildSummary()
+	header = buildHeader()
 }
 
 // Version is the release version ("dev" for unreleased builds).
@@ -62,7 +73,14 @@ func Platform() string { return platform }
 
 // String is the one-line identity summary (`-v` output): name, version,
 // commit (with dirty marker), build date, Go version and platform.
-func String() string {
+// Computed once at init.
+func String() string { return summary }
+
+// Header is the short identity (name, version, commit) heading the
+// `--test` plan output and the `-h` usage text. Computed once at init.
+func Header() string { return header }
+
+func buildSummary() string {
 	head := Name + " " + version
 	if commit != "" {
 		head += " " + commit
@@ -76,9 +94,7 @@ func String() string {
 	return fmt.Sprintf("%s (%s %s)", head, goVersion, platform)
 }
 
-// Header is the short identity (name, version, commit) heading the
-// usage text and the `--test` plan output.
-func Header() string {
+func buildHeader() string {
 	if commit != "" {
 		return fmt.Sprintf("%s %s (%s)", Name, version, commit)
 	}

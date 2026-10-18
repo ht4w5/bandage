@@ -79,10 +79,11 @@ func TestStoreCapEvictsLeastRecentlyUsed(t *testing.T) {
 	}
 }
 
-// Every eviction is logged with its tracker namespace and Target and
+// Every eviction is logged with its tracker namespace and its key and
 // counted in statistics (spec: evictions are the one place where log
-// text IS the contract — every eviction is logged with its tracker
-// namespace and Target).
+// text IS the contract). The key is spelled out per namespace: tracker
+// entries log the Target (and the path where the key has one), the
+// filesize namespace is keyed by paths and logs the path.
 func TestStoreEvictionLoggedWithNamespaceAndTarget(t *testing.T) {
 	buf := &bytes.Buffer{}
 	s := newStore(1, 1, newTestClock(time.Time{}).Now, testLogger(buf))
@@ -104,8 +105,8 @@ func TestStoreEvictionLoggedWithNamespaceAndTarget(t *testing.T) {
 
 // The logged Target is the true Target split from the key convention —
 // never the raw cache key — and per-(Target, path) keys carry their path
-// as its own attribute (the eviction log must name the tracker
-// namespace and Target).
+// as its own attribute (the record always carries the namespace and its
+// key: Target and path here).
 func TestStoreEvictionLogsTrueTargetAndPath(t *testing.T) {
 	buf := &bytes.Buffer{}
 	s := newStore(1, 1, newTestClock(time.Time{}).Now, testLogger(buf))
@@ -128,8 +129,9 @@ func TestStoreEvictionLogsTrueTargetAndPath(t *testing.T) {
 	}
 }
 
-// The filesize namespace has no Target: its evictions are their own
-// case, logging the path (the key) instead of inventing a Target.
+// The filesize namespace is keyed by paths, so its evictions carry the
+// path as the record's key and never invent a Target (the namespace is
+// named either way).
 func TestStoreEvictionFilesizeLogsPathOnly(t *testing.T) {
 	buf := &bytes.Buffer{}
 	s := newStore(1, 1, newTestClock(time.Time{}).Now, testLogger(buf))
@@ -146,6 +148,49 @@ func TestStoreEvictionFilesizeLogsPathOnly(t *testing.T) {
 	}
 	if strings.Contains(logs, "target=") {
 		t.Errorf("filesize eviction log invents a Target:\n%s", logs)
+	}
+}
+
+// reenterWriter proves where the eviction record is emitted from: its
+// Write re-enters the store (Statistics locks every shard). Re-entry
+// succeeds only while the evicting Update holds no shard lock — if the
+// record were rendered under the lock, the probe would deadlock against
+// the very shard being evicted.
+type reenterWriter struct {
+	s *Store
+}
+
+func (w reenterWriter) Write(p []byte) (int, error) {
+	w.s.Statistics()
+	return len(p), nil
+}
+
+// The eviction record is emitted after the shard lock is released
+// (PLAN house rule: no I/O under the store's lock) — a log sink is free
+// to call back into the store while rendering the record.
+func TestStoreEvictionLogEmittedAfterUnlock(t *testing.T) {
+	w := &reenterWriter{}
+	s := newStore(1, 1, newTestClock(time.Time{}).Now, zerolog.New(w))
+	w.s = s
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for _, k := range [][2]string{{"rule-one", "203.0.113.7"}, {"rule-two", "203.0.113.8"}} {
+			if _, err := s.Update(context.Background(), k[0], k[1], time.Hour, func(r *track.Record) {
+				r.Value++
+			}); err != nil {
+				t.Errorf("Update(%q, %q): %v", k[0], k[1], err)
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("eviction record rendering deadlocked against the shard lock")
+	}
+	if st := s.Statistics(); st.Evictions != 1 {
+		t.Errorf("evictions = %d, want 1 (eviction logged and counted together)", st.Evictions)
 	}
 }
 

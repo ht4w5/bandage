@@ -2,8 +2,10 @@
 // with per-key atomic updates and sliding TTL expiry (enforced lazily on
 // access plus a periodic sweep), bounded by a global entry cap enforced
 // by per-shard LRU eviction. Every eviction is logged with its tracker
-// namespace and the true Target (and path, where the key has one)
-// decoded from the domain's key convention, and counted in statistics.
+// namespace and its key — the true Target (and path, where the key has
+// one) decoded from the domain's key convention for tracker entries,
+// the path alone for the filesize namespace — and counted in
+// statistics.
 package memory
 
 import (
@@ -94,9 +96,10 @@ func newStore(maxEntries, shards int, now func() time.Time, logger zerolog.Logge
 // it. An expired entry is treated as absent (lazy expiry): the record
 // restarts from zero. Inserting over the cap drops the shard's
 // least-recently-used entry — an eviction, logged with its tracker
-// namespace and true Target (and path where present) and counted in
-// statistics. fn runs under the shard lock and must not perform I/O or
-// use ctx.
+// namespace and its key (target for tracker entries, path for filesize
+// entries) and counted in statistics. fn runs under the shard lock and
+// must not perform I/O or use ctx; the eviction record is emitted after
+// the lock is released (PLAN house rule: no I/O under the lock).
 func (s *Store) Update(ctx context.Context, ns, key string, ttl time.Duration, fn func(*track.Record)) (track.Record, error) {
 	if fn == nil {
 		return track.Record{}, errors.New("memory: update fn must not be nil")
@@ -105,6 +108,23 @@ func (s *Store) Update(ctx context.Context, ns, key string, ttl time.Duration, f
 	fullKey := ns + "\x00" + key
 	sh := s.shardFor(fullKey)
 
+	rec, evicted := s.updateLocked(sh, fullKey, ns, key, ttl, fn)
+
+	// Evictions are logged and counted after the shard lock is released:
+	// rendering the record is I/O, which never happens under the store's
+	// locks (PLAN house rule) — a log sink may call back into the store.
+	for _, e := range evicted {
+		s.evictions.Add(1)
+		evictionAttrs(s.logger.Warn(), e).Msg("tracker cache eviction")
+	}
+	return rec, nil
+}
+
+// updateLocked applies fn to the record for (ns, key) under the shard
+// lock and returns the record plus any entries evicted to make room for
+// it (for the caller to log and count outside the lock). fn runs under
+// the shard lock and must not perform I/O or use ctx.
+func (s *Store) updateLocked(sh *shard, fullKey, ns, key string, ttl time.Duration, fn func(*track.Record)) (track.Record, []*entry) {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	now := s.now()
@@ -130,8 +150,7 @@ func (s *Store) Update(ctx context.Context, ns, key string, ttl time.Duration, f
 		sh.m = make(map[string]*list.Element)
 	}
 	sh.m[fullKey] = sh.l.PushFront(e)
-	s.evictLocked(sh)
-	return e.rec, nil
+	return e.rec, s.evictLocked(sh)
 }
 
 // SweepExpired removes every expired entry across all shards. Entries
@@ -184,24 +203,26 @@ func (s *Store) shardFor(fullKey string) *shard {
 }
 
 // evictLocked drops least-recently-used entries until the shard is
-// within its budget of the entry cap. Every eviction is logged with its
-// tracker namespace and true Target (GLOSSARY: Eviction) and counted in
-// statistics. Called under the shard lock.
-func (s *Store) evictLocked(sh *shard) {
+// within its budget of the entry cap and returns the evicted entries,
+// for the caller to log and count after unlocking (GLOSSARY: Eviction).
+// Called under the shard lock.
+func (s *Store) evictLocked(sh *shard) []*entry {
+	var evicted []*entry
 	for sh.l.Len() > s.perShard {
 		el := sh.l.Back()
 		e := el.Value.(*entry)
 		sh.remove(el)
-		s.evictions.Add(1)
-		evictionAttrs(s.logger.Warn(), e).Msg("tracker cache eviction")
+		evicted = append(evicted, e)
 	}
+	return evicted
 }
 
 // evictionAttrs renders an eviction's identity per the domain's key
-// convention: namespace plus the true Target decoded from the key —
-// never the raw key — and the path for per-(Target, path) keys. The
-// filesize namespace has no Target: its keys are paths and log as their
-// own case.
+// convention: every record carries the tracker namespace and its key —
+// for tracker entries the key decodes to the true Target (never the raw
+// key) plus the path for per-(Target, path) keys; the filesize
+// namespace is keyed by paths and logs the path as its own case (never
+// an invented Target).
 func evictionAttrs(ev *zerolog.Event, ent *entry) *zerolog.Event {
 	if ent.ns == bandage.FilesizeNamespace {
 		return ev.Str("namespace", ent.ns).Str("path", ent.key)

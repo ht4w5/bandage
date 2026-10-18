@@ -76,7 +76,7 @@ func TestWorkerPoolCountsEveryLineOnce(t *testing.T) {
 	d.send(`{"time":"1734345934","client":"203.0.113.7","method":"GET","url":"/","status":200,"sent":-1}`)
 	d.waitProcessed(t, 12)
 
-	stats := d.stats()
+	stats := d.counters()
 	if stats.Received != 12 || stats.Parsed != 8 || stats.Dropped != 4 {
 		t.Errorf("stats = %+v, want {Received:12 Parsed:8 Dropped:4}", stats)
 	}
@@ -270,6 +270,25 @@ func waitDone(t *testing.T, ch <-chan error) error {
 	case <-time.After(5 * time.Second):
 		t.Fatal("shutdown did not complete within the guard deadline")
 		return nil
+	}
+}
+
+// Shutdown cancels the daemon-lifetime context once the drain is done,
+// so no live context outlives a clean stop (context hygiene — the
+// context threading contract of the daemon seam).
+func TestShutdownCancelsLifetimeContext(t *testing.T) {
+	clock := newTestClock(mustTime(t, wallBase))
+	d := startTestDaemon(t, clock, "unixgram", ":memory:", poolRules)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown error: %v", err)
+	}
+	select {
+	case <-d.ctx.Done():
+	default:
+		t.Error("daemon lifetime context still live after clean Shutdown (leaked)")
 	}
 }
 

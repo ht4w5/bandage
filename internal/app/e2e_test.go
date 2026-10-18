@@ -621,7 +621,7 @@ func TestE2EMalformedLinesDroppedAndCounted(t *testing.T) {
 	if doc := d.getReports(t, nil); len(doc.Reports) != 0 {
 		t.Errorf("dropped lines produced reports %+v, want none", doc.Reports)
 	}
-	stats := d.stats()
+	stats := d.counters()
 	if stats.Dropped != 2 {
 		t.Errorf("stats dropped = %d, want 2", stats.Dropped)
 	}
