@@ -25,7 +25,7 @@ LDFLAGS     := -s -w \
 GOFLAGS     ?= -trimpath
 BUILD_FLAGS := $(GOFLAGS) -ldflags "$(LDFLAGS)"
 
-.PHONY: all build clean test
+.PHONY: all build clean test bench bench-pkg
 
 all: build
 
@@ -35,6 +35,22 @@ build:
 
 test:
 	$(GO) test -race -count=1 ./...
+
+# bench runs the whole benchmark suite with -benchmem. For a stable
+# comparison run each side ten times and diff with benchstat
+# (golang.org/x/perf/cmd/benchstat):
+#   go test -run=^$ -bench=. -benchmem -count=10 ./... > old.txt
+#   (make your change)
+#   go test -run=^$ -bench=. -benchmem -count=10 ./... > new.txt
+#   benchstat old.txt new.txt
+bench:
+	$(GO) test -run=^$$ -bench=. -benchmem ./...
+
+# bench-pkg runs one package's benchmarks:
+#   make bench-pkg PKG=./internal/infra/parse/nginx
+bench-pkg:
+	@test -n "$(PKG)" || { echo "usage: make bench-pkg PKG=./internal/infra/parse/nginx" >&2; exit 2; }
+	$(GO) test -run=^$$ -bench=. -benchmem $(PKG)
 
 clean:
 	rm -rf $(BIN_DIR)
