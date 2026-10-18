@@ -1,0 +1,36 @@
+# cpu-mn1.out — go tool pprof -top -cum -nodecount=25
+# (cpu profile, run: go test -bench ... -benchtime=5s -cpuprofile; see findings.md)
+File: app.test
+Build ID: 8e91155ddfe4fb40ade4e74b4ed31adf460284bb
+Type: cpu
+Time: 2026-10-18 10:58:36 CST
+Duration: 6.02s, Total samples = 7.13s (118.48%)
+Showing nodes accounting for 1.60s, 22.44% of 7.13s total
+Dropped 188 nodes (cum <= 0.04s)
+Showing top 25 nodes out of 206
+      flat  flat%   sum%        cum   cum%
+     0.05s   0.7%   0.7%      6.02s 84.43%  github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+     0.01s  0.14%  0.84%         5s 70.13%  github.com/HT4w5/bandage/internal/infra/parse/nginx.(*Parser).Parse
+         0     0%  0.84%      4.33s 60.73%  encoding/json.Unmarshal (inline)
+     0.03s  0.42%  1.26%      4.33s 60.73%  encoding/json/v2.Unmarshal
+         0     0%  1.26%      4.09s 57.36%  encoding/json/v2.unmarshalDecode
+     0.03s  0.42%  1.68%      2.80s 39.27%  encoding/json/v2.makeMapArshaler.func3
+         0     0%  1.68%      1.03s 14.45%  github.com/HT4w5/bandage/internal/infra/parse/nginx.parseString
+     0.15s  2.10%  3.79%      0.97s 13.60%  encoding/json/v2.makeStringArshaler.func2
+     0.05s   0.7%  4.49%      0.93s 13.04%  reflect.Value.SetMapIndex
+     0.17s  2.38%  6.87%      0.87s 12.20%  encoding/json/jsontext.(*decoderState).consumeValue
+     0.02s  0.28%  7.15%      0.86s 12.06%  encoding/json/v2.makeMethodArshaler.func6
+     0.05s   0.7%  7.85%      0.82s 11.50%  reflect.mapassign_faststr
+         0     0%  7.85%      0.77s 10.80%  runtime.systemstack
+     0.10s  1.40%  9.26%      0.76s 10.66%  runtime.mallocgc
+     0.01s  0.14%  9.40%      0.75s 10.52%  reflect.mapassign_faststr0
+     0.08s  1.12% 10.52%      0.72s 10.10%  runtime.mapassign_faststr
+     0.01s  0.14% 10.66%      0.65s  9.12%  encoding/json/jsontext.(*decoderState).CheckNextValue
+     0.13s  1.82% 12.48%      0.57s  7.99%  encoding/json/jsontext.(*decoderState).ReadValue
+     0.06s  0.84% 13.32%      0.54s  7.57%  github.com/HT4w5/bandage/internal/infra/parse/nginx.parseTime
+     0.47s  6.59% 19.92%      0.47s  6.59%  encoding/json/internal/jsonwire.ConsumeSimpleString (inline)
+         0     0% 19.92%      0.45s  6.31%  runtime.gcBgMarkWorker
+         0     0% 19.92%      0.43s  6.03%  runtime.gcBgMarkWorker.func2
+     0.01s  0.14% 20.06%      0.43s  6.03%  runtime.gcDrain
+     0.04s  0.56% 20.62%      0.42s  5.89%  encoding/json/jsontext.(*Value).UnmarshalJSON
+     0.13s  1.82% 22.44%      0.41s  5.75%  encoding/json/jsontext.(*decoderState).consumeObject

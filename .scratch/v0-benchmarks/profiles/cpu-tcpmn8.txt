@@ -1,0 +1,36 @@
+# cpu-tcpmn8.out — go tool pprof -top -cum -nodecount=25
+# (cpu profile, run: go test -bench ... -benchtime=5s -cpuprofile; see findings.md)
+File: app.test
+Build ID: 8e91155ddfe4fb40ade4e74b4ed31adf460284bb
+Type: cpu
+Time: 2026-10-18 10:59:21 CST
+Duration: 6.01s, Total samples = 24.20s (402.94%)
+Showing nodes accounting for 8.44s, 34.88% of 24.20s total
+Dropped 411 nodes (cum <= 0.12s)
+Showing top 25 nodes out of 204
+      flat  flat%   sum%        cum   cum%
+     0.15s  0.62%  0.62%      8.48s 35.04%  github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+     7.84s 32.40% 33.02%      7.84s 32.40%  internal/runtime/syscall/linux.Syscall6
+         0     0% 33.02%      7.55s 31.20%  internal/poll.ignoringEINTRIO (inline)
+         0     0% 33.02%      7.53s 31.12%  syscall.Syscall
+     0.01s 0.041% 33.06%      7.37s 30.45%  syscall.RawSyscall6
+     0.03s  0.12% 33.18%      6.56s 27.11%  github.com/HT4w5/bandage/internal/infra/parse/nginx.(*Parser).Parse
+     0.01s 0.041% 33.22%      5.76s 23.80%  encoding/json.Unmarshal (inline)
+     0.06s  0.25% 33.47%      5.75s 23.76%  encoding/json/v2.Unmarshal
+     0.04s  0.17% 33.64%      5.34s 22.07%  encoding/json/v2.unmarshalDecode
+     0.02s 0.083% 33.72%      5.20s 21.49%  gopkg.in/mcuadros/go-syslog%2ev2.(*Server).scan
+         0     0% 33.72%      4.86s 20.08%  github.com/HT4w5/bandage/internal/app.BenchmarkPipelineIngest.func1
+         0     0% 33.72%      4.86s 20.08%  testing.(*B).run1.func1
+         0     0% 33.72%      4.86s 20.08%  testing.(*B).runN
+     0.03s  0.12% 33.84%      4.85s 20.04%  github.com/HT4w5/bandage/internal/app.runPipelineBench
+     0.02s 0.083% 33.93%      4.81s 19.88%  github.com/HT4w5/bandage/internal/app.BenchmarkPipelineIngest.func1.1
+     0.03s  0.12% 34.05%      4.79s 19.79%  net.(*conn).Write
+     0.01s 0.041% 34.09%      4.76s 19.67%  net.(*netFD).Write
+     0.03s  0.12% 34.21%      4.74s 19.59%  internal/poll.(*FD).Write
+     0.01s 0.041% 34.26%      4.66s 19.26%  syscall.Write (inline)
+     0.01s 0.041% 34.30%      4.65s 19.21%  syscall.write
+     0.11s  0.45% 34.75%      4.11s 16.98%  encoding/json/v2.makeMapArshaler.func3
+     0.01s 0.041% 34.79%      3.28s 13.55%  bufio.(*Scanner).Scan
+     0.01s 0.041% 34.83%      2.97s 12.27%  net.(*conn).Read
+     0.01s 0.041% 34.88%      2.96s 12.23%  internal/poll.(*FD).Read
+         0     0% 34.88%      2.96s 12.23%  net.(*netFD).Read

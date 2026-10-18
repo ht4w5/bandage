@@ -1,0 +1,43 @@
+# mem-mn8.out — alloc_objects (top) then alloc_space (top)
+File: app.test
+Build ID: 8e91155ddfe4fb40ade4e74b4ed31adf460284bb
+Type: alloc_objects
+Time: 2026-10-18 10:58:57 CST
+Showing nodes accounting for 90575413, 99.80% of 90752714 total
+Dropped 70 nodes (cum <= 453763)
+Showing top 15 nodes out of 33
+      flat  flat%   sum%        cum   cum%
+  21928744 24.16% 24.16%   21928744 24.16%  encoding/json/jsontext.(*Value).UnmarshalJSON
+  12517566 13.79% 37.96%   19182657 21.14%  github.com/HT4w5/bandage/internal/infra/parse/nginx.parseString
+  10186778 11.22% 49.18%   10186778 11.22%  reflect.mapassign_faststr0
+   7602292  8.38% 57.56%   12693970 13.99%  github.com/HT4w5/bandage/internal/infra/parse/nginx.parseTime
+   7143544  7.87% 65.43%    7143544  7.87%  encoding/json/v2.makeString
+   5226654  5.76% 71.19%    7618754  8.40%  github.com/HT4w5/bandage/internal/infra/cache/memory.(*Store).Update
+   4879846  5.38% 76.57%   90661302 99.90%  github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+   4467456  4.92% 81.49%    4467456  4.92%  reflect.unsafe_New
+   2697942  2.97% 84.46%    2697942  2.97%  net/netip.Prefix.String
+   2539597  2.80% 87.26%    8072057  8.89%  github.com/HT4w5/bandage/internal/domain/evaluation.(*Service).updateTracker
+   2406364  2.65% 89.91%    2406364  2.65%  github.com/HT4w5/bandage/internal/app.(*progress).bump
+   2392100  2.64% 92.55%    2392100  2.64%  github.com/HT4w5/bandage/internal/infra/cache/memory.Filesize.Update.func1
+   2293811  2.53% 95.07%    7078047  7.80%  github.com/HT4w5/bandage/internal/domain/enrichment.(*FilesizeEnricher).Enrich
+   2228241  2.46% 97.53%   68224988 75.18%  github.com/HT4w5/bandage/internal/infra/parse/nginx.(*Parser).Parse
+   2064478  2.27% 99.80%    2064478  2.27%  reflect.makemap
+
+File: app.test
+Build ID: 8e91155ddfe4fb40ade4e74b4ed31adf460284bb
+Type: alloc_space
+Time: 2026-10-18 10:58:57 CST
+Showing nodes accounting for 4928.64MB, 94.29% of 5226.94MB total
+Dropped 70 nodes (cum <= 26.13MB)
+Showing top 10 nodes out of 33
+      flat  flat%   sum%        cum   cum%
+ 2634.92MB 50.41% 50.41%  2634.92MB 50.41%  reflect.mapassign_faststr0
+  863.17MB 16.51% 66.92%  5217.39MB 99.82%  github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+  401.51MB  7.68% 74.61%   401.51MB  7.68%  encoding/json/jsontext.(*Value).UnmarshalJSON
+  257.03MB  4.92% 79.52%   257.03MB  4.92%  github.com/HT4w5/bandage/internal/app.(*progress).bump
+     191MB  3.65% 83.18%   310.01MB  5.93%  github.com/HT4w5/bandage/internal/infra/parse/nginx.parseString
+  159.50MB  3.05% 86.23%   196.01MB  3.75%  github.com/HT4w5/bandage/internal/infra/cache/memory.(*Store).Update
+     124MB  2.37% 88.60%      124MB  2.37%  encoding/json/v2.makeString
+     116MB  2.22% 90.82%   194.50MB  3.72%  github.com/HT4w5/bandage/internal/infra/parse/nginx.parseTime
+   94.50MB  1.81% 92.63%    94.50MB  1.81%  reflect.makemap
+      87MB  1.66% 94.29%       87MB  1.66%  reflect.unsafe_New

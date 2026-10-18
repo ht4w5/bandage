@@ -1,0 +1,36 @@
+# cpu-me8.out — go tool pprof -top -cum -nodecount=25
+# (cpu profile, run: go test -bench ... -benchtime=5s -cpuprofile; see findings.md)
+File: app.test
+Build ID: 8e91155ddfe4fb40ade4e74b4ed31adf460284bb
+Type: cpu
+Time: 2026-10-18 10:59:00 CST
+Duration: 5.82s, Total samples = 6.91s (118.77%)
+Showing nodes accounting for 0.28s, 4.05% of 6.91s total
+Dropped 474 nodes (cum <= 0.03s)
+Showing top 25 nodes out of 321
+      flat  flat%   sum%        cum   cum%
+     0.01s  0.14%  0.14%      5.97s 86.40%  github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+         0     0%  0.14%      5.09s 73.66%  github.com/HT4w5/bandage/internal/domain/evaluation.(*Service).Evaluate (inline)
+     0.01s  0.14%  0.29%      5.09s 73.66%  github.com/HT4w5/bandage/internal/domain/evaluation.(*Service).runChain
+         0     0%  0.29%      5.04s 72.94%  github.com/HT4w5/bandage/internal/domain/evaluation.(*Service).runActions
+         0     0%  0.29%      5.03s 72.79%  github.com/HT4w5/bandage/internal/domain.Action.Accept
+         0     0%  0.29%      5.03s 72.79%  github.com/HT4w5/bandage/internal/domain/evaluation.(*Service).trigger
+         0     0%  0.29%      5.03s 72.79%  github.com/HT4w5/bandage/internal/domain/evaluation.(*actionDispatch).VisitReport
+     0.01s  0.14%  0.43%      5.01s 72.50%  github.com/HT4w5/bandage/internal/domain/report.(*Service).Trigger
+         0     0%  0.43%         5s 72.36%  github.com/HT4w5/bandage/internal/infra/persistence/sqlite.(*ReportRepository).Upsert
+     0.03s  0.43%  0.87%      3.94s 57.02%  database/sql.withLock
+     0.02s  0.29%  1.16%      2.20s 31.84%  database/sql.(*DB).execDC
+         0     0%  1.16%      2.20s 31.84%  database/sql.(*Tx).ExecContext
+         0     0%  1.16%      2.17s 31.40%  database/sql.(*DB).execDC.func2
+         0     0%  1.16%      2.12s 30.68%  database/sql.ctxDriverExec
+         0     0%  1.16%      2.12s 30.68%  modernc.org/sqlite.(*conn).ExecContext
+         0     0%  1.16%      2.12s 30.68%  modernc.org/sqlite.(*conn).exec
+         0     0%  1.16%      2.05s 29.67%  modernc.org/sqlite/lib.Xsqlite3_prepare_v2 (inline)
+     0.02s  0.29%  1.45%      2.05s 29.67%  modernc.org/sqlite/lib._sqlite3LockAndPrepare
+         0     0%  1.45%      2.03s 29.38%  modernc.org/sqlite/lib._sqlite3Prepare
+     0.01s  0.14%  1.59%      1.99s 28.80%  modernc.org/sqlite.(*conn).prepareV2
+         0     0%  1.59%      1.99s 28.80%  modernc.org/sqlite.newStmt
+     0.02s  0.29%  1.88%      1.98s 28.65%  modernc.org/sqlite/lib._sqlite3RunParser
+     0.05s  0.72%  2.60%      1.91s 27.64%  modernc.org/sqlite/lib._sqlite3Parser
+     0.09s  1.30%  3.91%      1.77s 25.62%  modernc.org/sqlite/lib._yy_reduce
+     0.01s  0.14%  4.05%      1.40s 20.26%  database/sql.(*Tx).QueryRowContext (inline)

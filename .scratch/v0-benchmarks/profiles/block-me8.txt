@@ -1,0 +1,85 @@
+# block-me8.out — go tool pprof -top then -traces
+File: app.test
+Build ID: 8e91155ddfe4fb40ade4e74b4ed31adf460284bb
+Type: delay
+Time: 2026-10-18 10:59:08 CST
+Showing nodes accounting for 25551.55ms, 99.78% of 25608.51ms total
+Dropped 42 nodes (cum <= 128.04ms)
+Showing top 15 nodes out of 35
+      flat  flat%   sum%        cum   cum%
+18453.05ms 72.06% 72.06% 18453.05ms 72.06%  runtime.selectgo
+ 5172.69ms 20.20% 92.26%  5172.69ms 20.20%  runtime.chanrecv1
+ 1925.80ms  7.52% 99.78%  1925.80ms  7.52%  runtime.chansend1
+         0     0% 99.78% 16066.95ms 62.74%  database/sql.(*DB).BeginTx
+         0     0% 99.78% 16066.95ms 62.74%  database/sql.(*DB).BeginTx.func1
+         0     0% 99.78% 16066.95ms 62.74%  database/sql.(*DB).begin
+         0     0% 99.78%   429.76ms  1.68%  database/sql.(*DB).beginDC.gowrap1
+         0     0% 99.78% 16066.95ms 62.74%  database/sql.(*DB).conn
+         0     0% 99.78%  2364.93ms  9.23%  database/sql.(*DB).connectionOpener
+         0     0% 99.78% 16066.95ms 62.74%  database/sql.(*DB).retry
+         0     0% 99.78%   429.76ms  1.68%  database/sql.(*Tx).awaitDone
+         0     0% 99.78%  2364.93ms  9.23%  database/sql.OpenDB.gowrap1
+         0     0% 99.78% 16122.59ms 62.96%  github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+         0     0% 99.78%  2371.19ms  9.26%  github.com/HT4w5/bandage/internal/app.BenchmarkPipeline
+         0     0% 99.78%  1940.48ms  7.58%  github.com/HT4w5/bandage/internal/app.BenchmarkPipeline.func1
+
+File: app.test
+Build ID: 8e91155ddfe4fb40ade4e74b4ed31adf460284bb
+Type: delay
+Time: 2026-10-18 10:59:08 CST
+-----------+-------------------------------------------------------
+    16.07s   runtime.selectgo
+             database/sql.(*DB).conn
+             database/sql.(*DB).begin
+             database/sql.(*DB).BeginTx.func1
+             database/sql.(*DB).retry
+             database/sql.(*DB).BeginTx
+             github.com/HT4w5/bandage/internal/infra/persistence/sqlite.(*ReportRepository).Upsert
+             github.com/HT4w5/bandage/internal/domain/report.(*Service).Trigger
+             github.com/HT4w5/bandage/internal/domain/evaluation.(*Service).trigger
+             github.com/HT4w5/bandage/internal/domain/evaluation.(*actionDispatch).VisitReport
+             github.com/HT4w5/bandage/internal/domain.Action.Accept
+             github.com/HT4w5/bandage/internal/domain/evaluation.(*Service).runActions
+             github.com/HT4w5/bandage/internal/domain/evaluation.(*Service).runChain
+             github.com/HT4w5/bandage/internal/domain/evaluation.(*Service).Evaluate (inline)
+             github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+             github.com/HT4w5/bandage/internal/app.startBenchPipeline.gowrap1
+-----------+-------------------------------------------------------
+     2.37s   runtime.chanrecv1
+             testing.(*B).run1
+             testing.(*B).Run
+             testing.runBenchmarks.func1
+             testing.(*B).runN
+             testing.runBenchmarks
+             testing.(*M).Run
+             main.main
+             runtime.main
+-----------+-------------------------------------------------------
+     2.37s   runtime.chanrecv1
+             testing.(*B).run1
+             testing.(*B).Run
+             github.com/HT4w5/bandage/internal/app.BenchmarkPipeline
+             testing.(*B).runN
+             testing.(*B).run1.func1
+-----------+-------------------------------------------------------
+     2.36s   runtime.selectgo
+             database/sql.(*DB).connectionOpener
+             database/sql.OpenDB.gowrap1
+-----------+-------------------------------------------------------
+     1.93s   runtime.chansend1
+             github.com/HT4w5/bandage/internal/app.BenchmarkPipeline.func1.1
+             github.com/HT4w5/bandage/internal/app.runPipelineBench
+             github.com/HT4w5/bandage/internal/app.BenchmarkPipeline.func1
+             testing.(*B).runN
+             testing.(*B).run1.func1
+-----------+-------------------------------------------------------
+  429.54ms   runtime.chanrecv1
+             database/sql.(*Tx).awaitDone
+             database/sql.(*DB).beginDC.gowrap1
+-----------+-------------------------------------------------------
+   54.99ms   runtime.chanrecv2
+             github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+             github.com/HT4w5/bandage/internal/app.startBenchPipeline.gowrap1
+-----------+-------------------------------------------------------
+   14.42ms   runtime.selectgo
+             github.com/HT4w5/bandage/internal/app.(*progress).wait

@@ -1,0 +1,85 @@
+# block-mn8.out — go tool pprof -top then -traces
+File: app.test
+Build ID: 8e91155ddfe4fb40ade4e74b4ed31adf460284bb
+Type: delay
+Time: 2026-10-18 10:59:00 CST
+Showing nodes accounting for 10428.61ms, 100% of 10428.61ms total
+Dropped 35 nodes (cum <= 52.14ms)
+Showing top 15 nodes out of 23
+      flat  flat%   sum%        cum   cum%
+ 4520.40ms 43.35% 43.35%  4520.40ms 43.35%  runtime.chanrecv1
+ 2866.55ms 27.49% 70.83%  2866.55ms 27.49%  runtime.chanrecv2
+ 2263.32ms 21.70% 92.54%  2263.32ms 21.70%  runtime.selectgo
+  644.79ms  6.18% 98.72%   644.79ms  6.18%  runtime.chansend1
+  133.55ms  1.28%   100%   133.55ms  1.28%  sync.(*Mutex).Lock (inline)
+         0     0%   100%  2252.74ms 21.60%  database/sql.(*DB).connectionOpener
+         0     0%   100%  2252.74ms 21.60%  database/sql.OpenDB.gowrap1
+         0     0%   100%  3000.01ms 28.77%  github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+         0     0%   100%   130.65ms  1.25%  github.com/HT4w5/bandage/internal/app.(*progress).bump
+         0     0%   100%  2259.75ms 21.67%  github.com/HT4w5/bandage/internal/app.BenchmarkPipeline
+         0     0%   100%   655.46ms  6.29%  github.com/HT4w5/bandage/internal/app.BenchmarkPipeline.func1
+         0     0%   100%   644.79ms  6.18%  github.com/HT4w5/bandage/internal/app.BenchmarkPipeline.func1.1
+         0     0%   100%   655.46ms  6.29%  github.com/HT4w5/bandage/internal/app.runPipelineBench
+         0     0%   100%  3000.01ms 28.77%  github.com/HT4w5/bandage/internal/app.startBenchPipeline.gowrap1
+         0     0%   100%  2260.65ms 21.68%  main.main
+
+File: app.test
+Build ID: 8e91155ddfe4fb40ade4e74b4ed31adf460284bb
+Type: delay
+Time: 2026-10-18 10:59:00 CST
+-----------+-------------------------------------------------------
+     2.87s   runtime.chanrecv2
+             github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+             github.com/HT4w5/bandage/internal/app.startBenchPipeline.gowrap1
+-----------+-------------------------------------------------------
+     2.26s   runtime.chanrecv1
+             testing.(*B).run1
+             testing.(*B).Run
+             testing.runBenchmarks.func1
+             testing.(*B).runN
+             testing.runBenchmarks
+             testing.(*M).Run
+             main.main
+             runtime.main
+-----------+-------------------------------------------------------
+     2.26s   runtime.chanrecv1
+             testing.(*B).run1
+             testing.(*B).Run
+             github.com/HT4w5/bandage/internal/app.BenchmarkPipeline
+             testing.(*B).runN
+             testing.(*B).run1.func1
+-----------+-------------------------------------------------------
+     2.25s   runtime.selectgo
+             database/sql.(*DB).connectionOpener
+             database/sql.OpenDB.gowrap1
+-----------+-------------------------------------------------------
+  644.79ms   runtime.chansend1
+             github.com/HT4w5/bandage/internal/app.BenchmarkPipeline.func1.1
+             github.com/HT4w5/bandage/internal/app.runPipelineBench
+             github.com/HT4w5/bandage/internal/app.BenchmarkPipeline.func1
+             testing.(*B).runN
+             testing.(*B).run1.func1
+-----------+-------------------------------------------------------
+  130.65ms   sync.(*Mutex).Lock (inline)
+             github.com/HT4w5/bandage/internal/app.(*progress).bump
+             github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+             github.com/HT4w5/bandage/internal/app.startBenchPipeline.gowrap1
+-----------+-------------------------------------------------------
+   10.57ms   runtime.selectgo
+             github.com/HT4w5/bandage/internal/app.(*progress).wait
+             github.com/HT4w5/bandage/internal/app.(*Daemon).waitProcessed (inline)
+             github.com/HT4w5/bandage/internal/app.waitLines
+             github.com/HT4w5/bandage/internal/app.runPipelineBench
+             github.com/HT4w5/bandage/internal/app.BenchmarkPipeline.func1
+             testing.(*B).runN
+             testing.(*B).run1.func1
+-----------+-------------------------------------------------------
+    1.23ms   sync.(*Mutex).Lock (inline)
+             github.com/HT4w5/bandage/internal/infra/cache/memory.(*Store).updateLocked
+             github.com/HT4w5/bandage/internal/infra/cache/memory.(*Store).Update
+             github.com/HT4w5/bandage/internal/infra/cache/memory.Filesize.Update
+             github.com/HT4w5/bandage/internal/domain/enrichment.(*FilesizeEnricher).Enrich
+             github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+             github.com/HT4w5/bandage/internal/app.startBenchPipeline.gowrap1
+-----------+-------------------------------------------------------
+  929.60us   sync.(*Mutex).Lock (inline)
