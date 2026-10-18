@@ -8,11 +8,14 @@
 package nginx
 
 import (
+	jsonv1 "encoding/json"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -103,10 +106,15 @@ type rawFields struct {
 // Parse maps one raw log line onto a domain Event, validating all
 // required fields. Malformed lines and invalid fields return an error and
 // the event is dropped.
+//
+// The malformed-line error text is byte-identical to the pre-rewrite
+// parser's: every decode failure is re-rendered as encoding/json v1
+// would have (legacyLineError), so the drop log shows the same text as
+// before the parser rewrite (spec stories 25–26).
 func (p *Parser) Parse(line []byte) (bandage.Event, error) {
 	var fields rawFields
 	if err := json.Unmarshal(line, &fields, decodeOpts); err != nil {
-		return bandage.Event{}, fmt.Errorf("parse nginx json: %w", err)
+		return bandage.Event{}, fmt.Errorf("parse nginx json: %w", legacyLineError(line, err))
 	}
 
 	ev := bandage.Event{SizeBytes: bandage.FilesizeUnknown}
@@ -177,6 +185,115 @@ func (p *Parser) Parse(line []byte) (bandage.Event, error) {
 
 	// host, server, duration are accepted and ignored; unknown fields too.
 	return ev, nil
+}
+
+// legacyLineError re-renders a decode failure with the pre-rewrite
+// parser's error text — the encoding/json v1 rendering — so the
+// drop-log message is byte-identical to the old decoder's (spec
+// stories 25–26's text half). The pre-rewrite parser decoded the line
+// into map[string]json.RawMessage with encoding/json v1: v1 scanned
+// the whole line before decoding (so a syntax error anywhere beats a
+// type error at the first value — `00` reports the trailing garbage),
+// and rendered plain wording with no position info. The rendering
+// mirrors encoding/json's own v1-compat shim (v2_scanner.go:
+// syntaxErrorReplacer, the unexpected-EOF rename, the
+// UnmarshalTypeError shape) because jsontext keeps position info and
+// v2's semantic renderer deliberately randomizes "cannot"/"unable to"
+// once per process (errors.go: errorModalVerb, Hyrum-proofing) —
+// normalizing restores the old text and its determinism. The happy
+// path is untouched; errors outside these classes pass through
+// unchanged.
+func legacyLineError(line []byte, err error) error {
+	var serr *jsontext.SyntacticError
+	if errors.As(err, &serr) {
+		return legacySyntaxError(err)
+	}
+	// v1's whole-line scan: a type error at the first value does not
+	// hide later syntax garbage (`00`, `5x`).
+	var raw jsontext.Value
+	if serr := json.Unmarshal(line, &raw, decodeOpts); serr != nil {
+		return legacySyntaxError(serr)
+	}
+	var sem *json.SemanticError
+	if errors.As(err, &sem) {
+		return legacySemanticError(err, sem)
+	}
+	return err
+}
+
+// legacySyntaxError re-renders a jsontext syntactic error with the
+// pre-rewrite parser's error text — the encoding/json v1 rendering:
+// plain wording, no "jsontext: " prefix, no JSON pointer or byte
+// offset. Other errors pass through unchanged.
+func legacySyntaxError(err error) error {
+	var serr *jsontext.SyntacticError
+	if !errors.As(err, &serr) || serr.Err == nil {
+		return err
+	}
+	msg := "unexpected end of JSON input"
+	if !errors.Is(serr.Err, io.ErrUnexpectedEOF) && !errors.Is(serr.Err, io.EOF) {
+		msg = serr.Err.Error()
+		if i := strings.Index(msg, " (expecting"); i >= 0 && !strings.Contains(msg, " in literal") {
+			msg = msg[:i]
+		}
+		msg = syntaxErrorReplacer.Replace(msg)
+	}
+	return &syntaxTextError{text: msg, err: err}
+}
+
+// syntaxErrorReplacer replaces the v2 wording with the historical v1
+// rendering ("object key" for "object name", and the scanner's
+// "looking for …" phrasings) — the same table as encoding/json's v1
+// shim.
+var syntaxErrorReplacer = strings.NewReplacer(
+	"object name", "object key",
+	"at start of value", "looking for beginning of value",
+	"at start of string", "looking for beginning of object key string",
+	"after object value", "after object key:value pair",
+	"in number", "in numeric literal",
+)
+
+// syntaxTextError presents legacy error text while keeping the
+// underlying error in the chain.
+type syntaxTextError struct {
+	text string
+	err  error
+}
+
+func (e *syntaxTextError) Error() string { return e.text }
+func (e *syntaxTextError) Unwrap() error { return e.err }
+
+// legacySemanticError re-renders a v2 semantic (type) error as v1's
+// UnmarshalTypeError text: "json: cannot unmarshal <kind> into Go
+// value of type <target>", with v1's kind words and the pre-rewrite
+// parser's decode target.
+func legacySemanticError(err error, serr *json.SemanticError) error {
+	kind, ok := v1KindWords[serr.JSONKind]
+	if !ok {
+		return err
+	}
+	return &syntaxTextError{
+		text: "json: cannot unmarshal " + kind + " into Go value of type " + legacyTargetType.String(),
+		err:  err,
+	}
+}
+
+// legacyTargetType is the pre-rewrite parser's decode target
+// (map[string]json.RawMessage; RawMessage is an alias of
+// jsontext.Value, so on this toolchain it renders exactly as the old
+// errors named it: "map[string]jsontext.Value").
+var legacyTargetType = reflect.TypeOf(map[string]jsonv1.RawMessage(nil))
+
+// v1KindWords maps a JSON kind onto encoding/json v1's
+// UnmarshalTypeError kind words.
+var v1KindWords = map[jsontext.Kind]string{
+	jsontext.KindNull:        "null",
+	jsontext.KindFalse:       "bool",
+	jsontext.KindTrue:        "bool",
+	jsontext.KindString:      "string",
+	jsontext.KindNumber:      "number",
+	jsontext.KindBeginObject: "object",
+	jsontext.KindBeginArray:  "array",
 }
 
 // require returns a required field's value: absent and null fields are

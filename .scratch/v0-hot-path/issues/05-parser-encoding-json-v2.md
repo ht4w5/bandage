@@ -55,11 +55,21 @@ unquoted JSON integers (`1e2`, `1.5` ⇒ "must be an integer").
 - Name matching stays exact/case-sensitive ("Time" does not satisfy
   "time"), including `\u`-escaped member names.
 
-Only drift: malformed-line error *text* (jsontext adds position info,
-e.g. `jsontext: invalid character '0' after object value … after
-offset 81` vs `invalid character '0' after object key:value pair`);
-the error is still a plain non-FieldError wrapped as
-`parse nginx json: %w`, so the same lines drop for the same reason.
+Error *text* (amended after the code review of this branch): jsontext
+first added position info to malformed-line errors (e.g.
+`jsontext: invalid character '0' after object value (expecting ',' or
+'}') after offset 9` vs the pre-rewrite `invalid character '0' after
+object key:value pair`) and v2's semantic renderer randomizes
+`cannot`/`unable to` once per process (Hyrum-proofing). The wrap point
+now re-renders every decode failure byte-identically to the
+pre-rewrite parser's (`legacyLineError` in `nginx.go`, mirroring
+encoding/json's own v1-compat rendering: no `jsontext: ` prefix, no
+JSON pointer or byte offset, v1 wording, type errors naming the old
+decode target, and v1's whole-line syntax-before-type precedence so
+`00` reports the trailing garbage like the old scanner).
+`TestParseMalformedLineErrorText` pins the restored text. The error is
+still a plain non-FieldError wrapped as `parse nginx json: %w`, so the
+same lines drop for the same reason — story 26's letter holds.
 Field-level error strings are byte-identical.
 
 **Allocations** (`go test -run=^$ -bench=BenchmarkParse -benchmem
