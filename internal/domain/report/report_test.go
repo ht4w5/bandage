@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,38 +15,75 @@ import (
 // stubRepository is the Repository stub the service is tested over
 // (spec Testing Decisions: the report service over a stub repository):
 // it records every call and returns configured results, no framework.
+// upWedge, when set, holds every Upsert in flight — the pending write
+// the contention tests drive — signalling upEntered on arrival and
+// failing exactly the first write that passes when upFailFirst is set.
 type stubRepository struct {
-	ups     []bandage.Report
-	upErr   error
-	lists   []Query
-	rows    []bandage.Report
-	listErr error
-	deletes []Query
-	delN    int
-	delErr  error
-	expires []time.Time
-	expN    int
-	expErr  error
+	mu          sync.Mutex
+	ups         []bandage.Report
+	upErr       error
+	upWedge     chan struct{}
+	upEntered   chan struct{}
+	upFailFirst error
+	upFailOnce  sync.Once
+	lists       []Query
+	rows        []bandage.Report
+	listErr     error
+	deletes     []Query
+	delN        int
+	delErr      error
+	expires     []time.Time
+	expN        int
+	expErr      error
 }
 
 func (s *stubRepository) Upsert(_ context.Context, rec bandage.Report) error {
+	if s.upWedge != nil {
+		if s.upEntered != nil {
+			s.upEntered <- struct{}{}
+		}
+		<-s.upWedge
+	}
+	s.mu.Lock()
 	s.ups = append(s.ups, rec)
-	return s.upErr
+	err := s.upErr
+	s.mu.Unlock()
+	if err == nil {
+		s.upFailOnce.Do(func() {
+			if s.upFailFirst != nil {
+				err = s.upFailFirst
+			}
+		})
+	}
+	return err
 }
 
 func (s *stubRepository) List(_ context.Context, q Query) ([]bandage.Report, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.lists = append(s.lists, q)
 	return s.rows, s.listErr
 }
 
 func (s *stubRepository) Delete(_ context.Context, q Query) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.deletes = append(s.deletes, q)
 	return s.delN, s.delErr
 }
 
 func (s *stubRepository) DeleteExpired(_ context.Context, now time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.expires = append(s.expires, now)
 	return s.expN, s.expErr
+}
+
+// upserts returns the recorded write attempts (the call count).
+func (s *stubRepository) upserts() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.ups)
 }
 
 // TestServiceTriggerWritesThroughRepository pins the Trigger write
@@ -390,6 +428,115 @@ func TestServiceRebuildDerivesLiveReportsFromTheTable(t *testing.T) {
 		repo := &stubRepository{listErr: errStub}
 		if err := NewService(repo).Rebuild(context.Background(), now); err != errStub {
 			t.Errorf("Rebuild error = %v, want the repository error unchanged (%v)", err, errStub)
+		}
+	})
+}
+
+// --- Trigger write contention (spec stories 4, 5, 14) ---
+
+// waitPending is the unit-level settle window: a Trigger must not
+// return while the key's write is still pending inside the repository
+// (a premature return is exactly the hole — suppression decided before
+// the write's outcome). The window is pure settle margin over goroutine
+// scheduling, never a progress dependency: a slow machine can only
+// weaken the assertion, never make it wrong.
+func waitPending(t *testing.T, done <-chan error) {
+	t.Helper()
+	select {
+	case err := <-done:
+		t.Fatalf("Trigger returned %v while the write was still pending", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// triggerAsync runs Trigger off the test goroutine, handing back its
+// outcome (the in-test helpers fail inline and must not run from a
+// goroutine).
+func triggerAsync(svc *Service, rec bandage.Report) <-chan error {
+	done := make(chan error, 1)
+	go func() { done <- svc.Trigger(context.Background(), rec) }()
+	return done
+}
+
+// TestServiceConcurrentTriggerWaitsForTheWriteOutcome pins the
+// contention handoff: a Trigger arriving while the key's write is in
+// flight waits for that write's outcome and re-evaluates — suppressed
+// once it lands (a live report exists), writing it itself if it failed
+// (a failed write is not a Trigger outcome: nothing suppressed the
+// waiter and the detection must not be lost). Trigger returns nil
+// exactly when the write landed or a live report suppressed it, so the
+// caller's tracker reset follows the outcome (spec story 4).
+func TestServiceConcurrentTriggerWaitsForTheWriteOutcome(t *testing.T) {
+	now := time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)
+	expiry := now.Add(time.Hour)
+	rec := liveRec("sticky", "203.0.113.7/32", now, expiry)
+	errStub := errors.New("stub write failure")
+
+	run := func(t *testing.T, failFirst error, wantUpserts int, wantFirst error) {
+		t.Helper()
+		wedge := make(chan struct{})
+		repo := &stubRepository{upWedge: wedge, upEntered: make(chan struct{}, 4), upFailFirst: failFirst}
+		svc := NewService(repo)
+
+		a := triggerAsync(svc, rec)
+		<-repo.upEntered // the write is in flight
+		b := triggerAsync(svc, liveRec(rec.Rule, rec.Target, now, expiry))
+		waitPending(t, b)
+		close(wedge) // the in-flight write resolves
+
+		if err := <-a; !errors.Is(err, wantFirst) {
+			t.Errorf("in-flight Trigger error = %v, want %v", err, wantFirst)
+		}
+		if err := <-b; err != nil {
+			t.Errorf("waiting Trigger error = %v, want nil", err)
+		}
+		if got := repo.upserts(); got != wantUpserts {
+			t.Errorf("write attempts = %d, want %d", got, wantUpserts)
+		}
+		// Whatever landed suppresses the next Trigger (one write per
+		// live (rule, Target)).
+		if err := svc.Trigger(context.Background(), liveRec(rec.Rule, rec.Target, now.Add(time.Minute), expiry)); err != nil {
+			t.Fatalf("next Trigger: %v", err)
+		}
+		if got := repo.upserts(); got != wantUpserts {
+			t.Errorf("write attempts after the next Trigger = %d, want %d (suppressed)", got, wantUpserts)
+		}
+	}
+
+	t.Run("the waiter retries after the in-flight write failed", func(t *testing.T) {
+		run(t, errStub, 2, errStub)
+	})
+
+	t.Run("the waiter is suppressed once the write lands", func(t *testing.T) {
+		run(t, nil, 1, nil)
+	})
+
+	t.Run("a cancelled waiter returns the context error", func(t *testing.T) {
+		wedge := make(chan struct{})
+		repo := &stubRepository{upWedge: wedge, upEntered: make(chan struct{}, 4)}
+		svc := NewService(repo)
+		a := triggerAsync(svc, rec)
+		<-repo.upEntered
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- svc.Trigger(ctx, liveRec(rec.Rule, rec.Target, now, expiry)) }()
+		waitPending(t, done)
+		cancel()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("cancelled waiter error = %v, want context.Canceled", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the cancelled waiter never returned")
+		}
+		close(wedge)
+		if err := <-a; err != nil {
+			t.Errorf("in-flight Trigger error = %v, want nil", err)
+		}
+		if got := repo.upserts(); got != 1 {
+			t.Errorf("write attempts = %d, want 1 (the cancelled waiter wrote nothing)", got)
 		}
 	})
 }

@@ -181,19 +181,33 @@ chains:
 
 // blockingStore wedges the report write path on demand: every Upsert
 // signals entry and then blocks until the test releases it, however
-// long that takes. It stands in both for in-flight report upserts
+// long that takes. It stands both for in-flight report upserts
 // observed mid-write and for a store call that never returns (spec
-// stories 31–32).
+// stories 31–32). failErr, when set, fails exactly the first write
+// that passes the gate instead of landing it: the wedged write errors
+// after release, standing in for a report write that fails while a
+// concurrent Trigger watches (spec stories 4, 5, 14).
 type blockingStore struct {
 	*sqlite.ReportRepository
-	entered chan struct{}
-	gate    chan struct{}
-	once    sync.Once
+	entered  chan struct{}
+	gate     chan struct{}
+	once     sync.Once
+	failErr  error
+	failOnce sync.Once
 }
 
 func (b *blockingStore) Upsert(ctx context.Context, rec bandage.Report) error {
 	b.entered <- struct{}{}
 	<-b.gate
+	var err error
+	b.failOnce.Do(func() {
+		if b.failErr != nil {
+			err = b.failErr
+		}
+	})
+	if err != nil {
+		return err
+	}
 	return b.ReportRepository.Upsert(ctx, rec)
 }
 
