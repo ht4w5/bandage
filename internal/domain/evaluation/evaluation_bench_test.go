@@ -17,10 +17,16 @@ import (
 // variants live in internal/app/evaluate_bench_test.go. The stubs stand
 // in at the consumer-side ports (DECISIONS §2): a map-backed
 // TrackerCache (store map access without locking and LRU) and a
-// counting ReportSink. The match-every/match-never split isolates the
-// action and report path: the match-every chains overflow on every
-// event (so every event Matches and Triggers), the match-never chains
-// never do.
+// counting ReportSink. The split isolates the Trigger-path cost (the
+// action dispatch, the report write call and the tracker reset): it is
+// the v0-hot-path rename of the retired overflow-every-event trick —
+// under the Trigger semantics (a Trigger empties the tracker, a live
+// report suppresses its write) volume 0.5 no longer models a write per
+// event, so trigger-every names what it now measures: the Trigger path
+// at one-event accumulation episodes, every event running the report
+// action against a stub sink. The write suppression itself lives at
+// the report service and is measured in internal/app (the episode
+// scenarios first-trigger / rearm-delete / rearm-expiry).
 
 // benchCache is a map-backed TrackerCache double: per-key accumulate
 // without recording (the recording double lives in evaluation_test.go).
@@ -90,17 +96,20 @@ func benchEvent(events []bandage.Event, i int) bandage.Event {
 
 // benchChains mirrors configs/rules.yml's tracker rules with report
 // actions, one rule per chain: a report rule is terminal, so a
-// single-rule chain keeps the match-every/match-never paths doing
+// single-rule chain keeps the trigger-every/match-never paths doing
 // identical filter and tracker work and differing only in the report
-// action. The match-every variant uses rate trackers with volume 0.5 —
-// one request per event always overflows, so every event Matches and
-// runs the report action. The match-never variant (leak 10, volume 200)
-// decays at 10/s against the +1 increment and, at benchEvent's
-// one-second event spacing, never overflows.
+// action. The trigger-every variant uses rate trackers with volume 0.5
+// — one request per event always overflows, so every event Matches,
+// Triggers and empties the tracker again (the degenerate one-event
+// episode the retired overflow-every-event trick pinned; renamed to
+// what it measures now — see the header comment above). The
+// match-never variant (leak 10, volume 200) decays at 10/s against the
+// +1 increment and, at benchEvent's one-second event spacing, never
+// overflows.
 // TestBenchChainsMatchTheirNames pins both behaviors.
-func benchChains(matchEvery bool) []bandage.Chain {
+func benchChains(triggerEvery bool) []bandage.Chain {
 	leak, volume := 10.0, 200.0
-	if matchEvery {
+	if triggerEvery {
 		leak, volume = 0, 0.5
 	}
 	rate := func(id string) bandage.Rule {
@@ -134,16 +143,21 @@ var benchEpoch = time.Unix(1734345934, 0).UTC()
 func benchNow() time.Time { return benchEpoch }
 
 // TestBenchChainsMatchTheirNames verifies the benchmark fixture's
-// scenario split (the H4 measurements rest on it): the match-every
-// chains trigger on every event and the match-never chains trigger
-// none, over repeated passes of the event pool.
+// scenario split (the H4 measurements rest on it): the trigger-every
+// chains run the report action on every event and the match-never
+// chains trigger none, over repeated passes of the event pool. The
+// Trigger count is the episode count here — the stub sink counts
+// report actions run, and under the Trigger semantics that is one per
+// accumulation episode (one event each for trigger-every); the write
+// suppression this count used to stand for lives at the report service
+// (internal/app's episode scenarios).
 func TestBenchChainsMatchTheirNames(t *testing.T) {
 	tests := []struct {
-		name       string
-		matchEvery bool
-		perEvent   int // report triggers per event: one per single-rule chain
+		name         string
+		triggerEvery bool
+		perEvent     int // Trigger calls per event: one per single-rule chain
 	}{
-		{"match-every", true, 3},
+		{"trigger-every", true, 3},
 		{"match-never", false, 0},
 	}
 	events := benchEvents(1024)
@@ -151,7 +165,7 @@ func TestBenchChainsMatchTheirNames(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			sink := &benchSink{}
-			svc := NewService(benchChains(tt.matchEvery), newBenchCache(), sink, benchNow, nil)
+			svc := NewService(benchChains(tt.triggerEvery), newBenchCache(), sink, benchNow, nil)
 			for i := 0; i < passes*len(events); i++ {
 				ev := benchEvent(events, i)
 				if err := svc.Evaluate(context.Background(), &ev); err != nil {
@@ -168,11 +182,11 @@ func TestBenchChainsMatchTheirNames(t *testing.T) {
 
 func BenchmarkEvaluate(b *testing.B) {
 	for _, tc := range []struct {
-		name       string
-		matchEvery bool
-	}{{"match-every", true}, {"match-never", false}} {
+		name         string
+		triggerEvery bool
+	}{{"trigger-every", true}, {"match-never", false}} {
 		b.Run(tc.name, func(b *testing.B) {
-			svc := NewService(benchChains(tc.matchEvery), newBenchCache(), &benchSink{}, benchNow, nil)
+			svc := NewService(benchChains(tc.triggerEvery), newBenchCache(), &benchSink{}, benchNow, nil)
 			events := benchEvents(1024)
 			ctx := context.Background()
 			var lines int
