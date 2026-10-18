@@ -95,13 +95,16 @@ unchanged. `findings.md` now carries the explicit spec → benchmark
 coverage map (Phase 1 rows and hot-path stages, with the domain-lint
 split marked).
 
-**Follow-up issues filed from evidence, ordered by measured impact**
-(the standing `.scratch/v0-followups/issues/` tracker, continuing its
-numbering after its earlier 01–05): 06-batch-report-persistence (H4),
-07-cut-parse-allocations (H1), 08-ingest-tcp-framing-cost (H5),
-09-deglobalize-progress-bump (H2), 10-alloc-free-store-keys (H3). No
-issue for H6 (threshold documented) or the read path (off hot path at
-v0 scale).
+**Follow-up recommendations, ordered by measured impact**, recorded as
+candidates in `findings.md`: batch report persistence (H4), cut parse
+allocations (H1), ingest tcp framing cost (H5), de-globalize per-line
+bookkeeping (H2), alloc-free tracker-cache keys (H3). Five tracker
+issues were drafted during the effort (06–10 in the standing
+`.scratch/v0-followups/issues/` numbering) but withdrawn before merge:
+the maintainer wants to discuss the findings first and scope the work
+with `/to-spec` and `/to-tickets`; the drafts remain in git history
+(`1bf164e`). No candidate for H6 (threshold documented) or the read
+path (off hot path at v0 scale).
 
 Implemented on integration branch `feat/v0-benchmarks` (merge commit
 `2fcfdb0`; cross-ticket code-review fixes through `f6e31bd`, which

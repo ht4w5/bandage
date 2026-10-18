@@ -305,34 +305,29 @@ wakeups) is a minor contributor.
   (≈1.25µs/line ≈ 25% of fast-path time) — documented as a threshold,
   not a fix (no follow-up filed).
 
-## Recommended fixes (follow-up issues, ordered by measured impact)
+## Recommended follow-ups (ordered by measured impact)
 
-Filed in the standing follow-ups tracker
-`.scratch/v0-followups/issues/`, numbered after that tracker's existing
-01–05 (the earlier ops-polish effort), evidence-linked from each issue
-back to this file:
+Candidates for the next planning round — deliberately **not ticketed
+yet**; they will be scoped with `/to-spec` and `/to-tickets` after
+further discussion:
 
-1. [`06-batch-report-persistence.md`](../v0-followups/issues/06-batch-report-persistence.md)
-   — batch/decouple the single-connection report upsert (H4): 38µs/line
-   and 62.7% of worker blocking when rules match; the only fix that
-   moves the write path's saturation point.
-2. [`07-cut-parse-allocations.md`](../v0-followups/issues/07-cut-parse-allocations.md)
-   — parse without the generic map + per-field re-parse (H1): 3µs and
-   32 allocs/line, 75% of all allocated objects, owner of the GC curve.
-3. [`08-ingest-tcp-framing-cost.md`](../v0-followups/issues/08-ingest-tcp-framing-cost.md)
-   — go-syslog tcp framing cost (H5): ~1.9µs/line and the workers=4
-   ceiling for tcp deployments.
-4. [`09-deglobalize-progress-bump.md`](../v0-followups/issues/09-deglobalize-progress-bump.md)
-   — per-line bookkeeping (H2): 48ns + 112B/line, 25.5% of mutex
-   contention, parallel rate below serial.
-5. [`10-alloc-free-store-keys.md`](../v0-followups/issues/10-alloc-free-store-keys.md)
-   — tracker-cache key building (H3): 2×32B/line and 7.6% of allocated
-   objects.
+1. **Batch report persistence** (H4): batch/decouple the
+   single-connection report upsert — 38µs/line and 62.7% of worker
+   blocking when rules match; the only fix that moves the write path's
+   saturation point.
+2. **Cut parse allocations** (H1): parse without the generic map +
+   per-field re-parse — 3µs and 32 allocs/line, 75% of all allocated
+   objects, owner of the GC curve.
+3. **Ingest tcp framing cost** (H5): go-syslog tcp framing — ~1.9µs/line
+   and the workers=4 ceiling for tcp deployments.
+4. **De-globalize per-line bookkeeping** (H2): 48ns + 112B/line, 25.5%
+   of mutex contention, parallel rate below serial.
+5. **Alloc-free tracker-cache keys** (H3): 2×32B/line and 7.6% of
+   allocated objects.
 
-No issue filed for H6 (threshold documented above); none filed for the
-read path (`GET /reports`) — it is off the hot path at v0 scale
-(7.2µs + 26 allocs/row), worth revisiting only with row-count
-requirements.
+No candidate for H6 (threshold documented above) nor for the read path
+(`GET /reports`) — it is off the hot path at v0 scale (7.2µs + 26
+allocs/row), worth revisiting only with row-count requirements.
 
 ## Baseline for future regression comparison
 
