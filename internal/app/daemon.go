@@ -199,7 +199,13 @@ func (d *Daemon) Start(lifetime context.Context) error {
 	d.startedAt = d.now()
 	// Suppression state is re-derived from the report table at startup
 	// (spec story 13, ADR 0008): alive reports suppress the next
-	// Trigger's write, deleted or expired ones do not.
+	// Trigger's write, deleted or expired ones do not. Startup ordering:
+	// this runs before the workers start, so suppression is complete
+	// before the first event evaluates — startup traffic must not write
+	// over reports that are still alive. The service is race-free
+	// against Triggers regardless (Rebuild holds the report service's
+	// lock across the derivation and keeps in-flight writes), but only
+	// this ordering makes the derivation complete before ingest.
 	if err := d.reports.Rebuild(d.ctx, d.now()); err != nil {
 		return fmt.Errorf("reports: rebuild live-report set: %w", err)
 	}

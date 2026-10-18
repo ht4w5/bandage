@@ -33,9 +33,11 @@ type ReportRepository struct {
 	// write is the sole writer: exactly one connection, so every write
 	// serializes through it and lands deterministically (ADR 0007).
 	write *sql.DB
-	// read serves the query paths on its own connections (ADR 0009).
-	// For a :memory: database it is write — every connection to an
-	// in-memory database would be its own private database.
+	// read serves the query paths on its own connections (ADR 0009): a
+	// bounded pool, so the API never queues behind upserts and the read
+	// side cannot grow without limit. For a :memory: database it is
+	// write — every connection to an in-memory database would be its
+	// own private database.
 	read *sql.DB
 	// upsert is prepared once at Open and reused by every Upsert.
 	upsert *sql.Stmt
@@ -85,11 +87,22 @@ func Open(path string) (*ReportRepository, error) {
 	if !isMemory(path) {
 		// Opened after the pragmas: journal_mode=WAL is a property of
 		// the database file, so every read connection sees it.
-		read, err = sql.Open(driverName, path)
+		// The pool is bounded (spec story 19 needs only its own
+		// connections, not an unbounded number: 4 covers concurrent API
+		// reads and the startup rebuild) and every read connection gets
+		// a busy timeout through the DSN, so a query that loses a WAL
+		// checkpoint race retries instead of failing the request.
+		readDSN := path + "?_pragma=busy_timeout(5000)"
+		if strings.Contains(path, "?") {
+			readDSN = path + "&_pragma=busy_timeout(5000)"
+		}
+		read, err = sql.Open(driverName, readDSN)
 		if err != nil {
 			write.Close()
 			return nil, fmt.Errorf("sqlite: open read path: %w", err)
 		}
+		read.SetMaxOpenConns(4)
+		read.SetMaxIdleConns(4)
 	}
 	upsert, err := write.Prepare(upsertSQL)
 	if err != nil {

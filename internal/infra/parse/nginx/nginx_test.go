@@ -99,6 +99,57 @@ func TestParseMalformedLine(t *testing.T) {
 	}
 }
 
+// TestParseMalformedLineErrorText pins the malformed-line error text
+// to the pre-rewrite parser's, byte for byte: that parser rendered
+// errors through encoding/json v1 — plain wording, no decoder position
+// info, whole-line syntax scan before decoding — and the drop log
+// prints this text verbatim (the type-error line names the old decode
+// target; on this toolchain json.RawMessage aliases jsontext.Value, so
+// it renders as map[string]jsontext.Value exactly as the old errors
+// did).
+func TestParseMalformedLineErrorText(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		// Byte-identical with the pre-rewrite parser (encoding/json v1 text).
+		{"empty", ``, `parse nginx json: unexpected end of JSON input`},
+		{"truncated object", `{"time":`, `parse nginx json: unexpected end of JSON input`},
+		{"truncated at open", `{`, `parse nginx json: unexpected end of JSON input`},
+		{"truncated literal", `tru`, `parse nginx json: unexpected end of JSON input`},
+		{"truncated string", `"unterminated`, `parse nginx json: unexpected end of JSON input`},
+		{"truncated value", `{"time":1`, `parse nginx json: unexpected end of JSON input`},
+		{"literal typo keeps its expectation", `not json`, `parse nginx json: invalid character 'o' in literal null (expecting 'u')`},
+		{"missing value", `{"time":}`, `parse nginx json: invalid character '}' looking for beginning of value`},
+		{"garbage prefix", `xyzzy}`, `parse nginx json: invalid character 'x' looking for beginning of value`},
+		{"missing colon", `{"time" 1}`, `parse nginx json: invalid character '1' after object key`},
+		{"missing comma", `{"time":"1" "client":"x"}`, `parse nginx json: invalid character '"' after object key:value pair`},
+		{"trailing garbage", `{"time":"1"} 0`, `parse nginx json: invalid character '0' after top-level value`},
+
+		// Type errors keep the old decode target's name and v1's kind
+		// words; a syntax error anywhere in the line still wins over the
+		// type error at its first value (v1 scanned the whole line first).
+		{"top-level array", `[]`, `parse nginx json: json: cannot unmarshal array into Go value of type map[string]jsontext.Value`},
+		{"top-level number", `5`, `parse nginx json: json: cannot unmarshal number into Go value of type map[string]jsontext.Value`},
+		{"top-level bool", `true`, `parse nginx json: json: cannot unmarshal bool into Go value of type map[string]jsontext.Value`},
+		{"top-level string", `""`, `parse nginx json: json: cannot unmarshal string into Go value of type map[string]jsontext.Value`},
+		{"number with trailing garbage", `00`, `parse nginx json: invalid character '0' after top-level value`},
+		{"number with trailing junk", `5x`, `parse nginx json: invalid character 'x' after top-level value`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := New().Parse([]byte(tt.line))
+			if err == nil {
+				t.Fatalf("Parse(%q) succeeded, want error", tt.line)
+			}
+			if err.Error() != tt.want {
+				t.Errorf("Parse(%q) error = %q, want %q", tt.line, err.Error(), tt.want)
+			}
+		})
+	}
+}
+
 func TestParseInvalidRequiredField(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -196,7 +196,7 @@ func (m *memRepo) Delete(_ context.Context, q report.Query) (int, error) {
 	}
 	n := 0
 	for key, rec := range m.rows {
-		if (q.Rule == "" || rec.Rule == q.Rule) && (q.Target == "" || rec.Target == q.Target) {
+		if q.Matches(rec.Rule, rec.Target) {
 			delete(m.rows, key)
 			n++
 		}

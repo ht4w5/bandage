@@ -29,5 +29,8 @@ alive; deleting or expiring it re-arms writing — tracker rules must
 overflow again, tracker-less rules re-Trigger on the next matching
 event. Resetting on every Trigger (write or suppressed) keeps the action
 cadence at one run per accumulation episode even while the write is
-silent. ADR 0007's "a duplicate trigger just refreshes the same row" is
+silent. A failed write is not a Trigger outcome: the tracker record
+stays intact and the next matching event retries the report — the
+reset applies only when the write landed or a live report suppressed
+it. ADR 0007's "a duplicate trigger just refreshes the same row" is
 superseded: while the report is alive, further Triggers write nothing.

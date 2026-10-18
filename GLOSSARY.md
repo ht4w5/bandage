@@ -48,7 +48,9 @@ A match that ran the rule's report action; when it writes, its event
 becomes the report's sample and its wall-clock time stamps the report.
 While that report is alive, further Triggers for the Target write nothing
 (the rule's other actions still run), and each Trigger empties the rule's
-tracker for the Target.
+tracker for the Target. A failed write is not a Trigger outcome: the
+tracker record stays intact and the next matching event retries the
+report.
 _Avoid_: firing, hit
 
 ### Trackers

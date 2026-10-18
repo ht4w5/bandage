@@ -24,6 +24,14 @@ type Query struct {
 	Now time.Time
 }
 
+// Matches reports whether a (rule, target) pair falls in the query's
+// filter: an empty Rule or Target matches everything. It is the one
+// filter predicate — the service applies it to the live set, the
+// repositories to their rows.
+func (q Query) Matches(rule, target string) bool {
+	return (q.Rule == "" || q.Rule == rule) && (q.Target == "" || q.Target == target)
+}
+
 // ErrUnfiltered is returned by Repository.Delete when neither Rule nor
 // Target is set: deletion is by filter, never delete-all.
 var ErrUnfiltered = errors.New("report: delete requires a rule or target filter")
@@ -81,10 +89,17 @@ type reportKey struct {
 	target string
 }
 
-// liveEntry is one live report's suppression state: its expiry decides
-// aliveness at Trigger time.
+// liveEntry is one (rule, target)'s suppression state. A settled entry
+// is the live report's expiry: it decides aliveness at Trigger time.
+// An entry with inflight set marks a report write pending for the key:
+// concurrent Triggers wait for its outcome instead of mistaking the
+// pending write for a live report (spec stories 4, 5, 14).
 type liveEntry struct {
 	expiresAt time.Time
+	// inflight is non-nil only while this key's write is in flight and
+	// is closed under s.mu once the outcome is settled (expiresAt set
+	// on success, the entry deleted on failure).
+	inflight chan struct{}
 }
 
 func NewService(repo Repository) *Service {
@@ -96,36 +111,76 @@ func NewService(repo Repository) *Service {
 // and Trigger completes without error (the report action ran; its
 // caller empties the tracker either way). Aliveness is decided at the
 // Trigger's wall time (rec.UpdatedAt): a report is alive while
-// expires_at is still ahead of it. The key is reserved before the write
-// so concurrent Triggers for one (rule, target) produce at most one
-// write (spec story 14); a failed write releases the reservation —
-// nothing was written, so the next Trigger retries (spec story 5).
+// expires_at is still ahead of it.
+//
+// Concurrent Triggers for one (rule, target) produce at most one write
+// (spec story 14): the first writes while the key is marked in flight,
+// and later Triggers wait for that write's outcome and re-evaluate —
+// suppressed once it lands (a live report now exists), writing it
+// themselves if it failed (spec story 5: a failed write is not a
+// Trigger outcome and must not lose the episode's detection; the
+// GLOSSARY Trigger carve-out). Trigger returns nil exactly when the
+// write landed or a live report suppressed it, so the caller's tracker
+// reset stays honest (spec story 4).
 func (s *Service) Trigger(ctx context.Context, rec bandage.Report) error {
 	key := reportKey{rule: rec.Rule, target: rec.Target}
-	s.mu.Lock()
-	if e, ok := s.live[key]; ok && e.expiresAt.After(rec.UpdatedAt) {
+	var e *liveEntry
+	for {
+		s.mu.Lock()
+		cur, ok := s.live[key]
+		if ok && cur.inflight != nil {
+			// A write for this key is pending: wait for its outcome,
+			// then re-evaluate. The pending write is not a live report.
+			ch := cur.inflight
+			s.mu.Unlock()
+			select {
+			case <-ch:
+				continue
+			case <-ctx.Done():
+				return fmt.Errorf("trigger report: %w", ctx.Err())
+			}
+		}
+		if ok && cur.expiresAt.After(rec.UpdatedAt) {
+			s.mu.Unlock()
+			return nil
+		}
+		e = &liveEntry{inflight: make(chan struct{})}
+		s.live[key] = e
 		s.mu.Unlock()
-		return nil
+		break
 	}
-	e := &liveEntry{expiresAt: rec.ExpiresAt}
-	s.live[key] = e
-	s.mu.Unlock()
 	if err := s.repo.Upsert(ctx, rec); err != nil {
 		s.mu.Lock()
 		if s.live[key] == e {
 			delete(s.live, key)
 		}
+		ch := e.inflight
+		e.inflight = nil
+		close(ch)
 		s.mu.Unlock()
 		return fmt.Errorf("trigger report: %w", err)
 	}
+	s.mu.Lock()
+	e.expiresAt = rec.ExpiresAt
+	ch := e.inflight
+	e.inflight = nil
+	close(ch)
+	s.mu.Unlock()
 	return nil
 }
 
 // Rebuild derives the live-report set from the report table at startup
 // (spec story 13): the rows the table still serves — the unexpired ones
 // at now — suppress; deleted or expired rows have left no state behind.
-// It supplants whatever the set held.
+// It supplants whatever the set held, except entries whose write is
+// still in flight: those settle on their own outcome and are never
+// discarded, so a Trigger racing the rebuild keeps its suppression.
+// The whole derivation runs under s.mu — including the repository
+// list — so a Trigger cannot interleave between the listing and the
+// swap.
 func (s *Service) Rebuild(ctx context.Context, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	rows, err := s.repo.List(ctx, Query{Now: now})
 	if err != nil {
 		return err
@@ -134,9 +189,12 @@ func (s *Service) Rebuild(ctx context.Context, now time.Time) error {
 	for _, rec := range rows {
 		live[reportKey{rule: rec.Rule, target: rec.Target}] = &liveEntry{expiresAt: rec.ExpiresAt}
 	}
-	s.mu.Lock()
+	for key, e := range s.live {
+		if e.inflight != nil {
+			live[key] = e
+		}
+	}
 	s.live = live
-	s.mu.Unlock()
 	return nil
 }
 
@@ -159,7 +217,7 @@ func (s *Service) Delete(ctx context.Context, q Query) (int, error) {
 	}
 	s.mu.Lock()
 	for key := range s.live {
-		if (q.Rule == "" || q.Rule == key.rule) && (q.Target == "" || q.Target == key.target) {
+		if q.Matches(key.rule, key.target) {
 			delete(s.live, key)
 		}
 	}
