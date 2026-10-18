@@ -23,18 +23,20 @@ import (
 // domain code in domain/evaluation; the domain lint keeps these
 // adapters out of that package.
 
-// benchFireRules and benchQuietRules are the chain fixtures: tracker
-// rules with real filters matching every corpus event, one rule per
-// chain. A report rule is terminal, so single-rule chains keep the
-// fires/never-fires paths doing identical filter and tracker work and
-// differing only in the report writes. The fire rules overflow on every
-// event (rate, leak 0, volume 0.5 — one request always exceeds half a
-// request), so every event exercises the report write path. The quiet
-// rules decay at 10/s (rate) and 1GB/s (bandwidth, against increments
-// below 8MB) and, at benchEvent's one-second event spacing, never
-// overflow, so the write path never runs. The split isolates write-path
-// cost; TestEvaluateBenchScenarios pins both behaviors.
-const benchFireRules = `
+// benchMatchEveryChains and benchMatchNeverChains are the chain
+// fixtures: tracker rules with real filters matching every corpus
+// event, one rule per chain. A report rule is terminal, so
+// single-rule chains keep the match-every/match-never paths doing
+// identical filter and tracker work and differing only in the report
+// writes. The match-every chains overflow on every event (rate, leak 0,
+// volume 0.5 — one request always exceeds half a request), so every
+// event Matches and Triggers a report write (GLOSSARY). The
+// match-never chains decay at 10/s (rate) and 1GB/s (bandwidth,
+// against increments below 8MB) and, at benchEvent's one-second event
+// spacing, never overflow, so no rule ever Matches and the write path
+// never runs. The split isolates write-path cost;
+// TestEvaluateBenchScenarios pins both behaviors.
+const benchMatchEveryChains = `
 version: 0
 chains:
   - name: download-abuse
@@ -63,7 +65,7 @@ chains:
         actions: [{report: {reason: error-probe, ttl: 1h}}]
 `
 
-const benchQuietRules = `
+const benchMatchNeverChains = `
 version: 0
 chains:
   - name: download-abuse
@@ -92,8 +94,9 @@ chains:
         actions: [{report: {reason: error-probe, ttl: 1h}}]
 `
 
-// benchClock is the fixed wall clock the benchmarks evaluate on.
-func benchClock() time.Time { return time.Unix(1734345934, 0).UTC() }
+// benchClock is the fixed wall clock the benchmarks evaluate on: the
+// shared fixture epoch (internal/bench.Epoch).
+func benchClock() time.Time { return bench.Epoch }
 
 // benchEvent returns corpus event i with its timestamp at the i-th
 // second of the fixture epoch. Evaluation time must march forward per
@@ -135,18 +138,18 @@ func benchRules(b *testing.B, rules string) []bandage.Chain {
 	return chains
 }
 
-// TestEvaluateBenchScenarios verifies the benchmark fixtures fire the
+// TestEvaluateBenchScenarios verifies the benchmark fixtures match the
 // scenario they name (the H4 measurements rest on it): over several
-// corpus passes the fire rules trigger a report on every event and the
-// quiet rules trigger none.
+// corpus passes the match-every chains trigger a report on every event
+// and the match-never chains trigger none.
 func TestEvaluateBenchScenarios(t *testing.T) {
 	tests := []struct {
 		name     string
 		rules    string
 		perEvent int // report triggers per event: one per single-rule chain
 	}{
-		{"fires", benchFireRules, 4},
-		{"never-fires", benchQuietRules, 0},
+		{"match-every", benchMatchEveryChains, 4},
+		{"match-never", benchMatchNeverChains, 0},
 	}
 	corpus := bench.NewCorpus(bench.Seed, bench.ShapeFull, bench.DistZipf, 1024)
 	const passes = 10
@@ -197,8 +200,8 @@ func benchEvaluate(b *testing.B, svc *evaluation.Service) {
 // minus the sqlite write (H4, H6).
 func BenchmarkEvaluateMemory(b *testing.B) {
 	for _, tc := range []struct{ name, rules string }{
-		{"fires", benchFireRules},
-		{"never-fires", benchQuietRules},
+		{"match-every", benchMatchEveryChains},
+		{"match-never", benchMatchNeverChains},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			store := memory.New(65536, benchClock, zerolog.Nop())
@@ -213,8 +216,8 @@ func BenchmarkEvaluateMemory(b *testing.B) {
 // excludes (H4).
 func BenchmarkEvaluateSQLite(b *testing.B) {
 	for _, tc := range []struct{ name, rules string }{
-		{"fires", benchFireRules},
-		{"never-fires", benchQuietRules},
+		{"match-every", benchMatchEveryChains},
+		{"match-never", benchMatchNeverChains},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			repo, err := sqlite.Open(":memory:")

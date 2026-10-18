@@ -1,6 +1,8 @@
 package bench
 
 import (
+	"net"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -30,4 +32,30 @@ func linesPerSec(lines int, elapsed time.Duration) float64 {
 		return 0
 	}
 	return float64(lines) / elapsed.Seconds()
+}
+
+// ListenAddr returns the ingest listen address for network: a socket
+// path under tb's temp dir for unixgram, a probed free loopback port
+// for tcp (go-syslog wants a fixed address, so the ephemeral port is
+// reserved by a probe listener first — the freeAddr pattern). Shared
+// here so every ingest benchmark binds sockets the same way.
+func ListenAddr(tb testing.TB, network string) string {
+	tb.Helper()
+	switch network {
+	case "unixgram":
+		return filepath.Join(tb.TempDir(), "log.sock")
+	case "tcp":
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			tb.Fatalf("probe tcp port: %v", err)
+		}
+		addr := ln.Addr().String()
+		if err := ln.Close(); err != nil {
+			tb.Fatalf("close tcp probe: %v", err)
+		}
+		return addr
+	default:
+		tb.Fatalf("ListenAddr: unknown network %q", network)
+		return ""
+	}
 }

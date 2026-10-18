@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/HT4w5/bandage/internal/bench"
 	bandage "github.com/HT4w5/bandage/internal/domain"
 	"github.com/HT4w5/bandage/internal/domain/report"
 	"github.com/HT4w5/bandage/internal/infra/persistence/sqlite"
@@ -20,8 +21,9 @@ import (
 // reset), so B/op and allocs/op are the read path, not harness
 // allocation.
 
-// benchNow is the fixed wall clock the report document runs on.
-func benchNow() time.Time { return time.Unix(1734345934, 0).UTC() }
+// benchNow is the fixed wall clock the report document runs on: the
+// shared fixture epoch (internal/bench.Epoch).
+func benchNow() time.Time { return bench.Epoch }
 
 // benchStats is a StatsSource the /reports read path never calls.
 type benchStats struct{}
