@@ -1,8 +1,8 @@
 # 03 — Pipeline throughput and worker scaling (spec Phase 2)
 
 Type: task
-Status: ready-for-agent
-Depends on: 01
+Status: resolved
+Blocked by: 01
 
 Measure the assembled pipeline, not the parts: sustained lines/sec and
 where it saturates.
@@ -247,3 +247,9 @@ Pipeline-only runs (fixed corpus, frozen clock): spread (max−min)/mean
 Reproduce: `go test -run '^$' -bench 'BenchmarkPipeline' -benchmem
 -count=3 ./internal/app` (or `make bench-pkg PKG=./internal/app` for
 the whole package including ticket 02's microbenchmarks).
+
+Implemented on integration branch `feat/v0-benchmarks` (merge commit
+`09e50bf`; cross-ticket code-review fixes through `f6e31bd`, including
+the honest timed-region counting fix and a refreshed baseline).
+Context: spec `../spec.md`, harness ticket
+`01-bench-harness-and-fixtures.md`.

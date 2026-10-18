@@ -1,7 +1,7 @@
 # 01 — Benchmark harness and fixtures
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 
 Build the shared scaffolding every benchmark in this effort stands on.
 
@@ -77,3 +77,7 @@ For later tickets: construct fixtures with
 cycle `corpus.Line(i)` / `corpus.Event(i)` with a monotone counter
 inside `b.Loop()`; report `bench.ReportLinesPerSec` where one op is one
 log line.
+
+Implemented on integration branch `feat/v0-benchmarks` (merge commit
+`50215b8`; cross-ticket code-review fixes through `f6e31bd`). Context:
+spec `../spec.md`.

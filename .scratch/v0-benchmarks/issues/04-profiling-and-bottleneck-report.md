@@ -1,7 +1,7 @@
 # 04 — Profiling, attribution and bottleneck report (spec Phases 3–4)
 
 Type: research
-Status: ready-for-agent
+Status: resolved
 Blocked by: 02, 03
 
 Attribute the measured cost to code and produce the ranked bottleneck
@@ -102,3 +102,9 @@ numbering after its earlier 01–05): 06-batch-report-persistence (H4),
 09-deglobalize-progress-bump (H2), 10-alloc-free-store-keys (H3). No
 issue for H6 (threshold documented) or the read path (off hot path at
 v0 scale).
+
+Implemented on integration branch `feat/v0-benchmarks` (merge commit
+`2fcfdb0`; cross-ticket code-review fixes through `f6e31bd`, which
+completed the profile extract set, added the coverage map and
+regenerated the baseline). Context: spec `../spec.md`, results of
+record `../findings.md`, sibling answers `02-…`/`03-…`.

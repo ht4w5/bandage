@@ -1,8 +1,8 @@
 # 02 — Component microbenchmarks (spec Phase 1)
 
 Type: task
-Status: ready-for-agent
-Depends on: 01
+Status: resolved
+Blocked by: 01
 
 Benchmark each hot-path stage in isolation, beside its code in
 `_test.go` files (spec: Phase 1 table).
@@ -172,3 +172,7 @@ cadence `BenchmarkStoreSweepExpired/{live,expiring}` 2453 · 0 · 0 and
 `BenchmarkReportDeleteExpired/{live,expiring}` 3241 · 136 · 6 and
 63435 · 136 · 6. See `findings.md`'s coverage map for the stage →
 benchmark mapping.
+
+Implemented on integration branch `feat/v0-benchmarks` (merge commit
+`da98950`; cross-ticket code-review fixes through `f6e31bd`). Context:
+spec `../spec.md`, harness ticket `01-bench-harness-and-fixtures.md`.
