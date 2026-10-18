@@ -272,11 +272,24 @@ func TestWorkersPrecedence(t *testing.T) {
 	}
 }
 
-// The resolved worker count's invariant (at least 1, spec story 16) is
-// guarded in exactly two places: config load rejects an invalid
-// pipeline.workers (the strict-config table tests) and app.New guards
-// the invariant (TestNewRejectsNonPositiveWorkerCount) — run() does
-// neither, so nothing validates it a third time.
+// An invalid -w flag value fails loudly instead of reaching the daemon,
+// even in --test mode: the resolved worker count is never below 1 (spec
+// story 16). Config values are rejected at load (the strict-config table
+// tests) and app.New guards the invariant (flag parsing and exit
+// behavior at the run seam).
+func TestInvalidWorkersFails(t *testing.T) {
+	cfgPath, rulesPath := writeConfig(t)
+	for _, w := range []string{"0", "-1"} {
+		var stdout, stderr bytes.Buffer
+		code, _ := run([]string{"-t", "-c", cfgPath, "-r", rulesPath, "-w", w}, &stdout, &stderr)
+		if code != 1 {
+			t.Errorf("-w %s: code = %d, want 1", w, code)
+		}
+		if !strings.Contains(stderr.String(), "must be at least 1") {
+			t.Errorf("-w %s: stderr = %q, want the worker count error", w, stderr.String())
+		}
+	}
+}
 
 // An invalid -l flag value fails loudly instead of reaching the daemon
 // (flag parsing at the run seam).

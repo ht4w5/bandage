@@ -95,6 +95,10 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	if err != nil {
 		return fail(stderr, err), options{}
 	}
+	workerCount, err := resolveWorkers(*workers, fs.Changed("workers"), cfg.Pipeline.Workers)
+	if err != nil {
+		return fail(stderr, err), options{}
+	}
 	opts := options{
 		configPath: *configPath,
 		rulesPath:  *rulesPath,
@@ -106,11 +110,12 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 		// machine's CPU count) before this point — so config.go is their
 		// single owner and there is no third tier here.
 		logLevel: level,
-		workers:  resolveWorkers(*workers, fs.Changed("workers"), cfg.Pipeline.Workers),
+		workers:  workerCount,
 	}
 	// The resolved values ride the validated config to the daemon.
-	// pipeline.workers keeps exactly its load-time rejection and app.New's
-	// invariant (spec story 16) — no third check lives here.
+	// Each worker count is validated where it enters: config values at
+	// load (validateConfig), the flag at resolution below, and app.New
+	// guards the invariant (spec story 16).
 	cfg.Log.Level = opts.logLevel
 	cfg.Pipeline.Workers = opts.workers
 	// The one program-wide logger (ADR 0005): built from the resolved
@@ -174,15 +179,18 @@ func resolveLogLevel(flagValue string, flagSet bool, configValue bandage.Level) 
 }
 
 // resolveWorkers applies flag > config precedence to the worker count:
-// the flag wins when explicitly set, otherwise the config value stands
-// (config.go owns the CPU-count default, spec story 15 / ADR 0007). The
-// resolved count's invariant (at least 1) is guarded where workers are
-// built: app.New.
-func resolveWorkers(flagValue int, flagSet bool, configValue int) int {
+// the flag wins when explicitly set and must then be at least 1 — the
+// resolved count is never below 1 (spec story 16) — otherwise the config
+// value stands (config.go owns the CPU-count default, spec story 15 /
+// ADR 0007).
+func resolveWorkers(flagValue int, flagSet bool, configValue int) (int, error) {
 	if flagSet {
-		return flagValue
+		if flagValue < 1 {
+			return 0, fmt.Errorf("workers: must be at least 1 (got %d)", flagValue)
+		}
+		return flagValue, nil
 	}
-	return configValue
+	return configValue, nil
 }
 
 // fail reports err on the error stream and returns the exit code.
