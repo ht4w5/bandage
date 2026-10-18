@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"path/filepath"
 	"runtime"
+	"runtime/metrics"
 	"testing"
 	"time"
 
@@ -27,13 +27,14 @@ import (
 // frozen at benchWall (WithClock — nothing expires or time-stamps
 // differently between runs), and the pipeline-only variant hands lines
 // straight to the daemon's line channel: no socket anywhere in that
-// path. The timed region accounts for the processing of nearly every
-// line: the feed is back-pressured by the unbuffered line channel, and
-// a drain every drainEvery lines bounds the in-flight tail the stopped
-// timer can miss to well under a percent. Throughput is reported as
-// lines/s via bench.ReportLinesPerSec; run with -benchmem for ns/op,
-// B/op and allocs/op; gc-pause-frac and evictions/op and the /stats
-// snapshot are recorded beside them (reportBenchStats).
+// path. The timed region covers the processing of every counted line:
+// the feed is back-pressured by the unbuffered line channel, the
+// harness drains every drainEvery lines, and the final drain runs
+// inside the timed region (runPipelineBench), so lines/s never counts
+// a line whose processing finished after the timer stopped. Throughput
+// is reported as lines/s via bench.ReportLinesPerSec; run with -benchmem
+// for ns/op, B/op and allocs/op; gc-cpu-frac and evictions/op and the
+// /stats snapshot are recorded beside them (reportBenchStats).
 //
 // The scenarios vary the match path (GLOSSARY: Match, Trigger) and the
 // tracker-cache cap:
@@ -60,10 +61,11 @@ const (
 	// cycles it, so the timed region never builds fixtures.
 	benchCorpusLines = 4096
 
-	// drainEvery bounds the in-flight work the stopped timer can miss:
-	// every drainEvery lines the harness waits for the pipeline to
-	// catch up inside the timed region. The wait's own stall (at most
-	// one line's processing per batch) is far below one percent.
+	// drainEvery bounds the backlog the feed can build ahead of the
+	// pipeline: every drainEvery lines the harness waits for the
+	// pipeline to catch up inside the timed region. The wait's own
+	// stall (at most one line's processing per batch) is far below one
+	// percent.
 	drainEvery = 1024
 
 	// benchCacheRoomy is the default entry cap: no evictions at the
@@ -126,30 +128,49 @@ var benchScenarios = []benchScenario{
 	{name: "match-never-evicting", rules: benchMatchNeverRules, cacheMax: benchCacheEvicting},
 }
 
+// benchParams is the run-parameter clump every bench helper threads
+// through: the scenario (rules + tracker-cache cap), the pipeline
+// worker count, and the ingest socket (network and listen address —
+// empty for the no-socket pipeline variant). name renders the stable
+// benchmark sub-name from it.
+type benchParams struct {
+	sc      benchScenario
+	workers int
+	network string // ingest socket network: "tcp" or "unixgram"; "" = no socket
+	listen  string // ingest socket address (bench.ListenAddr fills it)
+}
+
+func (p benchParams) name() string {
+	if p.network == "" {
+		return fmt.Sprintf("%s/workers=%d", p.sc.name, p.workers)
+	}
+	return fmt.Sprintf("%s/%s/workers=%d", p.network, p.sc.name, p.workers)
+}
+
 // benchConfig is the canonical test config with the scenario's cache
 // cap and worker count (the e2e_config literal, parameterized).
-func benchConfig(sc benchScenario, workers int, network, listen string) Config {
+func benchConfig(p benchParams) Config {
 	return Config{
-		Ingest:   Ingest{Driver: "syslog", Parser: "nginx", Syslog: Syslog{Network: network, Listen: listen}},
+		Ingest:   Ingest{Driver: "syslog", Parser: "nginx", Syslog: Syslog{Network: p.network, Listen: p.listen}},
 		DB:       DB{Driver: "sqlite", SQLite: SQLite{Path: ":memory:"}},
-		Cache:    Cache{MaxEntries: sc.cacheMax},
-		Pipeline: Pipeline{Workers: workers},
+		Cache:    Cache{MaxEntries: p.sc.cacheMax},
+		Pipeline: Pipeline{Workers: p.workers},
 		API:      API{Listen: "127.0.0.1:0"},
 	}
 }
 
-// newBenchDaemon assembles the daemon for a scenario: real rules,
-// parser, enricher, evaluation, in-memory tracker store and sqlite
-// :memory: report repository, with the frozen clock and a nop logger
-// (no logging in the measured path, no eviction record rendering).
-// Teardown is registered on tb and runs after the timed region.
-func newBenchDaemon(tb testing.TB, sc benchScenario, workers int, network, listen string) *Daemon {
+// newBenchDaemon assembles the daemon for a run: real rules, parser,
+// enricher, evaluation, in-memory tracker store and sqlite :memory:
+// report repository, with the frozen clock and a nop logger (no logging
+// in the measured path, no eviction record rendering). Teardown is
+// registered on tb and runs after the timed region.
+func newBenchDaemon(tb testing.TB, p benchParams) *Daemon {
 	tb.Helper()
-	chains, err := ParseRules([]byte(sc.rules))
+	chains, err := ParseRules([]byte(p.sc.rules))
 	if err != nil {
 		tb.Fatalf("ParseRules: %v", err)
 	}
-	d, err := New(benchConfig(sc, workers, network, listen), chains,
+	d, err := New(benchConfig(p), chains,
 		WithClock(benchNow), WithLogger(zerolog.Nop()))
 	if err != nil {
 		tb.Fatalf("New: %v", err)
@@ -161,9 +182,10 @@ func newBenchDaemon(tb testing.TB, sc benchScenario, workers int, network, liste
 // at all: the benchmark feeds the daemon's line channel directly — the
 // handoff the syslog source feeds in production (H5's second half).
 // stopBenchPipeline is registered for teardown.
-func startBenchPipeline(tb testing.TB, sc benchScenario, workers int) *Daemon {
+func startBenchPipeline(tb testing.TB, p benchParams) *Daemon {
 	tb.Helper()
-	d := newBenchDaemon(tb, sc, workers, "unixgram", "unused")
+	p.network, p.listen = "unixgram", "unused" // no socket runs; config shape only
+	d := newBenchDaemon(tb, p)
 	d.ctx, d.cancel = context.WithCancel(context.Background())
 	d.startedAt = d.now()
 	d.wg.Add(d.workers)
@@ -187,45 +209,20 @@ func stopBenchPipeline(tb testing.TB, d *Daemon) {
 	}
 }
 
-// benchListen returns the ingest listen address for network: a socket
-// path under the test's temp dir for unixgram, a probed free loopback
-// port for tcp (go-syslog wants a fixed address, so the ephemeral port
-// is reserved by a probe listener first — the freeAddr pattern).
-func benchListen(tb testing.TB, network string) string {
-	tb.Helper()
-	switch network {
-	case "unixgram":
-		return filepath.Join(tb.TempDir(), "log.sock")
-	case "tcp":
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			tb.Fatalf("probe tcp port: %v", err)
-		}
-		addr := ln.Addr().String()
-		if err := ln.Close(); err != nil {
-			tb.Fatalf("close tcp probe: %v", err)
-		}
-		return addr
-	default:
-		tb.Fatalf("benchListen: unknown network %q", network)
-		return ""
-	}
-}
-
 // startBenchIngest starts the full daemon — syslog source, pipeline
 // workers, sweeper, HTTP API — and dials the ingest socket, like the
 // binary wires it (the e2e seam, driven by benchmarks). The caller
 // owns the returned conn; daemon teardown is registered on tb.
-func startBenchIngest(tb testing.TB, sc benchScenario, workers int, network string) (*Daemon, net.Conn) {
+func startBenchIngest(tb testing.TB, p benchParams) (*Daemon, net.Conn) {
 	tb.Helper()
-	listen := benchListen(tb, network)
-	d := newBenchDaemon(tb, sc, workers, network, listen)
+	p.listen = bench.ListenAddr(tb, p.network)
+	d := newBenchDaemon(tb, p)
 	if err := d.Start(context.Background()); err != nil {
 		tb.Fatalf("Start: %v", err)
 	}
-	conn, err := net.Dial(network, listen)
+	conn, err := net.Dial(p.network, p.listen)
 	if err != nil {
-		tb.Fatalf("dial %s: %v", network, err)
+		tb.Fatalf("dial %s: %v", p.network, err)
 	}
 	tb.Cleanup(func() {
 		conn.Close()
@@ -278,8 +275,11 @@ func feedLines(tb testing.TB, d *Daemon, corpus *bench.Corpus, n int) {
 // runPipelineBench is the timed feed: send hands line i to the daemon
 // (blocking on the unbuffered handoff, so the feed rate is the
 // pipeline's sustained rate), draining every drainEvery lines and
-// after the loop so the processed count always catches up. Returns the
-// lines fed (one op each).
+// after the loop so the processed count always catches up. The final
+// drain runs inside the timed region (Loop stops the timer when it
+// returns, so it is restarted around the drain): every line counted in
+// lines/s and in ns/op, B/op, allocs/op is fully processed before the
+// timer stops. Returns the lines fed (one op each).
 func runPipelineBench(b *testing.B, d *Daemon, send func(i int)) int {
 	b.Helper()
 	var lines int
@@ -290,32 +290,57 @@ func runPipelineBench(b *testing.B, d *Daemon, send func(i int)) int {
 			waitLines(b, d, lines)
 		}
 	}
+	b.StartTimer()
 	waitLines(b, d, lines)
+	b.StopTimer()
 	return lines
 }
 
+// benchGC is the runtime's GC accounting over the measured region:
+// cpu-seconds and GC cycles, read through runtime/metrics.
+type benchGC struct {
+	gcSeconds  float64 // /cpu/classes/gc/total:cpu-seconds
+	cpuSeconds float64 // /cpu/classes/total:cpu-seconds
+	cycles     float64 // /gc/cycles/total:gc-cycles
+}
+
+// readGC snapshots the GC counters behind gc-cpu-frac.
+func readGC() benchGC {
+	samples := []metrics.Sample{
+		{Name: "/cpu/classes/gc/total:cpu-seconds"},
+		{Name: "/cpu/classes/total:cpu-seconds"},
+		{Name: "/gc/cycles/total:gc-cycles"},
+	}
+	metrics.Read(samples)
+	return benchGC{
+		gcSeconds:  samples[0].Value.Float64(),
+		cpuSeconds: samples[1].Value.Float64(),
+		cycles:     float64(samples[2].Value.Uint64()),
+	}
+}
+
 // reportBenchStats records throughput and the bookkeeping beside it:
-// evictions/op and gc-pause-frac as metrics (the allocs/op and B/op
-// come from -benchmem), and the full /stats snapshot in the log.
-// gc-pause-frac is the share of the measured duration the runtime
-// spent in stop-the-world GC pauses: MemStats carries no delta-able GC
-// CPU fraction, so the cumulative PauseTotalNs delta is the closest
-// in-process measure.
-func reportBenchStats(b *testing.B, d *Daemon, lines int, before, after *runtime.MemStats) {
+// evictions/op and gc-cpu-frac as metrics (the allocs/op and B/op come
+// from -benchmem), and the full /stats snapshot in the log. gc-cpu-frac
+// is the GC's share of total CPU capacity (GOMAXPROCS × wall) over the
+// measured region: Δ /cpu/classes/gc/total over Δ /cpu/classes/total
+// (runtime/metrics) — marking, assist and scavenge work included, not
+// just stop-the-world pauses (the earlier gc-pause-frac substitution).
+func reportBenchStats(b *testing.B, d *Daemon, lines int, before, after benchGC) {
 	b.Helper()
 	bench.ReportLinesPerSec(b, lines)
 	st := d.Stats()
 	if lines > 0 {
 		b.ReportMetric(float64(st.TrackerCache.Evictions)/float64(lines), "evictions/op")
 	}
-	if elapsed := b.Elapsed().Nanoseconds(); elapsed > 0 {
-		b.ReportMetric(float64(after.PauseTotalNs-before.PauseTotalNs)/float64(elapsed), "gc-pause-frac")
+	if dCPU := after.cpuSeconds - before.cpuSeconds; dCPU > 0 {
+		b.ReportMetric((after.gcSeconds-before.gcSeconds)/dCPU, "gc-cpu-frac")
 	}
 	b.Logf("/stats workers=%d received=%d parsed=%d dropped=%d cache={gets:%d sets:%d misses:%d evictions:%d size:%d cap:%d} gc=%d gomaxprocs=%d",
 		st.Pipeline.Workers, st.Pipeline.Received, st.Pipeline.Parsed, st.Pipeline.Dropped,
 		st.TrackerCache.Gets, st.TrackerCache.Sets, st.TrackerCache.Misses,
 		st.TrackerCache.Evictions, st.TrackerCache.Size, st.TrackerCache.EntryCap,
-		after.NumGC-before.NumGC, runtime.GOMAXPROCS(0))
+		int(after.cycles-before.cycles), runtime.GOMAXPROCS(0))
 }
 
 // BenchmarkPipeline measures sustained throughput of the assembled
@@ -326,14 +351,14 @@ func reportBenchStats(b *testing.B, d *Daemon, lines int, before, after *runtime
 func BenchmarkPipeline(b *testing.B) {
 	for _, sc := range benchScenarios {
 		for _, w := range benchWorkers {
-			b.Run(fmt.Sprintf("%s/workers=%d", sc.name, w), func(b *testing.B) {
+			p := benchParams{sc: sc, workers: w}
+			b.Run(p.name(), func(b *testing.B) {
 				corpus := bench.NewCorpus(bench.Seed, bench.ShapeFull, bench.DistZipf, benchCorpusLines)
-				d := startBenchPipeline(b, sc, w)
-				var before, after runtime.MemStats
-				runtime.ReadMemStats(&before)
+				d := startBenchPipeline(b, p)
+				before := readGC()
 				lines := runPipelineBench(b, d, func(i int) { d.lines <- corpus.Line(i) })
-				runtime.ReadMemStats(&after)
-				reportBenchStats(b, d, lines, &before, &after)
+				after := readGC()
+				reportBenchStats(b, d, lines, before, after)
 			})
 		}
 	}
@@ -349,19 +374,19 @@ func BenchmarkPipelineIngest(b *testing.B) {
 	for _, network := range []string{"tcp", "unixgram"} {
 		for _, sc := range benchScenarios {
 			for _, w := range benchWorkers {
-				b.Run(fmt.Sprintf("%s/%s/workers=%d", network, sc.name, w), func(b *testing.B) {
+				p := benchParams{sc: sc, workers: w, network: network}
+				b.Run(p.name(), func(b *testing.B) {
 					corpus := bench.NewCorpus(bench.Seed, bench.ShapeFull, bench.DistZipf, benchCorpusLines)
-					d, conn := startBenchIngest(b, sc, w, network)
+					d, conn := startBenchIngest(b, p)
 					wire := benchWire(corpus, network)
-					var before, after runtime.MemStats
-					runtime.ReadMemStats(&before)
+					before := readGC()
 					lines := runPipelineBench(b, d, func(i int) {
 						if _, err := conn.Write(wire[i%len(wire)]); err != nil {
 							b.Fatalf("send: %v", err)
 						}
 					})
-					runtime.ReadMemStats(&after)
-					reportBenchStats(b, d, lines, &before, &after)
+					after := readGC()
+					reportBenchStats(b, d, lines, before, after)
 				})
 			}
 		}
@@ -398,7 +423,7 @@ func TestBenchPipelineScenariosMatchTheirNames(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := startBenchPipeline(t, tt.sc, 4)
+			d := startBenchPipeline(t, benchParams{sc: tt.sc, workers: 4})
 			feedLines(t, d, corpus, lines)
 
 			c := d.counters()

@@ -98,9 +98,16 @@ const (
 	fullExtra    = "ignored" // unknown field the parser must ignore
 )
 
-// baseSec is the $msec second of line 0; line i is baseSec + i seconds
-// later, so times are distinct and monotone across the corpus.
-const baseSec = 1734345934
+// EpochSec is the $msec second of line 0; line i is EpochSec + i
+// seconds later, so times are distinct and monotone across the corpus.
+const EpochSec int64 = 1734345934
+
+// Epoch is the fixture wall-clock origin every benchmark fixture keeps
+// its event times and frozen clocks on (do not mutate). Packages the
+// domain dependency lint keeps away from internal/bench
+// (internal/domain/...) hold their own copy of this instant; keep the
+// values identical.
+var Epoch = time.Unix(EpochSec, 0).UTC()
 
 var (
 	// methods and statuses are the observed value pools: weighted by
@@ -151,10 +158,10 @@ func buildZipfCDF(n int) []float64 {
 	return cdf
 }
 
-// record is the parsed content of one fixture line. It is the single
-// source of truth for both renderings: the raw JSON line and the
-// domain Event it parses to.
-type record struct {
+// eventContent is the content of one fixture Event (GLOSSARY: Event —
+// never "record"). It is the single source of truth for both
+// renderings: the raw JSON line and the domain Event it parses to.
+type eventContent struct {
 	sec    int64 // $msec seconds
 	msec   int64 // $msec fraction, milliseconds
 	client string
@@ -165,28 +172,28 @@ type record struct {
 	agent  string // empty for ShapeMinimal lines
 }
 
-// line renders the record as one nginx-JSON access-log line.
-func (rec record) line(shape LineShape) string {
-	t := fmt.Sprintf("%d.%03d", rec.sec, rec.msec)
+// line renders the event content as one nginx-JSON access-log line.
+func (ec eventContent) line(shape LineShape) string {
+	t := fmt.Sprintf("%d.%03d", ec.sec, ec.msec)
 	if shape == ShapeFull {
 		return fmt.Sprintf(`{"time":%q,"client":%q,"server":%q,"method":%q,"url":%q,"duration":%q,"host":%q,"status":%d,"sent":%d,"agent":%q,"extra":%q}`,
-			t, rec.client, fullServer, rec.method, rec.path, fullDuration, fullHost, rec.status, rec.sent, rec.agent, fullExtra)
+			t, ec.client, fullServer, ec.method, ec.path, fullDuration, fullHost, ec.status, ec.sent, ec.agent, fullExtra)
 	}
 	return fmt.Sprintf(`{"time":%q,"client":%q,"method":%q,"url":%q,"status":%d,"sent":%d}`,
-		t, rec.client, rec.method, rec.path, rec.status, rec.sent)
+		t, ec.client, ec.method, ec.path, ec.status, ec.sent)
 }
 
-// event renders the record as the domain Event its line parses to
+// event renders the content as the domain Event its line parses to
 // (nginx.Parser field mapping).
-func (rec record) event() bandage.Event {
+func (ec eventContent) event() bandage.Event {
 	return bandage.Event{
-		Time:       time.Unix(rec.sec, rec.msec*int64(time.Millisecond)).UTC(),
-		RemoteAddr: netip.MustParseAddr(rec.client),
-		Method:     rec.method,
-		Path:       rec.path,
-		Agent:      rec.agent,
-		Status:     rec.status,
-		SentBytes:  rec.sent,
+		Time:       time.Unix(ec.sec, ec.msec*int64(time.Millisecond)).UTC(),
+		RemoteAddr: netip.MustParseAddr(ec.client),
+		Method:     ec.method,
+		Path:       ec.path,
+		Agent:      ec.agent,
+		Status:     ec.status,
+		SentBytes:  ec.sent,
 		SizeBytes:  bandage.FilesizeUnknown,
 	}
 }
@@ -196,8 +203,8 @@ func (rec record) event() bandage.Event {
 // generation happens in NewCorpus; Line and Event only index the
 // result, so benchmarks cycle them freely inside a b.Loop() loop.
 type Corpus struct {
-	lines []string
-	recs  []record
+	lines  []string
+	events []eventContent
 }
 
 // NewCorpus generates n fixture lines and their events for (seed,
@@ -211,18 +218,18 @@ func NewCorpus(seed uint64, shape LineShape, dist KeyDist, n int) *Corpus {
 		n = 1
 	}
 	r := &rng{state: seed}
-	c := &Corpus{lines: make([]string, n), recs: make([]record, n)}
-	for i := range c.recs {
-		// Two key draws per record, always, so records line up across
-		// distributions for a given seed.
+	c := &Corpus{lines: make([]string, n), events: make([]eventContent, n)}
+	for i := range c.events {
+		// Two key draws per event content, always, so events line up
+		// across distributions for a given seed.
 		client := clientPool[drawKey(r.unit(), dist)]
 		path := pathPool[drawKey(r.unit(), dist)]
 		agent := agents[int(r.below(uint64(len(agents))))]
 		if shape != ShapeFull {
 			agent = "" // minimal lines carry no agent field
 		}
-		rec := record{
-			sec:    baseSec + int64(i),
+		ec := eventContent{
+			sec:    EpochSec + int64(i),
 			msec:   int64(r.below(1000)),
 			client: client,
 			method: methods[int(r.below(uint64(len(methods))))],
@@ -231,14 +238,14 @@ func NewCorpus(seed uint64, shape LineShape, dist KeyDist, n int) *Corpus {
 			sent:   int64(r.below(8_000_000)),
 			agent:  agent,
 		}
-		c.recs[i] = rec
-		c.lines[i] = rec.line(shape)
+		c.events[i] = ec
+		c.lines[i] = ec.line(shape)
 	}
 	return c
 }
 
 // Len is the corpus size.
-func (c *Corpus) Len() int { return len(c.recs) }
+func (c *Corpus) Len() int { return len(c.events) }
 
 // Line returns the corpus's raw line for index i. i may be any
 // non-negative counter: indices beyond Len wrap around, so a
@@ -248,7 +255,7 @@ func (c *Corpus) Line(i int) string { return c.lines[i%len(c.lines)] }
 // Event returns the domain Event line i parses to, on the same cycling
 // index as Line. Parsing Line(i) yields exactly Event(i) (pinned by
 // TestCorpusLinesParseToTheirEvents).
-func (c *Corpus) Event(i int) bandage.Event { return c.recs[i%len(c.recs)].event() }
+func (c *Corpus) Event(i int) bandage.Event { return c.events[i%len(c.events)].event() }
 
 // drawKey maps a uniform draw to a pool index for dist.
 func drawKey(u float64, dist KeyDist) int {

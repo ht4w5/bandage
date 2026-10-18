@@ -1,0 +1,78 @@
+# mem-tcpmn8.out — alloc_objects (top) then alloc_space (top)
+# (code-review pass completing the extract set; same commands as findings.md reproduce)
+File: app.test
+Build ID: 7fa6491134d6ba95d8cd7fc2a83261482ebe423e
+Type: alloc_objects
+Time: 2026-10-18 12:11:34 CST
+Showing nodes accounting for 54500441, 82.52% of 66041489 total
+Dropped 60 nodes (cum <= 330207)
+Showing top 15 nodes out of 49
+      flat  flat%   sum%        cum   cum%
+  10402938 15.75% 15.75%   10402938 15.75%  encoding/json/jsontext.(*Value).UnmarshalJSON
+   6576242  9.96% 25.71%   16370301 24.79%  gopkg.in/mcuadros/go-syslog%2ev2.(*Server).parser
+   6029401  9.13% 34.84%    9467792 14.34%  github.com/HT4w5/bandage/internal/infra/parse/nginx.parseString
+   5103152  7.73% 42.57%    5103152  7.73%  gopkg.in/mcuadros/go-syslog.v2/internal/syslogparser/rfc3164.(*Parser).Dump
+   4755588  7.20% 49.77%    4755588  7.20%  reflect.mapassign_faststr0
+   3927856  5.95% 55.72%    3927856  5.95%  encoding/json/v2.makeString
+   3670071  5.56% 61.27%    6390585  9.68%  github.com/HT4w5/bandage/internal/infra/parse/nginx.parseTime
+   2588718  3.92% 65.19%    2588718  3.92%  reflect.unsafe_New
+   2565650  3.88% 69.08%   44841583 67.90%  github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+   2474059  3.75% 72.82%    3915873  5.93%  github.com/HT4w5/bandage/internal/infra/cache/memory.(*Store).Update
+   1441814  2.18% 75.01%    1441814  2.18%  github.com/HT4w5/bandage/internal/infra/cache/memory.Filesize.Update.func1
+   1258843  1.91% 76.91%    1258843  1.91%  bufio.(*Scanner).Text
+   1245240  1.89% 78.80%    1245240  1.89%  reflect.makemap
+   1234279  1.87% 80.67%    1234279  1.87%  net/netip.Prefix.String
+   1226590  1.86% 82.52%    1226590  1.86%  github.com/HT4w5/bandage/internal/app.(*progress).bump
+
+File: app.test
+Build ID: 7fa6491134d6ba95d8cd7fc2a83261482ebe423e
+Type: alloc_space
+Time: 2026-10-18 12:11:34 CST
+Showing nodes accounting for 5847.26MB, 98.62% of 5929.32MB total
+Dropped 64 nodes (cum <= 29.65MB)
+      flat  flat%   sum%        cum   cum%
+ 1251.67MB 21.11% 21.11%  1251.67MB 21.11%  reflect.mapassign_faststr0
+  798.89MB 13.47% 34.58%  1911.62MB 32.24%  gopkg.in/mcuadros/go-syslog%2ev2.(*Server).parser
+  452.09MB  7.62% 42.21%  2714.04MB 45.77%  github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+  447.10MB  7.54% 49.75%   447.10MB  7.54%  gopkg.in/mcuadros/go-syslog.v2/internal/syslogparser/rfc3164.(*Parser).Dump
+  429.29MB  7.24% 56.99%   902.04MB 15.21%  gopkg.in/mcuadros/go-syslog.v2/format.detect
+  416.75MB  7.03% 64.02%   416.75MB  7.03%  internal/stringslite.Clone (inline)
+  292.57MB  4.93% 68.95%   292.57MB  4.93%  bufio.(*Scanner).Text (inline)
+  282.07MB  4.76% 73.71%  3206.26MB 54.07%  gopkg.in/mcuadros/go-syslog%2ev2.(*Server).scan
+  282.07MB  4.76% 78.47%   282.07MB  4.76%  gopkg.in/mcuadros/go-syslog.v2/internal/syslogparser/rfc3164.(*Parser).parseContent
+  193.01MB  3.26% 81.72%   193.01MB  3.26%  encoding/json/jsontext.(*Value).UnmarshalJSON
+  186.03MB  3.14% 84.86%   186.03MB  3.14%  gopkg.in/mcuadros/go-syslog.v2/internal/syslogparser/rfc3164.NewParser (inline)
+  151.20MB  2.55% 87.41%   220.20MB  3.71%  encoding/json/v2.makeStringArshaler.func2
+  131.01MB  2.21% 89.62%   131.01MB  2.21%  github.com/HT4w5/bandage/internal/app.(*progress).bump
+      92MB  1.55% 91.17%   161.03MB  2.72%  github.com/HT4w5/bandage/internal/infra/parse/nginx.parseString
+   75.50MB  1.27% 92.44%    97.50MB  1.64%  github.com/HT4w5/bandage/internal/infra/cache/memory.(*Store).Update
+      69MB  1.16% 93.61%       69MB  1.16%  encoding/json/v2.makeString
+      57MB  0.96% 94.57%       57MB  0.96%  reflect.makemap
+      56MB  0.94% 95.51%   472.76MB  7.97%  strconv.syntaxError (inline)
+      56MB  0.94% 96.46%   100.01MB  1.69%  github.com/HT4w5/bandage/internal/infra/parse/nginx.parseTime
+   47.50MB   0.8% 97.26%    47.50MB   0.8%  reflect.unsafe_New
+      34MB  0.57% 97.83%    90.50MB  1.53%  github.com/HT4w5/bandage/internal/domain/evaluation.(*Service).updateTracker
+      23MB  0.39% 98.22%       84MB  1.42%  github.com/HT4w5/bandage/internal/domain/enrichment.(*FilesizeEnricher).Enrich
+   15.50MB  0.26% 98.48%   383.56MB  6.47%  gopkg.in/mcuadros/go-syslog.v2/format.(*Automatic).GetParser
+       8MB  0.13% 98.62%  1956.43MB 33.00%  github.com/HT4w5/bandage/internal/infra/parse/nginx.(*Parser).Parse
+         0     0% 98.62%   720.01MB 12.14%  bufio.(*Scanner).Scan
+         0     0% 98.62%  1800.43MB 30.36%  encoding/json.Unmarshal (inline)
+         0     0% 98.62%  1800.43MB 30.36%  encoding/json/v2.Unmarshal
+         0     0% 98.62%  1703.86MB 28.74%  encoding/json/v2.makeMapArshaler.func3
+         0     0% 98.62%   193.01MB  3.26%  encoding/json/v2.makeMethodArshaler.func6
+         0     0% 98.62%    47.50MB   0.8%  encoding/json/v2.newAddressableValue
+         0     0% 98.62%  1769.38MB 29.84%  encoding/json/v2.unmarshalDecode
+         0     0% 98.62%    90.50MB  1.53%  github.com/HT4w5/bandage/internal/domain/evaluation.(*Service).Evaluate (inline)
+         0     0% 98.62%    90.50MB  1.53%  github.com/HT4w5/bandage/internal/domain/evaluation.(*Service).runChain
+         0     0% 98.62%       61MB  1.03%  github.com/HT4w5/bandage/internal/infra/cache/memory.Filesize.Update
+         0     0% 98.62%    55.50MB  0.94%  github.com/HT4w5/bandage/internal/infra/parse/nginx.parseNonEmptyString
+         0     0% 98.62%   720.01MB 12.14%  gopkg.in/mcuadros/go-syslog.v2/format.(*Automatic).automaticScannerSplit
+         0     0% 98.62%   447.10MB  7.54%  gopkg.in/mcuadros/go-syslog.v2/format.(*parserWrapper).Dump
+         0     0% 98.62%   282.07MB  4.76%  gopkg.in/mcuadros/go-syslog.v2/internal/syslogparser/rfc3164.(*Parser).Parse
+         0     0% 98.62%       57MB  0.96%  reflect.MakeMap (inline)
+         0     0% 98.62%       57MB  0.96%  reflect.MakeMapWithSize
+         0     0% 98.62%    47.50MB   0.8%  reflect.New
+         0     0% 98.62%  1251.67MB 21.11%  reflect.Value.SetMapIndex
+         0     0% 98.62%  1251.67MB 21.11%  reflect.mapassign_faststr
+         0     0% 98.62%   472.76MB  7.97%  strconv.Atoi
+         0     0% 98.62%   472.76MB  7.97%  strconv.toError

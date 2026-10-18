@@ -17,9 +17,10 @@ import (
 // variants live in internal/app/evaluate_bench_test.go. The stubs stand
 // in at the consumer-side ports (DECISIONS §2): a map-backed
 // TrackerCache (store map access without locking and LRU) and a
-// counting ReportSink. The fires/never-fires split isolates the action
-// and report path: the fire rules overflow on every event, the quiet
-// rules never do.
+// counting ReportSink. The match-every/match-never split isolates the
+// action and report path: the match-every chains overflow on every
+// event (so every event Matches and Triggers), the match-never chains
+// never do.
 
 // benchCache is a map-backed TrackerCache double: per-key accumulate
 // without recording (the recording double lives in evaluation_test.go).
@@ -73,8 +74,8 @@ func benchEvents(n int) []bandage.Event {
 // benchEvent returns pool event i with its timestamp at the i-th second
 // of the fixture epoch. Evaluation time must march forward per op:
 // cycling timestamps would freeze the leaky bucket's LastUpdate and
-// let the quiet rules' value creep past their volume. The same step
-// drives the benchmark loop and its fixture test.
+// let the match-never chains' value creep past their volume. The same
+// step drives the benchmark loop and its fixture test.
 func benchEvent(events []bandage.Event, i int) bandage.Event {
 	ev := events[i%len(events)]
 	ev.Time = benchEpoch.Add(time.Duration(i) * time.Second)
@@ -83,16 +84,17 @@ func benchEvent(events []bandage.Event, i int) bandage.Event {
 
 // benchChains mirrors configs/rules.yml's tracker rules with report
 // actions, one rule per chain: a report rule is terminal, so a
-// single-rule chain keeps the fires/never-fires paths doing identical
-// filter and tracker work and differing only in the report action.
-// The fire variant uses rate trackers with volume 0.5 — one request per
-// event always overflows, so every event runs the report action. The
-// quiet variant (leak 10, volume 200) decays at 10/s against the +1
-// increment and, at benchEvent's one-second event spacing, never
-// overflows. TestBenchChainsFireAsNamed pins both behaviors.
-func benchChains(fire bool) []bandage.Chain {
+// single-rule chain keeps the match-every/match-never paths doing
+// identical filter and tracker work and differing only in the report
+// action. The match-every variant uses rate trackers with volume 0.5 —
+// one request per event always overflows, so every event Matches and
+// runs the report action. The match-never variant (leak 10, volume 200)
+// decays at 10/s against the +1 increment and, at benchEvent's
+// one-second event spacing, never overflows.
+// TestBenchChainsMatchTheirNames pins both behaviors.
+func benchChains(matchEvery bool) []bandage.Chain {
 	leak, volume := 10.0, 200.0
-	if fire {
+	if matchEvery {
 		leak, volume = 0, 0.5
 	}
 	rate := func(id string) bandage.Rule {
@@ -117,30 +119,33 @@ func benchChains(fire bool) []bandage.Chain {
 }
 
 // benchEpoch is the fixture event-time origin; benchNow is the fixed
-// wall clock report timestamps run on.
+// wall clock report timestamps run on. It duplicates
+// internal/bench.Epoch: the domain lint (internal/domain/deps_test.go)
+// keeps internal/bench out of this package, so the value is split here
+// — keep it identical to bench.Epoch.
 var benchEpoch = time.Unix(1734345934, 0).UTC()
 
 func benchNow() time.Time { return benchEpoch }
 
-// TestBenchChainsFireAsNamed verifies the benchmark fixture's scenario
-// split (the H4 measurements rest on it): the fire chains trigger on
-// every event and the quiet chains trigger none, over repeated passes
-// of the event pool.
-func TestBenchChainsFireAsNamed(t *testing.T) {
+// TestBenchChainsMatchTheirNames verifies the benchmark fixture's
+// scenario split (the H4 measurements rest on it): the match-every
+// chains trigger on every event and the match-never chains trigger
+// none, over repeated passes of the event pool.
+func TestBenchChainsMatchTheirNames(t *testing.T) {
 	tests := []struct {
-		name     string
-		fire     bool
-		perEvent int // report triggers per event: one per single-rule chain
+		name       string
+		matchEvery bool
+		perEvent   int // report triggers per event: one per single-rule chain
 	}{
-		{"fires", true, 3},
-		{"never-fires", false, 0},
+		{"match-every", true, 3},
+		{"match-never", false, 0},
 	}
 	events := benchEvents(1024)
 	const passes = 10
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			sink := &benchSink{}
-			svc := NewService(benchChains(tt.fire), newBenchCache(), sink, benchNow, nil)
+			svc := NewService(benchChains(tt.matchEvery), newBenchCache(), sink, benchNow, nil)
 			for i := 0; i < passes*len(events); i++ {
 				ev := benchEvent(events, i)
 				if err := svc.Evaluate(context.Background(), &ev); err != nil {
@@ -157,11 +162,11 @@ func TestBenchChainsFireAsNamed(t *testing.T) {
 
 func BenchmarkEvaluate(b *testing.B) {
 	for _, tc := range []struct {
-		name string
-		fire bool
-	}{{"fires", true}, {"never-fires", false}} {
+		name       string
+		matchEvery bool
+	}{{"match-every", true}, {"match-never", false}} {
 		b.Run(tc.name, func(b *testing.B) {
-			svc := NewService(benchChains(tc.fire), newBenchCache(), &benchSink{}, benchNow, nil)
+			svc := NewService(benchChains(tc.matchEvery), newBenchCache(), &benchSink{}, benchNow, nil)
 			events := benchEvents(1024)
 			ctx := context.Background()
 			var lines int
@@ -173,8 +178,13 @@ func BenchmarkEvaluate(b *testing.B) {
 				lines++
 			}
 			// One op is one event, i.e. one log line (the shared
-			// bench helper is unreachable under the domain lint).
-			b.ReportMetric(float64(lines)/b.Elapsed().Seconds(), "lines/s")
+			// bench helper is unreachable under the domain lint; this
+			// mirrors bench.ReportLinesPerSec's zero-elapsed guard).
+			var rate float64
+			if elapsed := b.Elapsed(); elapsed > 0 {
+				rate = float64(lines) / elapsed.Seconds()
+			}
+			b.ReportMetric(rate, "lines/s")
 		})
 	}
 }

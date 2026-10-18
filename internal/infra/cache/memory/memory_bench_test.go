@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -30,7 +31,9 @@ const (
 	benchTTL = time.Hour
 )
 
-var benchNow = time.Unix(1734345934, 0)
+// benchNow is the fixed wall clock the store runs on: the shared
+// fixture epoch (internal/bench.Epoch).
+var benchNow = bench.Epoch
 
 // benchUpdateFn is the accumulate step a tracker rule runs under the
 // shard lock.
@@ -100,5 +103,60 @@ func BenchmarkStoreUpdateParallel(b *testing.B) {
 				}
 			})
 		})
+	}
+}
+
+// seedStore fills s with n distinct tracker entries at ttl. Fixture
+// setup for the cadence benchmarks below.
+func seedStore(tb testing.TB, s *Store, n int, ttl time.Duration) {
+	tb.Helper()
+	ctx := context.Background()
+	for i := range n {
+		if _, err := s.Update(ctx, benchNS, fmt.Sprintf("bench-target-%d", i), ttl, benchUpdateFn); err != nil {
+			tb.Fatalf("Update: %v", err)
+		}
+	}
+}
+
+// BenchmarkStoreSweepExpired measures one tracker-cache expiry sweep
+// (the daemon's minute cadence, spec hot-path inventory stage 7): the
+// scan of every shard's LRU list. The live case is the steady-state
+// tick over unexpired entries (the common tick); the expiring case
+// re-seeds already-expired entries with the timer stopped and measures
+// their removal. One op is one SweepExpired call.
+func BenchmarkStoreSweepExpired(b *testing.B) {
+	const entries = 256
+	for _, tc := range []struct {
+		name     string
+		ttl      time.Duration // negative: already expired at the fixed clock
+		expiring bool
+	}{
+		{"live", benchTTL, false},
+		{"expiring", -benchTTL, true},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			s := New(65536, func() time.Time { return benchNow }, zerolog.Nop())
+			seedStore(b, s, entries, tc.ttl)
+			for b.Loop() {
+				if tc.expiring {
+					b.StopTimer()
+					seedStore(b, s, entries, tc.ttl)
+					b.StartTimer()
+				}
+				s.SweepExpired()
+			}
+		})
+	}
+}
+
+// BenchmarkStoreStatistics measures one Statistics() snapshot (the
+// minute cadence's statistics line renders from it): the atomic counter
+// reads plus a locked walk of every shard's LRU length. One op is one
+// call over a populated store.
+func BenchmarkStoreStatistics(b *testing.B) {
+	s := New(65536, func() time.Time { return benchNow }, zerolog.Nop())
+	seedStore(b, s, 1024, benchTTL)
+	for b.Loop() {
+		_ = s.Statistics()
 	}
 }

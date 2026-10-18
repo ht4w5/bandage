@@ -1,0 +1,289 @@
+# block-tcpmn8.out — go tool pprof -top then -traces
+# (code-review pass completing the extract set; same commands as findings.md reproduce)
+File: app.test
+Build ID: 7fa6491134d6ba95d8cd7fc2a83261482ebe423e
+Type: delay
+Time: 2026-10-18 12:11:36 CST
+Showing nodes accounting for 18.83s, 100% of 18.83s total
+Dropped 60 nodes (cum <= 0.09s)
+Showing top 15 nodes out of 24
+      flat  flat%   sum%        cum   cum%
+     8.50s 45.16% 45.16%      8.50s 45.16%  runtime.chanrecv2
+     5.14s 27.31% 72.47%      5.14s 27.31%  runtime.selectgo
+     4.73s 25.14% 97.61%      4.73s 25.14%  runtime.chanrecv1
+     0.34s  1.79% 99.40%      0.34s  1.79%  runtime.chansend1
+     0.11s   0.6%   100%      0.11s   0.6%  sync.(*Mutex).Lock (inline)
+         0     0%   100%      2.36s 12.54%  database/sql.(*DB).connectionOpener
+         0     0%   100%      2.36s 12.54%  database/sql.OpenDB.gowrap1
+         0     0%   100%      8.61s 45.74%  github.com/HT4w5/bandage/internal/app.(*Daemon).Start.gowrap1
+         0     0%   100%      2.36s 12.53%  github.com/HT4w5/bandage/internal/app.(*Daemon).Start.gowrap2
+         0     0%   100%      8.61s 45.74%  github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+         0     0%   100%      2.36s 12.53%  github.com/HT4w5/bandage/internal/app.(*Daemon).sweep
+         0     0%   100%      0.11s  0.56%  github.com/HT4w5/bandage/internal/app.(*progress).bump
+         0     0%   100%      2.37s 12.57%  github.com/HT4w5/bandage/internal/app.BenchmarkPipelineIngest
+         0     0%   100%      0.68s  3.60%  github.com/HT4w5/bandage/internal/infra/ingest/syslog.(*Source).Start.gowrap1
+         0     0%   100%      0.68s  3.60%  github.com/HT4w5/bandage/internal/infra/ingest/syslog.(*Source).run
+
+File: app.test
+Build ID: 7fa6491134d6ba95d8cd7fc2a83261482ebe423e
+Type: delay
+Time: 2026-10-18 12:11:36 CST
+-----------+-------------------------------------------------------
+     8.50s   runtime.chanrecv2
+             github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+             github.com/HT4w5/bandage/internal/app.(*Daemon).Start.gowrap1
+-----------+-------------------------------------------------------
+     2.37s   runtime.chanrecv1
+             testing.(*B).run1
+             testing.(*B).Run
+             testing.runBenchmarks.func1
+             testing.(*B).runN
+             testing.runBenchmarks
+             testing.(*M).Run
+             main.main
+             runtime.main
+-----------+-------------------------------------------------------
+     2.37s   runtime.chanrecv1
+             testing.(*B).run1
+             testing.(*B).Run
+             github.com/HT4w5/bandage/internal/app.BenchmarkPipelineIngest
+             testing.(*B).runN
+             testing.(*B).run1.func1
+-----------+-------------------------------------------------------
+     2.36s   runtime.selectgo
+             database/sql.(*DB).connectionOpener
+             database/sql.OpenDB.gowrap1
+-----------+-------------------------------------------------------
+     2.36s   runtime.selectgo
+             github.com/HT4w5/bandage/internal/app.(*Daemon).sweep
+             github.com/HT4w5/bandage/internal/app.(*Daemon).Start.gowrap2
+-----------+-------------------------------------------------------
+  340.84ms   runtime.selectgo
+             github.com/HT4w5/bandage/internal/infra/ingest/syslog.(*Source).run
+             github.com/HT4w5/bandage/internal/infra/ingest/syslog.(*Source).Start.gowrap1
+-----------+-------------------------------------------------------
+  337.65ms   runtime.chansend1
+             github.com/HT4w5/bandage/internal/infra/ingest/syslog.(*Source).run
+             github.com/HT4w5/bandage/internal/infra/ingest/syslog.(*Source).Start.gowrap1
+-----------+-------------------------------------------------------
+  106.07ms   sync.(*Mutex).Lock (inline)
+             github.com/HT4w5/bandage/internal/app.(*progress).bump
+             github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+             github.com/HT4w5/bandage/internal/app.(*Daemon).Start.gowrap1
+-----------+-------------------------------------------------------
+   80.76ms   runtime.selectgo
+             github.com/HT4w5/bandage/internal/app.(*progress).wait
+             github.com/HT4w5/bandage/internal/app.(*Daemon).waitProcessed (inline)
+             github.com/HT4w5/bandage/internal/app.waitLines
+             github.com/HT4w5/bandage/internal/app.runPipelineBench
+             github.com/HT4w5/bandage/internal/app.BenchmarkPipelineIngest.func1
+             testing.(*B).runN
+             testing.(*B).run1.func1
+-----------+-------------------------------------------------------
+    3.57ms   sync.(*Mutex).Lock (inline)
+             github.com/HT4w5/bandage/internal/app.(*progress).wait
+             github.com/HT4w5/bandage/internal/app.(*Daemon).waitProcessed (inline)
+             github.com/HT4w5/bandage/internal/app.waitLines
+             github.com/HT4w5/bandage/internal/app.runPipelineBench
+             github.com/HT4w5/bandage/internal/app.BenchmarkPipelineIngest.func1
+             testing.(*B).runN
+             testing.(*B).run1.func1
+-----------+-------------------------------------------------------
+    1.64ms   sync.(*Mutex).Lock (inline)
+             github.com/HT4w5/bandage/internal/infra/cache/memory.(*Store).updateLocked
+             github.com/HT4w5/bandage/internal/infra/cache/memory.(*Store).Update
+             github.com/HT4w5/bandage/internal/domain/evaluation.(*Service).updateTracker
+             github.com/HT4w5/bandage/internal/domain/evaluation.(*Service).runChain
+             github.com/HT4w5/bandage/internal/domain/evaluation.(*Service).Evaluate (inline)
+             github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+             github.com/HT4w5/bandage/internal/app.(*Daemon).Start.gowrap1
+-----------+-------------------------------------------------------
+  867.37us   sync.(*Mutex).Lock (inline)
+             github.com/HT4w5/bandage/internal/infra/cache/memory.(*Store).updateLocked
+             github.com/HT4w5/bandage/internal/infra/cache/memory.(*Store).Update
+             github.com/HT4w5/bandage/internal/infra/cache/memory.Filesize.Update
+             github.com/HT4w5/bandage/internal/domain/enrichment.(*FilesizeEnricher).Enrich
+             github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+             github.com/HT4w5/bandage/internal/app.(*Daemon).Start.gowrap1
+-----------+-------------------------------------------------------
+  711.80us   sync.(*Mutex).Lock (inline)
+             sync.(*Pool).pinSlow
+             sync.(*Pool).pin
+             sync.(*Pool).Get
+             encoding/json/jsontext.getBufferedDecoder
+             encoding/json/jsontext.export.GetBufferedDecoder (inline)
+             encoding/json/v2.Unmarshal
+             encoding/json.Unmarshal (inline)
+             github.com/HT4w5/bandage/internal/infra/parse/nginx.(*Parser).Parse
+             github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+             github.com/HT4w5/bandage/internal/app.(*Daemon).Start.gowrap1
+-----------+-------------------------------------------------------
+  233.34us   runtime.selectgo
+             github.com/HT4w5/bandage/internal/app.(*Daemon).Shutdown.func1
+             sync.(*Once).doSlow
+             sync.(*Once).Do (inline)
+             github.com/HT4w5/bandage/internal/app.(*Daemon).Shutdown
+             github.com/HT4w5/bandage/internal/app.startBenchIngest.func1
+             testing.(*common).Cleanup.func1
+             testing.(*common).runCleanup
+             testing.(*B).runN.func1
+             testing.(*B).runN
+             testing.(*B).run1.func1
+-----------+-------------------------------------------------------
+   96.01us   runtime.chansend1
+             gopkg.in/mcuadros/go-syslog%2ev2.(*ChannelHandler).Handle
+             gopkg.in/mcuadros/go-syslog%2ev2.(*Server).parser
+             gopkg.in/mcuadros/go-syslog%2ev2.(*Server).scan
+             gopkg.in/mcuadros/go-syslog%2ev2.(*Server).goScanConnection.gowrap1
+-----------+-------------------------------------------------------
+   69.77us   sync.(*Mutex).Lock (inline)
+             sync.(*Pool).pinSlow
+             sync.(*Pool).pin
+             sync.(*Pool).Put
+             encoding/json/jsontext.putBufferedDecoder (inline)
+             encoding/json/jsontext.export.PutBufferedDecoder
+             encoding/json/v2.Unmarshal
+             encoding/json.Unmarshal (inline)
+             github.com/HT4w5/bandage/internal/infra/parse/nginx.(*Parser).Parse
+             github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+             github.com/HT4w5/bandage/internal/app.(*Daemon).Start.gowrap1
+-----------+-------------------------------------------------------
+   25.52us   internal/poll.(*FD).Close
+             net.(*netFD).Close
+             net.(*TCPListener).close (inline)
+             net.(*TCPListener).Close
+             gopkg.in/mcuadros/go-syslog%2ev2.(*Server).Kill
+             github.com/HT4w5/bandage/internal/infra/ingest/syslog.(*Source).Shutdown.func1
+             sync.(*Once).doSlow
+             sync.(*Once).Do (inline)
+             github.com/HT4w5/bandage/internal/infra/ingest/syslog.(*Source).Shutdown
+             github.com/HT4w5/bandage/internal/app.(*Daemon).Shutdown.func1.1
+-----------+-------------------------------------------------------
+   17.99us   internal/poll.(*FD).Close
+             net.(*netFD).Close
+             net.(*TCPListener).close (inline)
+             net.(*TCPListener).Close
+             net/http.(*onceCloseListener).close
+             sync.(*Once).doSlow
+             sync.(*Once).Do (inline)
+             net/http.(*onceCloseListener).Close
+             net/http.(*Server).closeListenersLocked
+             net/http.(*Server).Shutdown
+             github.com/HT4w5/bandage/internal/app.(*Daemon).Shutdown.func1.1
+-----------+-------------------------------------------------------
+   12.03us   runtime.selectgo
+             github.com/HT4w5/bandage/internal/app.(*progress).wait
+             github.com/HT4w5/bandage/internal/app.(*Daemon).waitProcessed (inline)
+             github.com/HT4w5/bandage/internal/app.waitLines
+             github.com/HT4w5/bandage/internal/app.runPipelineBench
+             github.com/HT4w5/bandage/internal/app.BenchmarkPipelineIngest.func1
+             testing.(*B).runN
+             testing.(*B).run1.func1
+-----------+-------------------------------------------------------
+    9.65us   sync.(*Mutex).Lock (inline)
+             sync.(*Pool).pinSlow
+             sync.(*Pool).pin
+             sync.(*Pool).Get
+             encoding/json/jsontext.getBufferedDecoder
+             encoding/json/jsontext.export.GetBufferedDecoder (inline)
+             encoding/json/v2.Unmarshal
+             encoding/json.Unmarshal (inline)
+             github.com/HT4w5/bandage/internal/infra/parse/nginx.parseString
+             github.com/HT4w5/bandage/internal/infra/parse/nginx.parseNonEmptyString
+             github.com/HT4w5/bandage/internal/infra/parse/nginx.(*Parser).Parse
+             github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+             github.com/HT4w5/bandage/internal/app.(*Daemon).Start.gowrap1
+-----------+-------------------------------------------------------
+    9.17us   sync.(*Mutex).Lock (inline)
+             sync.(*Pool).pinSlow
+             sync.(*Pool).pin
+             sync.(*Pool).Put
+             encoding/json/jsontext.putBufferedDecoder (inline)
+             encoding/json/jsontext.export.PutBufferedDecoder
+             encoding/json/v2.Unmarshal
+             encoding/json.Unmarshal (inline)
+             github.com/HT4w5/bandage/internal/infra/parse/nginx.parseString
+             github.com/HT4w5/bandage/internal/infra/parse/nginx.(*Parser).Parse
+             github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+             github.com/HT4w5/bandage/internal/app.(*Daemon).Start.gowrap1
+-----------+-------------------------------------------------------
+    8.70us   runtime.chanrecv1
+             runtime.gcBgMarkStartWorkers
+             runtime.gcStart
+             runtime.GC
+             testing.(*B).runN
+             testing.runBenchmarks
+             testing.(*M).Run
+             main.main
+             runtime.main
+-----------+-------------------------------------------------------
+    6.80us   sync.(*Mutex).Lock (inline)
+             net/http.(*Server).trackListener
+             net/http.(*Server).Serve.deferwrap2
+             net/http.(*Server).Serve
+             github.com/HT4w5/bandage/internal/app.(*Daemon).Start.func1
+-----------+-------------------------------------------------------
+    6.20us   sync.(*Mutex).Lock (inline)
+             sync.(*Pool).pinSlow
+             sync.(*Pool).pin
+             sync.(*Pool).Put
+             encoding/json/jsontext.putBufferedDecoder (inline)
+             encoding/json/jsontext.export.PutBufferedDecoder
+             encoding/json/v2.Unmarshal
+             encoding/json.Unmarshal (inline)
+             github.com/HT4w5/bandage/internal/infra/parse/nginx.parseString
+             github.com/HT4w5/bandage/internal/infra/parse/nginx.parseNonEmptyString
+             github.com/HT4w5/bandage/internal/infra/parse/nginx.(*Parser).Parse
+             github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+             github.com/HT4w5/bandage/internal/app.(*Daemon).Start.gowrap1
+-----------+-------------------------------------------------------
+    6.07us   sync.(*WaitGroup).Wait
+             github.com/HT4w5/bandage/internal/app.(*Daemon).Shutdown.func1.1
+-----------+-------------------------------------------------------
+    5.25us   sync.(*Mutex).Lock (inline)
+             sync.(*Pool).pinSlow
+             sync.(*Pool).pin
+             sync.(*Pool).Put
+             encoding/json/jsontext.putBufferedDecoder (inline)
+             encoding/json/jsontext.export.PutBufferedDecoder
+             encoding/json/v2.Unmarshal
+             encoding/json.Unmarshal (inline)
+             github.com/HT4w5/bandage/internal/infra/parse/nginx.parseString
+             github.com/HT4w5/bandage/internal/infra/parse/nginx.parseNonEmptyString
+             github.com/HT4w5/bandage/internal/infra/parse/nginx.(*Parser).Parse
+             github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+             github.com/HT4w5/bandage/internal/app.(*Daemon).Start.gowrap1
+-----------+-------------------------------------------------------
+    3.55us   sync.(*WaitGroup).Wait
+             net/http.(*Server).Shutdown
+             github.com/HT4w5/bandage/internal/app.(*Daemon).Shutdown.func1.1
+-----------+-------------------------------------------------------
+    2.68us   sync.(*Mutex).Lock (inline)
+             sync.(*Pool).pinSlow
+             sync.(*Pool).pin
+             sync.(*Pool).Get
+             encoding/json/jsontext.getBufferedDecoder
+             encoding/json/jsontext.export.GetBufferedDecoder (inline)
+             encoding/json/v2.Unmarshal
+             encoding/json.Unmarshal (inline)
+             github.com/HT4w5/bandage/internal/infra/parse/nginx.parseString
+             github.com/HT4w5/bandage/internal/infra/parse/nginx.(*Parser).Parse
+             github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+             github.com/HT4w5/bandage/internal/app.(*Daemon).Start.gowrap1
+-----------+-------------------------------------------------------
+    1.67us   sync.(*WaitGroup).Wait
+             github.com/HT4w5/bandage/internal/infra/ingest/syslog.(*Source).Shutdown.func1
+             sync.(*Once).doSlow
+             sync.(*Once).Do (inline)
+             github.com/HT4w5/bandage/internal/infra/ingest/syslog.(*Source).Shutdown
+             github.com/HT4w5/bandage/internal/app.(*Daemon).Shutdown.func1.1
+-----------+-------------------------------------------------------
+     673ns   runtime.chanrecv1
+             testing.(*B).doBench
+             testing.(*benchState).processBench
+             testing.(*B).run
+             testing.(*B).Run
+             github.com/HT4w5/bandage/internal/app.BenchmarkPipelineIngest
+             testing.(*B).runN
+             testing.(*B).run1.func1
+-----------+-------------------------------------------------------

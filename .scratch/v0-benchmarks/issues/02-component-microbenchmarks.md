@@ -43,8 +43,8 @@ is in `internal/app/bookkeeping_bench_test.go`. Fixture decisions
 affecting interpretation: fixed wall clock everywhere, zerolog.Nop()
 for the store (eviction log rendering excluded), evaluation event times
 advance one second per op (cycled timestamps freeze the leaky bucket's
-LastUpdate and would let the "never-fires" fixtures creep into
-overflow — pinned by `TestBenchChainsFireAsNamed` and
+LastUpdate and would let the match-never fixtures creep into
+overflow — pinned by `TestBenchChainsMatchTheirNames` and
 `TestEvaluateBenchScenarios`), report-rule fixtures are single-rule
 chains (a report rule is terminal), and the sqlite insert variant hands
 out pre-generated distinct targets with the timer stopped.
@@ -105,12 +105,12 @@ BenchmarkStoreUpdateParallel/evicting-22       163.0  ns/op   172 B/op   3 alloc
 ```
 
 ```
-BenchmarkEvaluate/fires-22          (domain, stub ports)        658.3 ns/op    796 B/op   19 allocs/op   1519040 lines/s
-BenchmarkEvaluate/never-fires-22    (domain, stub ports)        379.2 ns/op    446 B/op   13 allocs/op   2637359 lines/s
-BenchmarkEvaluateMemory/fires-22    (memory store, in-mem sink) 1437   ns/op   1034 B/op   25 allocs/op    696064 lines/s
-BenchmarkEvaluateMemory/never-fires-22                          720.0 ns/op    461 B/op   13 allocs/op   1388885 lines/s
-BenchmarkEvaluateSQLite/fires-22    (memory store, sqlite sink) 115542 ns/op  12342 B/op  239 allocs/op      8655 lines/s
-BenchmarkEvaluateSQLite/never-fires-22                          767.1 ns/op    461 B/op   13 allocs/op   1303631 lines/s
+BenchmarkEvaluate/match-every-22           (domain, stub ports)         661.8 ns/op    796 B/op   19 allocs/op   1511087 lines/s
+BenchmarkEvaluate/match-never-22           (domain, stub ports)         396.3 ns/op    446 B/op   13 allocs/op   2523127 lines/s
+BenchmarkEvaluateMemory/match-every-22     (memory store, in-mem sink)  1437   ns/op   1034 B/op   25 allocs/op    696135 lines/s
+BenchmarkEvaluateMemory/match-never-22                                 717.0 ns/op    461 B/op   13 allocs/op   1394614 lines/s
+BenchmarkEvaluateSQLite/match-every-22     (memory store, sqlite sink) 114536 ns/op  12349 B/op  239 allocs/op      8731 lines/s
+BenchmarkEvaluateSQLite/match-never-22                                 730.3 ns/op    461 B/op   13 allocs/op   1369310 lines/s
 ```
 
 ```
@@ -135,10 +135,10 @@ BenchmarkProgressBump/parallel-22  106.9  ns/op   112 B/op   1 allocs/op    9354
 
 The numbers speak to every hypothesis except H5 (ingest handoff,
 ticket 03's), most sharply to H4 and H2: a single sqlite report upsert
-costs 25µs (`:memory:`) to 75µs (file), so with rules firing on every
-event the sqlite-sink evaluation runs 115µs/event against 0.77µs when
-rules never fire — the write path is two to three orders of magnitude
-above every other per-line stage combined. `progress.bump` costs 49ns
+costs 25µs (`:memory:`) to 75µs (file), so with rules matching on every
+event the sqlite-sink evaluation runs 114.5µs/event against 0.73µs when
+no rule ever matches — the write path is two to three orders of
+magnitude above every other per-line stage combined. `progress.bump` costs 49ns
 and one channel allocation per line serial, and parallel throughput
 (9.4M lines/s) lands *below* the serial rate (20.4M lines/s) as all
 workers serialize on the global mutex and per-line channel churn — the
@@ -155,3 +155,20 @@ cost ~12ns/rule, 1.2µs at 100 rules; leaves 1–6ns with zero
 allocations) but negligible next to parse and store costs at realistic
 rule counts. The read path scales at ~6–8µs and ~26 allocs per row
 (10 rows ≈ 80µs, 10k rows ≈ 64ms).
+
+**Code-review pass note** — the Evaluate sub-benchmarks were renamed
+(`fires`/`never-fires` → `match-every`/`match-never`, GLOSSARY:
+Match/Trigger) and their numbers above were refreshed by the
+code-review pass; every other recorded block is unchanged (those
+benchmarks kept their names, semantics and results). The pass also
+completed the stage coverage this table left open — measured the same
+way (single run, `-benchmem`, ns/op · B/op · allocs/op):
+`BenchmarkIngestForward/{tcp,unixgram}` (syslog Source run loop, no
+evaluation) 1600 · 3205 · 17 and 1847 · 1909 · 14;
+`BenchmarkEnrich` (domain, stub cache) 74.77 · 168 · 3 and
+`BenchmarkEnrichMemory` (real memory store) 180.3 · 200 · 4; the sweep
+cadence `BenchmarkStoreSweepExpired/{live,expiring}` 2453 · 0 · 0 and
+2751 · 0 · 0, `BenchmarkStoreStatistics` 1950 · 0 · 0,
+`BenchmarkReportDeleteExpired/{live,expiring}` 3241 · 136 · 6 and
+63435 · 136 · 6. See `findings.md`'s coverage map for the stage →
+benchmark mapping.

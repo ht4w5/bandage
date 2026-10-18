@@ -2,11 +2,14 @@ package sqlite
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/HT4w5/bandage/internal/bench"
 	bandage "github.com/HT4w5/bandage/internal/domain"
 )
 
@@ -19,7 +22,7 @@ import (
 // benchUpsertReport is the report every op upserts; insert ops vary
 // only its Target.
 func benchUpsertReport() bandage.Report {
-	now := time.Unix(1734345934, 0).UTC()
+	now := bench.Epoch
 	return bandage.Report{
 		Rule:      "sustained-egress",
 		Chain:     "download-abuse",
@@ -89,6 +92,75 @@ func BenchmarkReportUpsert(b *testing.B) {
 				}
 				if err := repo.Upsert(ctx, rec); err != nil {
 					b.Fatalf("Upsert: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// insertReportsSQL renders a fixture multi-row INSERT seeding n report
+// rows at expiresAt. Seeding is fixture setup, not the write path under
+// test (that is BenchmarkReportUpsert), so it bypasses Upsert with one
+// direct statement — cheap enough to re-run with the timer stopped in
+// the expiring case below.
+func insertReportsSQL(n int, expiresAt time.Time) string {
+	var sb strings.Builder
+	sb.WriteString("INSERT INTO reports (rule, target, created_at, updated_at, expires_at, body) VALUES ")
+	for i := range n {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		fmt.Fprintf(&sb, "('bench-rule','bench-target-%d',%d,%d,%d,'{}')",
+			i, bench.Epoch.UnixNano(), bench.Epoch.UnixNano(), expiresAt.UnixNano())
+	}
+	return sb.String()
+}
+
+// BenchmarkReportDeleteExpired measures one expired-report sweeper pass
+// (the daemon's minute cadence, spec hot-path inventory stage 7):
+// DeleteExpired's indexed delete over the report table. The live case
+// is the steady-state tick over unexpired rows (the common tick); the
+// expiring case re-seeds already-expired rows with the timer stopped
+// and measures their deletion. One op is one DeleteExpired call.
+func BenchmarkReportDeleteExpired(b *testing.B) {
+	const rows = 64
+	for _, tc := range []struct {
+		name     string
+		expiring bool
+	}{
+		{"live", false},
+		{"expiring", true},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			repo, err := Open(":memory:")
+			if err != nil {
+				b.Fatalf("Open: %v", err)
+			}
+			b.Cleanup(func() { repo.Close() })
+			expiresAt := bench.Epoch.Add(time.Hour)
+			if tc.expiring {
+				expiresAt = bench.Epoch.Add(-time.Hour)
+			}
+			seed := insertReportsSQL(rows, expiresAt)
+			if !tc.expiring {
+				// The expiring case re-seeds every op (its rows are gone
+				// after each sweep), so pre-seeding would collide on the
+				// (rule, target) primary key.
+				if _, err := repo.db.Exec(seed); err != nil {
+					b.Fatalf("seed: %v", err)
+				}
+			}
+			ctx := context.Background()
+			for b.Loop() {
+				if tc.expiring {
+					b.StopTimer()
+					if _, err := repo.db.Exec(seed); err != nil {
+						b.Fatalf("seed: %v", err)
+					}
+					b.StartTimer()
+				}
+				if _, err := repo.DeleteExpired(ctx, bench.Epoch); err != nil {
+					b.Fatalf("DeleteExpired: %v", err)
 				}
 			}
 		})
