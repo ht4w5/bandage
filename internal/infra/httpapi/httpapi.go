@@ -26,7 +26,9 @@ import (
 
 // ReportStore is the port the API consumes (report.Repository, narrowed
 // beside its consumer): List reads the report document, Delete deletes
-// reports by filter. The API never writes reports.
+// reports by filter. The report service satisfies it — the API calls the
+// report service, never the report repository directly, and never
+// writes reports.
 type ReportStore interface {
 	List(ctx context.Context, q report.Query) ([]bandage.Report, error)
 	Delete(ctx context.Context, q report.Query) (int, error)
