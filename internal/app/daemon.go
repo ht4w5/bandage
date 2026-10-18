@@ -360,8 +360,9 @@ func (d *Daemon) waitProcessed(ctx context.Context, n int64) error {
 	return d.processed.wait(ctx, n)
 }
 
-// stats returns the drop accounting counters.
-func (d *Daemon) stats() counters {
+// counters returns the drop accounting counters — the internal
+// accessor, distinct from the exported Stats snapshot it feeds.
+func (d *Daemon) counters() counters {
 	return counters{
 		Received: d.received.Load(),
 		Parsed:   d.parsed.Load(),
@@ -375,7 +376,7 @@ func (d *Daemon) stats() counters {
 // periodic statistics log line renders from the same snapshot, so its
 // counters always agree with /stats.
 func (d *Daemon) Stats() httpapi.Stats {
-	c := d.stats()
+	c := d.counters()
 	cs := d.cache.Statistics()
 	return httpapi.Stats{
 		StartedAt: d.startedAt,

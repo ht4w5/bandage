@@ -76,7 +76,7 @@ func TestWorkerPoolCountsEveryLineOnce(t *testing.T) {
 	d.send(`{"time":"1734345934","client":"203.0.113.7","method":"GET","url":"/","status":200,"sent":-1}`)
 	d.waitProcessed(t, 12)
 
-	stats := d.stats()
+	stats := d.counters()
 	if stats.Received != 12 || stats.Parsed != 8 || stats.Dropped != 4 {
 		t.Errorf("stats = %+v, want {Received:12 Parsed:8 Dropped:4}", stats)
 	}
