@@ -1,0 +1,25 @@
+# mutex-mn1.out — go tool pprof -top (contended delay by call site)
+# (code-review pass completing the extract set; same commands as findings.md reproduce)
+File: app.test
+Build ID: 7fa6491134d6ba95d8cd7fc2a83261482ebe423e
+Type: delay
+Time: 2026-10-18 12:11:09 CST
+Showing nodes accounting for 10.24ms, 100% of 10.24ms total
+Dropped 72 nodes (cum <= 0.05ms)
+Showing top 15 nodes out of 32
+      flat  flat%   sum%        cum   cum%
+   10.18ms 99.44% 99.44%    10.18ms 99.44%  runtime.unlock (partial-inline)
+    0.06ms  0.56%   100%     0.06ms  0.56%  runtime._LostContendedRuntimeLock
+         0     0%   100%     0.20ms  1.97%  runtime.(*mheap).allocManual
+         0     0%   100%     0.20ms  1.97%  runtime.(*mheap).allocSpan
+         0     0%   100%     0.08ms  0.81%  runtime.(*stackScanState).addObject
+         0     0%   100%     0.09ms  0.91%  runtime.(*stackScanState).putPtr
+         0     0%   100%     2.58ms 25.24%  runtime.findRunnable
+         0     0%   100%     7.26ms 70.91%  runtime.forEachP (inline)
+         0     0%   100%     7.26ms 70.91%  runtime.forEachP.func1
+         0     0%   100%     7.26ms 70.91%  runtime.forEachPInternal
+         0     0%   100%     7.50ms 73.21%  runtime.gcBgMarkWorker
+         0     0%   100%     0.20ms  1.97%  runtime.gcBgMarkWorker.func2
+         0     0%   100%     0.20ms  1.97%  runtime.gcDrain
+         0     0%   100%     0.18ms  1.71%  runtime.gcDrainMarkWorkerDedicated (inline)
+         0     0%   100%     7.29ms 71.24%  runtime.gcMarkDone

@@ -1,0 +1,25 @@
+# mutex-tcpmn8.out — go tool pprof -top (contended delay by call site)
+# (code-review pass completing the extract set; same commands as findings.md reproduce)
+File: app.test
+Build ID: 7fa6491134d6ba95d8cd7fc2a83261482ebe423e
+Type: delay
+Time: 2026-10-18 12:11:36 CST
+Showing nodes accounting for 1208.16ms, 100% of 1208.16ms total
+Dropped 189 nodes (cum <= 6.04ms)
+Showing top 15 nodes out of 116
+      flat  flat%   sum%        cum   cum%
+ 1028.59ms 85.14% 85.14%  1028.59ms 85.14%  runtime.unlock
+  117.55ms  9.73% 94.87%   117.57ms  9.73%  sync.(*Mutex).Unlock (partial-inline)
+   62.01ms  5.13%   100%    62.01ms  5.13%  runtime._LostContendedRuntimeLock
+         0     0%   100%    12.75ms  1.06%  bufio.(*Scanner).Scan
+         0     0%   100%    88.04ms  7.29%  encoding/json.Unmarshal (inline)
+         0     0%   100%    21.88ms  1.81%  encoding/json/jsontext.(*Value).UnmarshalJSON
+         0     0%   100%    88.04ms  7.29%  encoding/json/v2.Unmarshal
+         0     0%   100%    84.03ms  6.96%  encoding/json/v2.makeMapArshaler.func3
+         0     0%   100%    21.88ms  1.81%  encoding/json/v2.makeMethodArshaler.func6
+         0     0%   100%    14.28ms  1.18%  encoding/json/v2.newAddressableValue
+         0     0%   100%    84.56ms  7.00%  encoding/json/v2.unmarshalDecode
+         0     0%   100%   114.87ms  9.51%  github.com/HT4w5/bandage/internal/app.(*Daemon).Start.gowrap1
+         0     0%   100%   251.18ms 20.79%  github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
+         0     0%   100%   119.42ms  9.88%  github.com/HT4w5/bandage/internal/app.(*progress).bump
+         0     0%   100%    15.20ms  1.26%  github.com/HT4w5/bandage/internal/app.BenchmarkPipelineIngest.func1

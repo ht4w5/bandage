@@ -1,0 +1,25 @@
+# mutex-me1.out — go tool pprof -top (contended delay by call site)
+# (code-review pass completing the extract set; same commands as findings.md reproduce)
+File: app.test
+Build ID: 7fa6491134d6ba95d8cd7fc2a83261482ebe423e
+Type: delay
+Time: 2026-10-18 12:11:17 CST
+Showing nodes accounting for 12.09ms, 100% of 12.09ms total
+Dropped 50 nodes (cum <= 0.06ms)
+Showing top 15 nodes out of 61
+      flat  flat%   sum%        cum   cum%
+   10.53ms 87.13% 87.13%    10.53ms 87.13%  runtime.unlock (inline)
+    1.48ms 12.28% 99.41%     1.48ms 12.28%  sync.(*Mutex).Unlock (partial-inline)
+    0.07ms  0.59%   100%     0.07ms  0.59%  runtime._LostContendedRuntimeLock
+         0     0%   100%     1.42ms 11.73%  context.(*cancelCtx).Done
+         0     0%   100%     0.08ms  0.65%  context.(*cancelCtx).cancel
+         0     0%   100%     0.08ms  0.65%  context.WithCancel.func1
+         0     0%   100%     0.96ms  7.95%  database/sql.(*DB).beginDC.gowrap1
+         0     0%   100%     0.07ms   0.6%  database/sql.(*Row).Scan
+         0     0%   100%     0.07ms   0.6%  database/sql.(*Rows).Close
+         0     0%   100%     0.36ms  2.99%  database/sql.(*Rows).awaitDone
+         0     0%   100%     0.08ms   0.7%  database/sql.(*Rows).close
+         0     0%   100%     0.33ms  2.72%  database/sql.(*Rows).initContextClose.gowrap1
+         0     0%   100%     0.12ms  1.01%  database/sql.(*Tx).Commit
+         0     0%   100%     0.97ms  8.06%  database/sql.(*Tx).awaitDone
+         0     0%   100%     0.19ms  1.61%  github.com/HT4w5/bandage/internal/app.(*Daemon).runPipeline
