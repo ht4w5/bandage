@@ -164,8 +164,15 @@ func (s *Service) Trigger(ctx context.Context, rec bandage.Report) error {
 // Rebuild derives the live-report set from the report table at startup
 // (spec story 13): the rows the table still serves — the unexpired ones
 // at now — suppress; deleted or expired rows have left no state behind.
-// It supplants whatever the set held.
+// It supplants whatever the set held, except entries whose write is
+// still in flight: those settle on their own outcome and are never
+// discarded, so a Trigger racing the rebuild keeps its suppression.
+// The whole derivation runs under s.mu — including the repository
+// list — so a Trigger cannot interleave between the listing and the
+// swap.
 func (s *Service) Rebuild(ctx context.Context, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	rows, err := s.repo.List(ctx, Query{Now: now})
 	if err != nil {
 		return err
@@ -174,9 +181,12 @@ func (s *Service) Rebuild(ctx context.Context, now time.Time) error {
 	for _, rec := range rows {
 		live[reportKey{rule: rec.Rule, target: rec.Target}] = &liveEntry{expiresAt: rec.ExpiresAt}
 	}
-	s.mu.Lock()
+	for key, e := range s.live {
+		if e.inflight != nil {
+			live[key] = e
+		}
+	}
 	s.live = live
-	s.mu.Unlock()
 	return nil
 }
 

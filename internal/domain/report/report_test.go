@@ -540,3 +540,39 @@ func TestServiceConcurrentTriggerWaitsForTheWriteOutcome(t *testing.T) {
 		}
 	})
 }
+
+// TestServiceRebuildKeepsInFlightWrites pins the rebuild/Trigger
+// interleaving: a write in flight while Rebuild derives the set must
+// keep its suppression — the derivation runs under the service lock
+// and in-flight entries settle on their own outcome, so a Trigger
+// racing the rebuild is never discarded (a discarded entry lets the
+// next Trigger duplicate the write).
+func TestServiceRebuildKeepsInFlightWrites(t *testing.T) {
+	now := time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)
+	expiry := now.Add(time.Hour)
+	rec := liveRec("sticky", "203.0.113.7/32", now, expiry)
+	wedge := make(chan struct{})
+	repo := &stubRepository{upWedge: wedge, upEntered: make(chan struct{}, 4)}
+	svc := NewService(repo)
+
+	a := triggerAsync(svc, rec)
+	<-repo.upEntered // the write is in flight
+
+	// Rebuild derives the set from the table mid-write: the pending
+	// report is not a row yet (List sees nothing).
+	if err := svc.Rebuild(context.Background(), now); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	close(wedge) // the write lands
+	if err := <-a; err != nil {
+		t.Fatalf("in-flight Trigger: %v", err)
+	}
+
+	// The landed write still suppresses: its entry survived the rebuild.
+	if err := svc.Trigger(context.Background(), liveRec(rec.Rule, rec.Target, now.Add(time.Minute), expiry)); err != nil {
+		t.Fatalf("Trigger after rebuild: %v", err)
+	}
+	if got := repo.upserts(); got != 1 {
+		t.Errorf("write attempts = %d, want 1 (the racing Trigger's suppression must survive the rebuild)", got)
+	}
+}
