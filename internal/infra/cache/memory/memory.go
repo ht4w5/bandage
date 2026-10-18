@@ -153,6 +153,22 @@ func (s *Store) updateLocked(sh *shard, fullKey, ns, key string, ttl time.Durati
 	return e.rec, s.evictLocked(sh)
 }
 
+// Clear empties the tracker record for (ns, key) — the Trigger reset
+// (GLOSSARY Trigger) — so later updates start from zero; clearing an
+// absent record is a no-op. It is atomic with respect to Update (the
+// shard lock) and counts in no statistics: a clear is neither a get nor
+// a set and never an eviction.
+func (s *Store) Clear(_ context.Context, ns, key string) error {
+	fullKey := ns + "\x00" + key
+	sh := s.shardFor(fullKey)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	if el, ok := sh.m[fullKey]; ok {
+		sh.remove(el)
+	}
+	return nil
+}
+
 // SweepExpired removes every expired entry across all shards. Entries
 // without a TTL never expire. TTL removals are not evictions: nothing
 // is logged or counted for them.

@@ -672,9 +672,11 @@ chains:
 	if second.UpdatedAt != "2025-10-17T18:10:00Z" || second.ExpiresAt != "2025-10-17T19:10:00Z" {
 		t.Errorf("updated_at/expires_at = %q/%q", second.UpdatedAt, second.ExpiresAt)
 	}
-	// The re-Trigger refreshes the tracker reading and the sample.
-	if second.Tracker.Value != 300 {
-		t.Errorf("tracker value = %v, want 300 (re-trigger refreshes the reading)", second.Tracker.Value)
+	// The re-Trigger refreshes the tracker reading and the sample. The
+	// reading is a fresh episode: every Trigger empties the bucket
+	// (ticket 02), so the re-trigger accumulates 150, not 300.
+	if second.Tracker.Value != 150 {
+		t.Errorf("tracker value = %v, want 150 (re-trigger refreshes the reading with a fresh episode)", second.Tracker.Value)
 	}
 	if second.Sample.Time != eventTime2At {
 		t.Errorf("sample time = %q, want %q (re-trigger refreshes the sample)", second.Sample.Time, eventTime2At)
@@ -746,9 +748,9 @@ func TestE2EStatsBuildAndCumulativeCounters(t *testing.T) {
 		c.Pipeline.Workers = 3
 	})
 
-	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 12000))
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 4000))
 	d.send("this is not json")
-	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 8000))
+	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 3000))
 	d.waitProcessed(t, 3)
 	clock.Advance(90 * time.Second)
 
@@ -802,7 +804,10 @@ func TestE2EStatsBuildAndCumulativeCounters(t *testing.T) {
 
 	// The tracker cache block: each parsed event updated the shared
 	// store twice (file-size record + tracker bucket) — two first-time
-	// misses, four gets and four sets — and both records are live.
+	// misses, four gets and four sets — and both records are live. The
+	// traffic stays below the rule's volume (6000 < 10000), so no
+	// Trigger resets the bucket and perturbs the accounting: this block
+	// measures update accounting, not Trigger cadence.
 	for _, f := range []struct {
 		field string
 		want  float64
@@ -1016,7 +1021,9 @@ chains:
 		c.Cache.MaxEntries = 2
 	})
 
-	// 203.0.113.7 overflows on its third event: value 3 > 2.
+	// 203.0.113.7 overflows on its third event: value 3 > 2. The
+	// Trigger empties the bucket (ticket 02), so a fourth event re-arms
+	// it at value 1 — the entry the next insert can evict.
 	for i := 0; i < 3; i++ {
 		d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/api", 200, 0))
 	}
@@ -1025,6 +1032,8 @@ chains:
 	if len(doc.Reports) != 1 || doc.Reports[0].Tracker.Value != 3 || doc.Reports[0].UpdatedAt != wallBase {
 		t.Fatalf("first trigger: %+v", doc.Reports)
 	}
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/api", 200, 0))
+	d.waitProcessed(t, 4)
 
 	// One event for another target caps the cache: 203.0.113.7's bucket
 	// is evicted and restarts from zero on its next event, so that event
@@ -1032,7 +1041,7 @@ chains:
 	clock.Advance(10 * time.Minute)
 	d.send(nginxLine(eventTime2, "203.0.113.9", "GET", "/api", 200, 0))
 	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/api", 200, 0))
-	d.waitProcessed(t, 5)
+	d.waitProcessed(t, 6)
 	// The eviction of the old bucket is logged with its tracker
 	// namespace and Target (ticket 07): nothing resets silently.
 	if evictions := d.logs.withMessage("tracker cache eviction"); !slices.ContainsFunc(evictions, func(r capturedLog) bool {
@@ -1050,7 +1059,7 @@ chains:
 	clock.Advance(10 * time.Minute)
 	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/api", 200, 0))
 	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/api", 200, 0))
-	d.waitProcessed(t, 7)
+	d.waitProcessed(t, 8)
 	doc = d.getReports(t, nil)
 	if len(doc.Reports) != 1 {
 		t.Fatalf("reports = %+v, want 1", doc.Reports)
@@ -1183,15 +1192,20 @@ chains:
   - name: abuse
     rules:
       - id: sticky
-        tracker: {track: bandwidth, leak: 0, volume: 100}
+        tracker: {track: bandwidth, leak: 0, volume: 200}
         actions: [{report: {reason: sticky, ttl: 1h}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
+	// 150 + 150 = 300 > 200 overflows on the second event; the Trigger
+	// empties the bucket (ticket 02). The third event re-accumulates a
+	// partial episode (150) while the report is alive.
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
-	d.waitProcessed(t, 1)
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
+	d.waitProcessed(t, 3)
 	doc := d.getReports(t, nil)
-	if len(doc.Reports) != 1 || doc.Reports[0].Tracker.Value != 150 {
+	if len(doc.Reports) != 1 || doc.Reports[0].Tracker.Value != 300 {
 		t.Fatalf("after first trigger: %+v", doc.Reports)
 	}
 
@@ -1202,10 +1216,13 @@ chains:
 		t.Fatalf("after delete: %+v, want none", doc.Reports)
 	}
 
-	// The condition persists: the next trigger brings the report back.
+	// The condition persists and deletion touched no tracker state: the
+	// partial episode survives the delete (had it been wiped, this
+	// event would sit at 150 and stay quiet), so the report comes back
+	// carrying the accumulated reading.
 	clock.Advance(10 * time.Minute)
 	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 150))
-	d.waitProcessed(t, 2)
+	d.waitProcessed(t, 4)
 	doc = d.getReports(t, nil)
 	if len(doc.Reports) != 1 {
 		t.Fatalf("after re-trigger: %+v, want the report back", doc.Reports)
@@ -1215,7 +1232,7 @@ chains:
 		t.Errorf("created_at = %q, want a fresh %q (deleted report is gone)", r.CreatedAt, "2025-10-17T18:10:00Z")
 	}
 	if r.Tracker.Value != 300 {
-		t.Errorf("tracker value = %v, want 300 (deletion touched no tracker state)", r.Tracker.Value)
+		t.Errorf("tracker value = %v, want 300 (deletion touched no tracker state: 150 kept + 150 new)", r.Tracker.Value)
 	}
 	if r.Sample.Time != eventTime2At {
 		t.Errorf("sample time = %q, want %q", r.Sample.Time, eventTime2At)
@@ -1733,10 +1750,11 @@ chains:
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
 	d.waitProcessed(t, 1)
 
-	// Traversal facts from report evidence: gamma's rule reports twice
-	// (150 + 150 bytes), so gamma ran both at a2's dispatch and at its
-	// own file-order traversal; a3 is absent, so goto ended alpha; b1
-	// reports, so later chains were still evaluated.
+	// Traversal facts from report evidence: a3 is absent, so goto ended
+	// alpha; b1 reports, so later chains were still evaluated. gamma's
+	// double run (a2's dispatch plus its own file-order traversal)
+	// shows in the doubled MARK:G1 below — its rule Triggers on each
+	// traversal, and every Trigger empties the bucket (ticket 02).
 	doc := d.getReports(t, nil)
 	byRule := make(map[string]reportEntry, len(doc.Reports))
 	for _, r := range doc.Reports {
@@ -1755,8 +1773,8 @@ chains:
 	if !ok {
 		t.Fatalf("reports = %+v, want g1 (goto runs the target chain)", doc.Reports)
 	}
-	if g1.Tracker.Value != 300 {
-		t.Errorf("g1 tracker value = %v, want 300 (dispatch plus file-order traversal)", g1.Tracker.Value)
+	if g1.Tracker.Value != 150 {
+		t.Errorf("g1 tracker value = %v, want 150 (each Trigger empties the bucket)", g1.Tracker.Value)
 	}
 
 	// The remaining fact — the emission order within the one event — is
@@ -1798,7 +1816,7 @@ chains:
   - name: topic
     rules:
       - id: topic-match
-        tracker: {track: bandwidth, leak: 0, volume: 100}
+        tracker: {track: bandwidth, leak: 0, volume: 250}
         actions: [{report: {reason: topic-match, ttl: 1h}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
@@ -1825,7 +1843,8 @@ chains:
 	}
 	// The topic chain ran twice for the one event — once at the goto
 	// dispatch and once at its own file-order traversal — so its
-	// tracker accumulated 2×150 bytes.
+	// tracker accumulated 2×150 bytes and overflows volume 250 only on
+	// the second traversal (a single run would stay quiet).
 	if topic.Tracker.Value != 300 {
 		t.Errorf("topic-match tracker value = %v, want 300 (dispatch plus file-order traversal)", topic.Tracker.Value)
 	}
@@ -1900,8 +1919,8 @@ chains:
 				t.Errorf("tracker value = %v, want 3 (three sources accumulated)", r.Tracker.Value)
 			}
 
-			// Another source in the same prefix upserts the same Report
-			// Target: still exactly one report.
+			// Another source in the same prefix lands in the bucket the
+			// Trigger emptied and stays quiet: still exactly one report.
 			d.send(nginxLine(eventTime2, tt.fourth, "GET", "/api", 200, 0))
 			d.waitProcessed(t, int64(len(tt.clients))+1)
 			doc = d.getReports(t, nil)

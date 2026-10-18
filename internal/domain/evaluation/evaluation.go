@@ -15,10 +15,14 @@ import (
 // keyed by (ns, key) with sliding TTL and atomic per-key update
 // callbacks. fn runs under the store's per-key lock, so it must not
 // perform I/O or use ctx; ttl is the sliding expiry, zero means no
-// expiry (the reserved filesize namespace). The in-memory store
-// satisfies this structurally.
+// expiry (the reserved filesize namespace). Clear empties the record
+// for (ns, key) — the Trigger reset (GLOSSARY Trigger, ADR 0008): the
+// bucket re-arms and abuse must accumulate again from zero — and is a
+// no-op for an absent record. The in-memory store satisfies this
+// structurally.
 type TrackerCache interface {
 	Update(ctx context.Context, ns, key string, ttl time.Duration, fn func(*bandage.Record)) (bandage.Record, error)
+	Clear(ctx context.Context, ns, key string) error
 }
 
 // ReportSink is the report write path beside its consumer: a Trigger
@@ -195,12 +199,10 @@ func (s *Service) updateTracker(ctx context.Context, rule *bandage.Rule, event *
 	increment := 1.0
 	volume := cfg.Volume
 	ttl := cfg.TTL
-	// The key is the Target: the source address aggregated to the
-	// tracker's prefix, so sources in one prefix share tracker state
-	// (the domain's key convention; the one derivation is
-	// TrackerConfig.TargetString).
-	target := cfg.TargetString(event.RemoteAddr)
-	key := bandage.TrackerKey(target)
+	// The key is the match's key: the Target (the source address
+	// aggregated to the tracker's prefix) or, for replay trackers, the
+	// (Target, path) pair — the one derivation (DECISIONS §9).
+	key := matchKey(cfg, event)
 	switch cfg.Kind {
 	case bandage.TrackBandwidth:
 		increment = float64(event.SentBytes)
@@ -220,10 +222,6 @@ func (s *Service) updateTracker(ctx context.Context, rule *bandage.Rule, event *
 		// re-derived from it per event.
 		volume = cfg.VolumeFor(size)
 		ttl = bandage.TTL(cfg.Leak, volume)
-		// Replay state is keyed per (Target, path): the domain's key
-		// convention joins the target prefix string and the path with
-		// KeySep (DECISIONS §9).
-		key = bandage.ReplayTrackerKey(target, event.Path)
 	}
 	rec, err := s.cache.Update(ctx, rule.ID, key, ttl, func(r *bandage.Record) {
 		r.Accumulate(increment, cfg.Leak, event.Time.Unix())
@@ -240,8 +238,26 @@ func (s *Service) updateTracker(ctx context.Context, rule *bandage.Rule, event *
 	return reading, rec.Overflow(volume), nil
 }
 
-// trigger writes the report for a matching rule: the only write path to
-// the report table.
+// matchKey derives the tracker cache key for a rule match: the Target
+// (the source address aggregated to the tracker's prefix, so sources in
+// one prefix share tracker state), or for per-(Target, path) trackers
+// (replay) the Target and the path joined with KeySep (DECISIONS §9).
+// It is the match's key — the one a Trigger empties.
+func matchKey(cfg *bandage.TrackerConfig, event *bandage.Event) string {
+	target := cfg.TargetString(event.RemoteAddr)
+	if cfg.Kind == bandage.TrackReplay {
+		return bandage.ReplayTrackerKey(target, event.Path)
+	}
+	return bandage.TrackerKey(target)
+}
+
+// trigger runs the rule's report action: it writes the report for a
+// matching rule — the only write path to the report table — and, the
+// write completing without error, empties the matched rule's tracker
+// record for the match's key (GLOSSARY Trigger, ADR 0008): abuse must
+// accumulate a full volume again before the next Trigger. A failed
+// write is not a Trigger outcome: the record stays intact and the next
+// matching event retries the report.
 func (s *Service) trigger(ctx context.Context, m matchContext, action *bandage.ReportAction) error {
 	now := s.now()
 	rec := bandage.Report{
@@ -262,5 +278,15 @@ func (s *Service) trigger(ctx context.Context, m matchContext, action *bandage.R
 			Size:   m.event.SizeBytes,
 		},
 	}
-	return s.reports.Trigger(ctx, rec)
+	if err := s.reports.Trigger(ctx, rec); err != nil {
+		return err
+	}
+	if m.rule.Tracker == nil {
+		// Tracker-less rules have nothing to empty.
+		return nil
+	}
+	if err := s.cache.Clear(ctx, m.rule.ID, matchKey(m.rule.Tracker, m.event)); err != nil {
+		return fmt.Errorf("evaluate rule %q: %w", m.rule.ID, err)
+	}
+	return nil
 }
