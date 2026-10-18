@@ -630,8 +630,10 @@ func TestE2EMalformedLinesDroppedAndCounted(t *testing.T) {
 	}
 }
 
-// A Trigger upserts exactly one report per (rule, target): created_at is
-// fixed at creation, updated_at/expires_at refresh on every trigger.
+// One report per (rule, target), with row identity: a live report's
+// write is suppressed — its Sample, update time and expiry freeze at
+// the first write (ADR 0008) — while a re-armed Trigger upserts the
+// stored row with created_at fixed at the row's first insert.
 func TestE2EReportUpsertIdentity(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -653,8 +655,8 @@ chains:
 	}
 
 	clock.Advance(10 * time.Minute)
-	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 150))
-	d.send(nginxLine(eventTime2, "203.0.113.8", "GET", "/big", 200, 150))
+	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 150)) // re-Triggers: write suppressed
+	d.send(nginxLine(eventTime2, "203.0.113.8", "GET", "/big", 200, 150)) // a new (rule, target) writes
 	d.waitProcessed(t, 3)
 
 	doc = d.getReports(t, nil)
@@ -666,23 +668,50 @@ chains:
 	if first.Target != "203.0.113.8/32" || second.Target != "203.0.113.7/32" {
 		t.Fatalf("sort order = %q then %q", first.Target, second.Target)
 	}
-	if second.CreatedAt != wallBase {
-		t.Errorf("created_at = %q, want fixed %q", second.CreatedAt, wallBase)
+	// The re-Trigger wrote nothing: the live report freezes at the first
+	// write — Sample and update time unchanged (story 11).
+	if second.CreatedAt != wallBase || second.UpdatedAt != wallBase || second.ExpiresAt != "2025-10-17T19:00:00Z" {
+		t.Errorf("created_at/updated_at/expires_at = %q/%q/%q, want all frozen at the first write",
+			second.CreatedAt, second.UpdatedAt, second.ExpiresAt)
 	}
-	if second.UpdatedAt != "2025-10-17T18:10:00Z" || second.ExpiresAt != "2025-10-17T19:10:00Z" {
-		t.Errorf("updated_at/expires_at = %q/%q", second.UpdatedAt, second.ExpiresAt)
-	}
-	// The re-Trigger refreshes the tracker reading and the sample. The
-	// reading is a fresh episode: every Trigger empties the bucket
-	// (ticket 02), so the re-trigger accumulates 150, not 300.
 	if second.Tracker.Value != 150 {
-		t.Errorf("tracker value = %v, want 150 (re-trigger refreshes the reading with a fresh episode)", second.Tracker.Value)
+		t.Errorf("tracker value = %v, want 150 (the first Trigger's reading, frozen)", second.Tracker.Value)
 	}
-	if second.Sample.Time != eventTime2At {
-		t.Errorf("sample time = %q, want %q (re-trigger refreshes the sample)", second.Sample.Time, eventTime2At)
+	if second.Sample.Time != eventTime1At {
+		t.Errorf("sample time = %q, want %q (frozen)", second.Sample.Time, eventTime1At)
 	}
 	if first.UpdatedAt != "2025-10-17T18:10:00Z" {
 		t.Errorf("new report updated_at = %q", first.UpdatedAt)
+	}
+
+	// Past expiry (19:00) the report is no longer alive: the next
+	// Trigger upserts the still-stored row — created_at stays fixed at
+	// the row's first insert while updated_at and expires_at recompute,
+	// and the reading is a fresh episode (every Trigger empties the
+	// bucket, so the suppressed re-Trigger left none of its 150 behind).
+	clock.Advance(90 * time.Minute) // 19:40
+	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 150))
+	d.waitProcessed(t, 4)
+
+	doc = d.getReports(t, nil)
+	if len(doc.Reports) != 1 { // 203.0.113.8's report expired at 19:10 and is never returned
+		t.Fatalf("reports = %+v, want the upserted 203.0.113.7 row", doc.Reports)
+	}
+	r := doc.Reports[0]
+	if r.Target != "203.0.113.7/32" {
+		t.Fatalf("target = %q, want 203.0.113.7/32", r.Target)
+	}
+	if r.CreatedAt != wallBase {
+		t.Errorf("created_at = %q, want fixed %q (upsert identity over the stored row)", r.CreatedAt, wallBase)
+	}
+	if r.UpdatedAt != "2025-10-17T19:40:00Z" || r.ExpiresAt != "2025-10-17T20:40:00Z" {
+		t.Errorf("updated_at/expires_at = %q/%q, want the 19:40 write's", r.UpdatedAt, r.ExpiresAt)
+	}
+	if r.Tracker.Value != 150 {
+		t.Errorf("tracker value = %v, want 150 (a fresh episode)", r.Tracker.Value)
+	}
+	if r.Sample.Time != eventTime2At {
+		t.Errorf("sample time = %q, want %q", r.Sample.Time, eventTime2At)
 	}
 }
 
@@ -1005,7 +1034,7 @@ chains:
     rules:
       - id: bursty-api
         tracker: {track: rate, leak: 0, volume: 2}
-        actions: [{report: {reason: api-rate-overflow, ttl: 1h}}]
+        actions: [{report: {reason: api-rate-overflow, ttl: 1h}}, {log: "debug,MARK:BURSTY"}]
 `
 	// max_entries 2: file-size enrichment shares the store (namespace
 	// "filesize", ticket 05), so one slot holds its per-path record and
@@ -1049,13 +1078,24 @@ chains:
 	}) {
 		t.Errorf("eviction log for bursty-api/203.0.113.7/32 missing in %v", evictions)
 	}
+	// The evicted bucket's fresh event must not Match (no stale Match):
+	// the log action runs per match, so the report alone cannot show it
+	// while a live report suppresses the write.
+	if got := marks(d); len(got) != 1 {
+		t.Errorf("log-action marks = %v, want 1 (only the first episode matched)", got)
+	}
 	doc = d.getReports(t, nil)
 	if len(doc.Reports) != 1 || doc.Reports[0].UpdatedAt != wallBase || doc.Reports[0].Tracker.Value != 3 {
 		t.Fatalf("after eviction + one fresh event: %+v, want untouched report (no stale Match)", doc.Reports)
 	}
 
 	// The rule matches again after the tracker re-accumulates past
-	// volume from zero: value 3 > 2 refreshes the same (rule, target) row.
+	// volume from zero — and the DELETE re-arms the write (the live
+	// report would suppress it): the fresh report carries the new
+	// episode's reading under a fresh identity (the old row is gone).
+	if _, n := d.del(t, url.Values{"rule": {"bursty-api"}}); n != 1 {
+		t.Fatalf("delete count = %d, want 1", n)
+	}
 	clock.Advance(10 * time.Minute)
 	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/api", 200, 0))
 	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/api", 200, 0))
@@ -1068,11 +1108,12 @@ chains:
 	if r.Tracker.Value != 3 {
 		t.Errorf("tracker value = %v, want 3 (fresh accumulation after eviction)", r.Tracker.Value)
 	}
-	if r.CreatedAt != wallBase {
-		t.Errorf("created_at = %q, want %q (identity unchanged)", r.CreatedAt, wallBase)
+	if r.CreatedAt != "2025-10-17T18:20:00Z" || r.UpdatedAt != "2025-10-17T18:20:00Z" {
+		t.Errorf("created_at/updated_at = %q/%q, want the fresh 18:20 write (the deleted row is gone)",
+			r.CreatedAt, r.UpdatedAt)
 	}
-	if r.UpdatedAt != "2025-10-17T18:20:00Z" {
-		t.Errorf("updated_at = %q, want %q (the report triggered again)", r.UpdatedAt, "2025-10-17T18:20:00Z")
+	if got := marks(d); len(got) != 2 {
+		t.Errorf("log-action marks = %v, want 2 (one match per re-accumulated episode)", got)
 	}
 }
 
@@ -1294,11 +1335,13 @@ chains:
 	}
 }
 
-// expires_at is recomputed unconditionally on every trigger: a
-// re-trigger whose ttl is shorter (config changed across restart)
-// pulls expiry in, even over an earlier, later-expiring value, while
-// created_at stays fixed at the report's first trigger.
-func TestE2EExpiresAtRefreshedUnconditionally(t *testing.T) {
+// expires_at is recomputed from each landed write's ttl over the stored
+// row while created_at stays fixed at the row's first insert. A live
+// report is never refreshed — its expiry freezes with its sample and
+// update time (ADR 0008) — so the recomputation is observable once
+// expiry re-arms writing: a restart with a longer ttl pulls expiry
+// later over the stale, earlier-expiring value.
+func TestE2EExpiresAtRecomputedOnWrite(t *testing.T) {
 	expiryRules := func(ttl string) string {
 		return fmt.Sprintf(`
 version: 0
@@ -1313,15 +1356,15 @@ chains:
 	clock := newTestClock(mustTime(t, wallBase))
 	dbPath := filepath.Join(t.TempDir(), "reports.db")
 
-	d1 := startTestDaemon(t, clock, "unixgram", dbPath, expiryRules("24h"))
+	d1 := startTestDaemon(t, clock, "unixgram", dbPath, expiryRules("1m"))
 	d1.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
 	d1.waitProcessed(t, 1)
 	doc := d1.getReports(t, nil)
 	if len(doc.Reports) != 1 {
 		t.Fatalf("after first trigger: %+v", doc.Reports)
 	}
-	if doc.Reports[0].CreatedAt != wallBase || doc.Reports[0].ExpiresAt != "2025-10-18T18:00:00Z" {
-		t.Fatalf("created_at/expires_at = %q/%q, want %q/2025-10-18T18:00:00Z",
+	if doc.Reports[0].CreatedAt != wallBase || doc.Reports[0].ExpiresAt != "2025-10-17T18:01:00Z" {
+		t.Fatalf("created_at/expires_at = %q/%q, want %q/2025-10-17T18:01:00Z",
 			doc.Reports[0].CreatedAt, doc.Reports[0].ExpiresAt, wallBase)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1330,10 +1373,12 @@ chains:
 	}
 	cancel()
 
-	// Restart with a shorter ttl for the same rule: the re-trigger must
-	// overwrite the later-expiring value, not extend it.
+	// Restart with a longer ttl for the same rule after the one-minute
+	// report expired (its row still stored, unswept): the re-trigger
+	// writes over the row — expiry recomputes over the stale value while
+	// created_at stays fixed at the row's first insert.
 	clock.Advance(30 * time.Minute)
-	d2 := startTestDaemon(t, clock, "unixgram", dbPath, expiryRules("1m"))
+	d2 := startTestDaemon(t, clock, "unixgram", dbPath, expiryRules("24h"))
 	d2.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 150))
 	d2.waitProcessed(t, 1)
 	doc = d2.getReports(t, nil)
@@ -1344,9 +1389,9 @@ chains:
 	if r.CreatedAt != wallBase {
 		t.Errorf("created_at = %q, want fixed %q", r.CreatedAt, wallBase)
 	}
-	if r.UpdatedAt != "2025-10-17T18:30:00Z" || r.ExpiresAt != "2025-10-17T18:31:00Z" {
-		t.Errorf("updated_at/expires_at = %q/%q, want 2025-10-17T18:30:00Z/2025-10-17T18:31:00Z "+
-			"(unconditional refresh over the later-expiring 2025-10-18T18:00:00Z)", r.UpdatedAt, r.ExpiresAt)
+	if r.UpdatedAt != "2025-10-17T18:30:00Z" || r.ExpiresAt != "2025-10-18T18:30:00Z" {
+		t.Errorf("updated_at/expires_at = %q/%q, want 2025-10-17T18:30:00Z/2025-10-18T18:30:00Z "+
+			"(recomputed over the stale 2025-10-17T18:01:00Z)", r.UpdatedAt, r.ExpiresAt)
 	}
 }
 
@@ -1371,7 +1416,7 @@ chains:
       - id: gated-egress
         filter: 'path prefix "/releases" and method GET'
         tracker: {track: bandwidth, leak: 1, volume: 20}
-        actions: [{report: {reason: gated-overflow, ttl: 24h}}]
+        actions: [{report: {reason: gated-overflow, ttl: 24h}}, {log: "debug,MARK:GATE"}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
@@ -1414,14 +1459,18 @@ chains:
 	}
 
 	// Once the tracker overflows, non-matching events still never match:
-	// this one would re-trigger the report and bump updated_at if the
-	// filter did not gate.
+	// this one would run the rule's actions (and re-Trigger the report)
+	// if the filter did not gate — while a live report suppresses the
+	// write, the log action is the observable.
 	clock.Advance(time.Hour)
 	d.send(nginxLine("1734345936.123", "203.0.113.7", "POST", "/releases/24.04.iso", 200, 500))
 	d.waitProcessed(t, 7)
 	doc = d.getReports(t, nil)
 	if len(doc.Reports) != 1 {
 		t.Fatalf("reports = %+v, want exactly one", doc.Reports)
+	}
+	if got := marks(d); len(got) != 1 {
+		t.Errorf("log-action marks = %v, want 1 (non-matching events must never match)", got)
 	}
 	if doc.Reports[0].UpdatedAt != wallBase {
 		t.Errorf("updated_at = %q, want %q (non-matching events must never match)", doc.Reports[0].UpdatedAt, wallBase)

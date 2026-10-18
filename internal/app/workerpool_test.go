@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -88,8 +89,9 @@ func TestWorkerPoolCountsEveryLineOnce(t *testing.T) {
 
 // Concurrent Events for one Target never corrupt tracker state: the
 // per-key update is atomic (no update lost or double-applied),
-// concurrent Triggers converge on the same (rule, Target) report, and
-// each Trigger empties the bucket (spec story 18, ADR 0007; ticket 02).
+// concurrent Triggers converge on at most one (rule, Target) report
+// write while it is alive (spec story 14, ADR 0007/0008), and each
+// Trigger empties the bucket (ticket 02).
 func TestWorkerPoolConcurrentEventsOneTarget(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	d := startTestDaemonCfg(t, clock, "unixgram", ":memory:", poolRules, func(c *Config) {
@@ -97,7 +99,8 @@ func TestWorkerPoolConcurrentEventsOneTarget(t *testing.T) {
 	})
 
 	// Every event overflows on its own (2000 > 1000), so concurrent
-	// triggers race to upsert the same (rule, Target) report and each
+	// triggers race for the same (rule, Target) report — at most one
+	// write lands while the report is alive (ticket 03) — and each
 	// empties the bucket. Timestamps alternate out of order on purpose.
 	const events = 24
 	times := []string{eventTime1, "1734346934.123"}
@@ -108,13 +111,17 @@ func TestWorkerPoolConcurrentEventsOneTarget(t *testing.T) {
 
 	doc := d.getReports(t, nil)
 	if len(doc.Reports) != 1 {
-		t.Fatalf("reports = %+v, want exactly one (a duplicate concurrent trigger refreshes the same row)", doc.Reports)
+		t.Fatalf("reports = %+v, want exactly one (one live report per (rule, Target))", doc.Reports)
 	}
 
-	// Every concurrent update lands exactly once: the next events
+	// Delete re-arms the write so the probe's reading is observable —
+	// and every concurrent update landed exactly once: the next events
 	// accumulate on the emptied bucket — 5×100 + 600 = 1100 > 1000
 	// overflows on the last and reads back the exact total (leak 0, so
 	// the total is order-independent).
+	if _, n := d.del(t, url.Values{"rule": {"egress"}}); n != 1 {
+		t.Fatalf("delete count = %d, want 1", n)
+	}
 	for range 5 {
 		d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/small", 200, 100))
 	}

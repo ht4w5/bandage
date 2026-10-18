@@ -166,7 +166,7 @@ chains:
 `,
 		},
 		{
-			name: "report without tracker rejected",
+			name: "report without tracker accepted (tracker-less tripwire)",
 			yaml: `
 version: 0
 chains:
@@ -175,7 +175,6 @@ chains:
       - id: r
         actions: [{report: {reason: x, ttl: 1h}}]
 `,
-			wantErr: "report requires a tracker",
 		},
 		{
 			name: "report with tracker accepted",
