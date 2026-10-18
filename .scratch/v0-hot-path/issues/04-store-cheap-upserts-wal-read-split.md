@@ -94,3 +94,8 @@ read path itself and is unchanged in shape, as expected.
 - `synchronous` is per connection; only `write` commits, and
   `journal_mode=WAL` is a property of the database file, so the read
   pool needs no pragmas (`sqlite.go` `Open`).
+
+Implemented on integration branch `feat/v0-hot-path` (merge commit
+`48dc07f`; cross-ticket code-review fixes through `78386ca`). Context:
+spec `../spec.md`, decisions of record `docs/adr/0009` and
+`docs/adr/0007`.

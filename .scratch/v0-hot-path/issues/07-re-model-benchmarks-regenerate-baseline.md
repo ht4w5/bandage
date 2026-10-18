@@ -128,3 +128,9 @@ now sits flat at the ≈230k lines/s framing ceiling at every worker
 count (the findings' tcp-disposition stays accurate — docs-only);
 micro benchmarks should always be compared same-baseline, never across
 rounds (see the addendum's drift note).
+
+Implemented on integration branch `feat/v0-hot-path` (merge commit
+`e3c396d`; cross-ticket code-review fixes through `78386ca`). Context:
+spec `../spec.md`, results of record `.scratch/v0-benchmarks/findings.md`
+(addendum + baseline provenance), baseline
+`.scratch/v0-benchmarks/baseline/`.

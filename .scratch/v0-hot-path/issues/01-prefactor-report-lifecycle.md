@@ -69,3 +69,7 @@ Context: spec `.scratch/v0-hot-path/spec.md` (Implementation Decisions:
 set"); exploration notes `/tmp/bandage-v0-hot-path-notes/report-lifecycle.md`
 §"What ticket 01 must change"; the seam is exactly where ticket 03's
 live-report set attaches (`Trigger`, `Delete`, `DeleteExpired`).
+
+Implemented on integration branch `feat/v0-hot-path` (merge commit
+`9c52a97`; cross-ticket code-review fixes through `78386ca`). Context:
+spec `../spec.md`, successor `03-suppress-live-report-writes.md`.

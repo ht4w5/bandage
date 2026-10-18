@@ -82,3 +82,8 @@ Follow-up (out of scope here): PLAN.md §8 still lists "`report` on a
 tracker-less rule" as a load-time rejection, which ticket 03 removed
 (loader accepts it now, `rules_test.go:169`) — the plan predates the
 suppression decision and could use a correction note.
+
+Implemented on integration branch `feat/v0-hot-path` (merge commit
+`aa300c8`; cross-ticket code-review fixes through `78386ca`, including
+the PLAN.md alignment). Context: spec `../spec.md`, `docs/adr/0008` and
+`docs/adr/0009`.

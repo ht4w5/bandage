@@ -74,3 +74,8 @@ reset runs per GLOSSARY/ADR 0008: "reset on every Trigger").
 Context pointers: GLOSSARY **Trigger**; ADR 0008 (semantics), ADR 0007
 (pool ordering); spec Implementation Decisions + stories 1, 4, 5, 16;
 notes /tmp/bandage-v0-hot-path-notes/codebase-map.md §1.
+
+Implemented on integration branch `feat/v0-hot-path` (merge commit
+`5e1fff7`; cross-ticket code-review fixes through `78386ca`). Context:
+spec `../spec.md`, sibling `03-suppress-live-report-writes.md`, semantics
+of record `GLOSSARY.md` **Trigger** and `docs/adr/0008`.

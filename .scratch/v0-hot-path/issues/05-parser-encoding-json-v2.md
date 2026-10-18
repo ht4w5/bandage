@@ -92,3 +92,8 @@ names last-wins (incl. agent value/null orderings); bare `null` line =
 missing-field `FieldError` on "time"; invalid UTF-8 and lone-surrogate
 agent values parse and keep U+FFFD. Full suite green under the race
 detector (`make test`).
+
+Implemented on integration branch `feat/v0-hot-path` (merge commit
+`3948600`; cross-ticket code-review fixes through `78386ca`, including
+byte-identical malformed-line error text). Context: spec `../spec.md`,
+oracle the `internal/infra/parse/nginx` fixture tests.

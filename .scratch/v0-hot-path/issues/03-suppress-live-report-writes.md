@@ -93,3 +93,9 @@ reset on every Trigger), ADR 0007 (relaxed-ordering pool); spec
 Implementation Decisions "Suppression lives in the report write path" +
 stories 2–6, 9–15, 17; notes /tmp/bandage-v0-hot-path-notes/
 (report-lifecycle.md, test-harness.md).
+
+Implemented on integration branch `feat/v0-hot-path` (merge commit
+`61d1423`; cross-ticket code-review fixes through `78386ca` — contention
+handoff so stories 4/5/14 all hold). Context: spec `../spec.md`,
+foundations `01-prefactor-report-lifecycle.md` /
+`02-trigger-empties-tracker.md`.
