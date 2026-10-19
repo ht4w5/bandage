@@ -32,9 +32,10 @@ import (
 // fixed before the loop starts.
 type docServer struct {
 	*httptest.Server
-	mu  sync.Mutex
-	res []docResponse
-	i   int
+	mu   sync.Mutex
+	res  []docResponse
+	i    int
+	hits int
 }
 
 type docResponse struct {
@@ -56,6 +57,7 @@ func newDocServerTLS(t *testing.T, tlsCfg *tls.Config) *docServer {
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		s.hits++
 		r := docResponse{status: http.StatusInternalServerError}
 		if len(s.res) > 0 {
 			j := min(s.i, len(s.res)-1)
@@ -82,6 +84,13 @@ func (s *docServer) serve(status int, body string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.res = append(s.res, docResponse{status, body})
+}
+
+// Hits returns how many requests the endpoint has answered.
+func (s *docServer) Hits() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hits
 }
 
 // logCapture is the concurrency-safe sink the seam's logs land in.
@@ -233,9 +242,27 @@ func dropRule(targets ...string) BanRule {
 	return banRule(StanceDrop, nil, targets...)
 }
 
-// newTestUpdater wires the seam: a real fetcher against the fake report
-// endpoint, the recording stub driver and a capturing logger.
+// mustPrefixes parses prefix literals for test policies.
+func mustPrefixes(t *testing.T, prefixes ...string) []netip.Prefix {
+	t.Helper()
+	out := make([]netip.Prefix, 0, len(prefixes))
+	for _, s := range prefixes {
+		out = append(out, netip.MustParsePrefix(s))
+	}
+	return out
+}
+
+// newTestUpdater wires the seam under the default compilation policy:
+// a real fetcher against the fake report endpoint, the recording stub
+// driver and a capturing logger.
 func newTestUpdater(t *testing.T, srv *docServer) (*Updater, *Stub, *logCapture) {
+	t.Helper()
+	return newTestUpdaterCfg(t, srv, defaultPolicy())
+}
+
+// newTestUpdaterCfg wires the seam under a specific compilation
+// policy, for the cases that configure exclusions or the prefilter.
+func newTestUpdaterCfg(t *testing.T, srv *docServer, p Policy) (*Updater, *Stub, *logCapture) {
 	t.Helper()
 	fetcher, err := NewFetcher(srv.URL)
 	if err != nil {
@@ -243,7 +270,14 @@ func newTestUpdater(t *testing.T, srv *docServer) (*Updater, *Stub, *logCapture)
 	}
 	stub := &Stub{}
 	logs := &logCapture{}
-	return New(fetcher, stub, DefaultInterval, zerolog.New(logs)), stub, logs
+	return New(fetcher, stub, p, DefaultInterval, zerolog.New(logs)), stub, logs
+}
+
+// The default compilation policy: the safety exclusions with the
+// RFC1918 and ULA tier on (the shipped --exclude-private default) and
+// an empty service prefilter (all traffic is service traffic).
+func defaultPolicy() Policy {
+	return NewPolicy(nil, true, Prefilter{})
 }
 
 // assertInstalls checks which ban rules the stub driver was asked to
@@ -272,7 +306,10 @@ func equalRules(got, want []BanRule) bool {
 		return false
 	}
 	for i := range got {
-		if !slices.Equal(got[i].Targets, want[i].Targets) || got[i].Stance != want[i].Stance ||
+		if !slices.Equal(got[i].Targets, want[i].Targets) ||
+			!slices.Equal(got[i].Prefilter.DstPorts, want[i].Prefilter.DstPorts) ||
+			!slices.Equal(got[i].Prefilter.DstAddrs, want[i].Prefilter.DstAddrs) ||
+			got[i].Stance != want[i].Stance ||
 			!equalRate(got[i].Rate, want[i].Rate) {
 			return false
 		}
@@ -853,6 +890,68 @@ func TestUpdateCycleMergePolicyIsOrderIndependent(t *testing.T) {
 	}
 }
 
+// TestUpdateCycleMergePolicyWithExclusions: the merge policy and the
+// exclusion subtraction compose — exclusions subtract from every ban
+// set, overriding every report, and a split Target keeps its report's
+// specificity, so an exclusion can never demote a narrower report's
+// stance to the broader report's.
+func TestUpdateCycleMergePolicyWithExclusions(t *testing.T) {
+	tests := []struct {
+		name        string
+		exclude     []string
+		reports     []reportSpec
+		wantRules   []BanRule
+		wantSkipped int
+	}{
+		{
+			name:    "an exclusion inside both Targets does not demote the narrower report's stance",
+			exclude: []string{"203.0.113.7/32"},
+			reports: []reportSpec{
+				{target: "203.0.113.0/24", action: PenaltyDrop},
+				{target: "203.0.113.0/25", action: PenaltyLimitPktRate, rate: json.Number("100")},
+			},
+			wantRules: []BanRule{
+				banRule(StanceLimitPktRate, ratePtr(100), "203.0.113.6/32"),
+				banRule(StanceLimitPktRate, ratePtr(100), "203.0.113.4/31"),
+				banRule(StanceLimitPktRate, ratePtr(100), "203.0.113.0/30"),
+				banRule(StanceLimitPktRate, ratePtr(100), "203.0.113.8/29"),
+				banRule(StanceLimitPktRate, ratePtr(100), "203.0.113.16/28"),
+				banRule(StanceLimitPktRate, ratePtr(100), "203.0.113.32/27"),
+				banRule(StanceLimitPktRate, ratePtr(100), "203.0.113.64/26"),
+				dropRule("203.0.113.128/25"),
+			},
+		},
+		{
+			name:    "an exclusion covering the narrower Target drops its report and keeps the broader ban's residual",
+			exclude: []string{"203.0.113.0/25"},
+			reports: []reportSpec{
+				{target: "203.0.113.0/24", action: PenaltyDrop},
+				{target: "203.0.113.0/25", action: PenaltyLimitPktRate, rate: json.Number("100")},
+			},
+			wantRules:   []BanRule{dropRule("203.0.113.128/25")},
+			wantSkipped: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newDocServer(t)
+			srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
+				setReports(t, doc, tt.reports)
+			}))
+			u, stub, _ := newTestUpdaterCfg(t, srv, Policy{Exclude: mustPrefixes(t, tt.exclude...)})
+
+			skips, err := u.Update(context.Background())
+			if err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+			if len(skips) != tt.wantSkipped {
+				t.Errorf("skipped %d report records, want %d", len(skips), tt.wantSkipped)
+			}
+			assertInstalls(t, stub, tt.wantRules)
+		})
+	}
+}
+
 // permutations returns every ordering of specs.
 func permutations(specs []reportSpec) [][]reportSpec {
 	if len(specs) <= 1 {
@@ -866,6 +965,177 @@ func permutations(specs []reportSpec) [][]reportSpec {
 		}
 	}
 	return out
+}
+
+// TestUpdateCycleSubtractsExclusions: excluded prefixes are
+// subtracted from every ban set, overriding every report — a fully
+// covered Target produces no ban rule, a partially covered one keeps
+// only its residual prefixes.
+func TestUpdateCycleSubtractsExclusions(t *testing.T) {
+	tests := []struct {
+		name        string
+		exclude     []string
+		target      string
+		wantRules   []BanRule
+		wantSkipped int
+	}{
+		{
+			name:        "an exclusion covering the whole Target produces no ban rule",
+			exclude:     []string{"203.0.113.7/32"},
+			target:      "203.0.113.7/32",
+			wantRules:   []BanRule{},
+			wantSkipped: 1,
+		},
+		{
+			name:      "an exclusion disjoint from the Target leaves it untouched",
+			exclude:   []string{"198.51.100.0/24"},
+			target:    "203.0.113.7/32",
+			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")},
+		},
+		{
+			name:      "an exclusion covering part of the Target leaves its residual prefixes",
+			exclude:   []string{"203.0.113.0/25"},
+			target:    "203.0.113.0/24",
+			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.128/25")},
+		},
+		{
+			name:      "several exclusions each subtract from the Target",
+			exclude:   []string{"203.0.113.0/25", "203.0.113.192/26"},
+			target:    "203.0.113.0/24",
+			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.128/26")},
+		},
+		{
+			name:      "an exclusion covering part of an IPv6 Target leaves its residual prefixes",
+			exclude:   []string{"2001:db8::/33"},
+			target:    "2001:db8::/32",
+			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "2001:db8:8000::/33")},
+		},
+		{
+			// The residual prefixes split across prefix lengths; the
+			// grouping keeps one equal-length set per ban rule, so the
+			// split compiles to one rule per length (same coverage).
+			name:    "an exclusion inside the Target splits it into residual prefixes",
+			exclude: []string{"203.0.113.64/26"},
+			target:  "203.0.113.0/24",
+			wantRules: []BanRule{
+				banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.0/26"),
+				banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.128/25"),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newDocServer(t)
+			srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
+				record(t, doc, 0)["target"] = tt.target
+			}))
+			u, stub, _ := newTestUpdaterCfg(t, srv, Policy{Exclude: mustPrefixes(t, tt.exclude...)})
+
+			skips, err := u.Update(context.Background())
+			if err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+			if len(skips) != tt.wantSkipped {
+				t.Errorf("skipped %d report records, want %d", len(skips), tt.wantSkipped)
+			}
+			assertInstalls(t, stub, tt.wantRules)
+		})
+	}
+}
+
+// TestUpdateCycleSafetyExclusions: the safety exclusions — loopback
+// and link-local are always excluded and cannot be re-included, and
+// RFC1918 and ULA are excluded by default behind the --exclude-private
+// opt-out, for hosts whose clients live in private space.
+func TestUpdateCycleSafetyExclusions(t *testing.T) {
+	tests := []struct {
+		name   string
+		policy Policy
+		target string
+		wantOK bool // true: the Target compiles to a ban rule
+	}{
+		{"a loopback Target is excluded and cannot be re-included", NewPolicy(nil, false, Prefilter{}), "127.0.0.1/32", false},
+		{"the IPv6 loopback Target is excluded and cannot be re-included", NewPolicy(nil, false, Prefilter{}), "::1/128", false},
+		{"a link-local Target is excluded and cannot be re-included", NewPolicy(nil, false, Prefilter{}), "169.254.5.6/32", false},
+		{"the IPv6 link-local Target is excluded and cannot be re-included", NewPolicy(nil, false, Prefilter{}), "fe80::1/128", false},
+		{"a public Target compiles under the safety exclusions", NewPolicy(nil, true, Prefilter{}), "203.0.113.7/32", true},
+		{"an RFC1918 Target is excluded by default", NewPolicy(nil, true, Prefilter{}), "10.1.2.3/32", false},
+		{"a ULA Target is excluded by default", NewPolicy(nil, true, Prefilter{}), "fd00::1/128", false},
+		{"a private Target compiles when the default exclusions are opted out", NewPolicy(nil, false, Prefilter{}), "10.1.2.3/32", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newDocServer(t)
+			srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
+				record(t, doc, 0)["target"] = tt.target
+			}))
+			u, stub, _ := newTestUpdaterCfg(t, srv, tt.policy)
+
+			skips, err := u.Update(context.Background())
+			if err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+			if tt.wantOK {
+				if len(skips) != 0 {
+					t.Errorf("skipped %d report records, want 0", len(skips))
+				}
+				assertInstalls(t, stub, []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), tt.target)})
+				return
+			}
+			if len(skips) != 1 {
+				t.Errorf("skipped %d report records, want 1", len(skips))
+			}
+			assertInstalls(t, stub, []BanRule{})
+		})
+	}
+}
+
+// TestUpdateCycleConstructsTheServicePrefilter: every ban rule leads
+// with the service prefilter — the destination-port and
+// destination-address sets of the protected service. Either set may
+// be empty, meaning all; both are operator configuration.
+func TestUpdateCycleConstructsTheServicePrefilter(t *testing.T) {
+	tests := []struct {
+		name      string
+		prefilter Prefilter
+	}{
+		{
+			name:      "a ban rule carries the configured destination-port set",
+			prefilter: Prefilter{DstPorts: []uint16{53, 80, 443}},
+		},
+		{
+			name: "a ban rule carries an empty destination-port set when none is configured",
+		},
+		{
+			name:      "a ban rule carries the configured destination-address set",
+			prefilter: Prefilter{DstAddrs: mustPrefixes(t, "203.0.113.5/32", "2001:db8::5/128")},
+		},
+		{
+			name: "a ban rule carries an empty destination-address set when none is configured",
+		},
+		{
+			name:      "a ban rule carries both prefilter sets",
+			prefilter: Prefilter{DstPorts: []uint16{443}, DstAddrs: mustPrefixes(t, "203.0.113.5/32")},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newDocServer(t)
+			srv.serve(http.StatusOK, canonicalDoc(t))
+			u, stub, _ := newTestUpdaterCfg(t, srv, NewPolicy(nil, true, tt.prefilter))
+
+			if _, err := u.Update(context.Background()); err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+			want := []BanRule{{
+				Targets:   mustPrefixes(t, "203.0.113.7/32"),
+				Prefilter: tt.prefilter,
+				Stance:    StanceLimitBandwidth,
+				Rate:      ratePtr(1000000),
+			}}
+			assertInstalls(t, stub, want)
+		})
+	}
 }
 
 // TestUpdateKeepsTheLastInstalledRules: a failed cycle installs nothing
@@ -1055,6 +1325,10 @@ func TestDryRunPrintsTheCompiledBanRules(t *testing.T) {
     "targets": [
       "203.0.113.7/32"
     ],
+    "prefilter": {
+      "dst_ports": [],
+      "dst_addrs": []
+    },
     "stance": "limit-bandwidth",
     "rate": 1000000
   }
@@ -1100,6 +1374,49 @@ stance=limit-bandwidth rate=1000000 chain=egress
 	})
 }
 
+// TestDryRunShowsTheEffectiveSets: --dry-run shows each ban rule's
+// effective sets after exclusion subtraction, leading with the service
+// prefilter.
+func TestDryRunShowsTheEffectiveSets(t *testing.T) {
+	srv := newDocServer(t)
+	srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
+		record(t, doc, 0)["target"] = "203.0.113.0/24"
+	}))
+	u, stub, _ := newTestUpdaterCfg(t, srv, NewPolicy(
+		mustPrefixes(t, "203.0.113.0/25"), true,
+		Prefilter{DstPorts: []uint16{53, 443}, DstAddrs: mustPrefixes(t, "203.0.113.5/32")},
+	))
+
+	var out bytes.Buffer
+	if err := u.DryRun(context.Background(), &out); err != nil {
+		t.Fatalf("DryRun: %v", err)
+	}
+	want := `[
+  {
+    "targets": [
+      "203.0.113.128/25"
+    ],
+    "prefilter": {
+      "dst_ports": [
+        53,
+        443
+      ],
+      "dst_addrs": [
+        "203.0.113.5/32"
+      ]
+    },
+    "stance": "limit-bandwidth",
+    "rate": 1000000
+  }
+]
+stance=limit-bandwidth rate=1000000 chain=egress
+`
+	if out.String() != want {
+		t.Errorf("DryRun output = %q, want %q", out.String(), want)
+	}
+	assertInstalls(t, stub, nil)
+}
+
 // TestClampInterval: the update interval's one-minute floor, failing
 // and passing case per validation.
 func TestClampInterval(t *testing.T) {
@@ -1143,7 +1460,7 @@ func TestNewClampsTheIntervalLoudly(t *testing.T) {
 				t.Fatalf("NewFetcher: %v", err)
 			}
 			logs := &logCapture{}
-			u := New(fetcher, &Stub{}, tt.interval, zerolog.New(logs))
+			u := New(fetcher, &Stub{}, defaultPolicy(), tt.interval, zerolog.New(logs))
 			if u.interval != tt.wantValue {
 				t.Errorf("interval = %v, want %v", u.interval, tt.wantValue)
 			}

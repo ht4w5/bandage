@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"math"
 	"net/netip"
+	"os"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/expr"
@@ -57,26 +58,60 @@ func (h Hook) valid() bool {
 
 // Driver is the nftables implementation of the splint.Driver port.
 // It owns nothing but one table per target namespace: Install
-// rebuilds that table wholesale, Reset removes it.
+// rebuilds that table wholesale, Reset removes it. One Driver targets
+// one namespace: netns is its nsfs handle path, "" the current
+// namespace.
 type Driver struct {
-	hook Hook
+	hook  Hook
+	netns string
 }
 
 var _ splint.Driver = (*Driver)(nil)
 
-// New builds a driver whose ingress chain attaches at hook.
+// New builds a driver whose ingress chain attaches at hook in the
+// current namespace.
 func New(hook Hook) (*Driver, error) {
+	return NewNetNS(hook, "")
+}
+
+// NewNetNS builds a driver targeting the network namespace at the
+// nsfs handle path ("" is the current namespace). The handle is
+// re-opened on every install and reset — a recreated container is
+// picked up through its stable handle.
+func NewNetNS(hook Hook, netnsPath string) (*Driver, error) {
 	if !hook.valid() {
 		return nil, fmt.Errorf("hook: must be input or prerouting (got %q)", hook)
 	}
-	return &Driver{hook: hook}, nil
+	return &Driver{hook: hook, netns: netnsPath}, nil
 }
 
-// connect opens the netlink connection to the target namespace — the
-// current one for now. Ticket 07 reopens a per-namespace connection
-// here every cycle.
-func connect() (*nftables.Conn, error) {
-	return nftables.New()
+// connect opens the netlink connection to this driver's target
+// namespace — the current one for an empty path. The per-namespace
+// connection is created through the library's namespace-fd option
+// (no setns, no thread locking in application code), and the nsfs
+// handle is re-opened on every call and kept open until the
+// connection's Flush returns: the library dials lazily at flush time
+// and the open handle is what keeps the namespace alive meanwhile. A
+// handle that cannot be opened is a vanished namespace: it wraps
+// splint.ErrUnreachable, which the update cycle warns and skips.
+func (d *Driver) connect() (*nftables.Conn, *os.File, error) {
+	if d.netns == "" {
+		conn, err := nftables.New()
+		if err != nil {
+			return nil, nil, fmt.Errorf("connect: %w", err)
+		}
+		return conn, nil, nil
+	}
+	nsFile, err := os.Open(d.netns)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: open netns %s: %w", splint.ErrUnreachable, d.netns, err)
+	}
+	conn, err := nftables.New(nftables.WithNetNSFd(int(nsFile.Fd())))
+	if err != nil {
+		nsFile.Close()
+		return nil, nil, fmt.Errorf("%w: connect netns %s: %w", splint.ErrUnreachable, d.netns, err)
+	}
+	return conn, nsFile, nil
 }
 
 // ownedTable is the wholly-owned table both Install and Reset address.
@@ -100,14 +135,18 @@ func tableExists(conn *nftables.Conn, table *nftables.Table) (bool, error) {
 
 // Install rebuilds the owned table wholesale in one atomic batch:
 // a probe decides whether the delete joins the batch, then the table,
-// both chains and one lookup rule per ban rule and address family are
-// buffered and flushed together. The table is
-// never absent while the new one applies — there is no
-// delete-then-rebuild window.
+// both chains and one kernel rule per ban rule and address family —
+// each leading with the service prefilter — are buffered and flushed
+// together. The table is never absent while the new one applies —
+// there is no delete-then-rebuild window.
 func (d *Driver) Install(rules []splint.BanRule) error {
-	conn, err := connect()
+	conn, nsFile, err := d.connect()
 	if err != nil {
 		return fmt.Errorf("install: %w", err)
+	}
+	if nsFile != nil {
+		// The handle stays open through Flush (see connect).
+		defer nsFile.Close()
 	}
 	table := ownedTable()
 	exists, err := tableExists(conn, table)
@@ -136,9 +175,13 @@ func (d *Driver) Install(rules []splint.BanRule) error {
 // Reset removes the owned table with everything in it, tolerating the
 // table being already absent.
 func (d *Driver) Reset() error {
-	conn, err := connect()
+	conn, nsFile, err := d.connect()
 	if err != nil {
 		return fmt.Errorf("reset: %w", err)
+	}
+	if nsFile != nil {
+		// The handle stays open through Flush (see connect).
+		defer nsFile.Close()
 	}
 	conn.DelTable(ownedTable())
 	if err := conn.Flush(); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -197,40 +240,56 @@ type addrFamily struct {
 	dstOff  uint32
 	is      func(netip.Prefix) bool
 	setName func(i int) string
+	// dstSetName names the family's destination-address prefilter set.
+	dstSetName func(i int) string
 }
 
 // The two families an inet table covers. Set names are the ban rule's
-// target prefixes per family and index (fluxc's naming).
+// target prefixes per family and index (fluxc's naming); the
+// destination-address prefilter sets follow the same shape.
 var families = []addrFamily{
 	{
-		name:    "v4",
-		proto:   unix.NFPROTO_IPV4,
-		keyType: nftables.TypeIPAddr,
-		srcOff:  12,
-		srcLen:  4,
-		dstOff:  16,
-		is:      func(p netip.Prefix) bool { return p.Addr().Is4() },
-		setName: func(i int) string { return fmt.Sprintf("v4_%d", i) },
+		name:       "v4",
+		proto:      unix.NFPROTO_IPV4,
+		keyType:    nftables.TypeIPAddr,
+		srcOff:     12,
+		srcLen:     4,
+		dstOff:     16,
+		is:         func(p netip.Prefix) bool { return p.Addr().Is4() },
+		setName:    func(i int) string { return fmt.Sprintf("v4_%d", i) },
+		dstSetName: func(i int) string { return fmt.Sprintf("dp4_%d", i) },
 	},
 	{
-		name:    "v6",
-		proto:   unix.NFPROTO_IPV6,
-		keyType: nftables.TypeIP6Addr,
-		srcOff:  8,
-		srcLen:  16,
-		dstOff:  24,
-		is:      func(p netip.Prefix) bool { return !p.Addr().Is4() },
-		setName: func(i int) string { return fmt.Sprintf("v6_%d", i) },
+		name:       "v6",
+		proto:      unix.NFPROTO_IPV6,
+		keyType:    nftables.TypeIP6Addr,
+		srcOff:     8,
+		srcLen:     16,
+		dstOff:     24,
+		is:         func(p netip.Prefix) bool { return !p.Addr().Is4() },
+		setName:    func(i int) string { return fmt.Sprintf("v6_%d", i) },
+		dstSetName: func(i int) string { return fmt.Sprintf("dp6_%d", i) },
 	},
 }
 
+// The destination-port prefilter's own sets, per rule index: the l4
+// gate (tcp and udp — the transports whose packets carry ports) and
+// the port set itself. Family-independent, so both families' rules
+// share them.
+var (
+	l4SetName   = func(i int) string { return fmt.Sprintf("l4_%d", i) }
+	portSetName = func(i int) string { return fmt.Sprintf("port_%d", i) }
+)
+
 // addBanRule buffers one ban rule's sets and kernel rules: every
-// address family with targets gets one interval set of the rule's
-// Target prefixes and one rule matching source ∈ set before the
-// stance's verdict — except the bandwidth stance, which meters the
-// response direction: its rules live on the egress chain matched on
-// destination ∈ set. (Ticket 03 guards these matches with the service
-// prefilter.)
+// address family the service prefilter can reach gets one interval set
+// of the rule's Target prefixes and one kernel rule that leads with the
+// service prefilter — the destination-port set first, then the
+// destination-address set, either empty meaning all — before the
+// target match and the stance's verdict. The direction split of the
+// penalty mapping: bandwidth meters the response direction on the
+// egress chain, matched on destination ∈ Target; every other stance
+// matches source on the ingress chain.
 func addBanRule(conn *nftables.Conn, table *nftables.Table, ingress, egress *nftables.Chain, i int, r splint.BanRule) error {
 	verdict, err := verdictExprs(r)
 	if err != nil {
@@ -247,38 +306,131 @@ func addBanRule(conn *nftables.Conn, table *nftables.Table, ingress, egress *nft
 	default:
 		return fmt.Errorf("stance %q: not supported", r.Stance)
 	}
+	// The families this rule covers. A ban applies only to service
+	// traffic: when the operator configured destination addresses and
+	// none is in this family, nothing here is service traffic and the
+	// family gets no kernel rule at all.
+	type famRule struct {
+		fam      addrFamily
+		targets  []netip.Prefix
+		dstAddrs []netip.Prefix
+	}
+	var frs []famRule
 	for _, fam := range families {
-		var prefixes []netip.Prefix
-		for _, p := range r.Targets {
-			if fam.is(p) {
-				prefixes = append(prefixes, p)
-			}
-		}
-		if len(prefixes) == 0 {
+		targets := familyPrefixes(r.Targets, fam)
+		if len(targets) == 0 {
 			continue
 		}
-		name := fam.setName(i)
+		dstAddrs := familyPrefixes(r.Prefilter.DstAddrs, fam)
+		if len(r.Prefilter.DstAddrs) > 0 && len(dstAddrs) == 0 {
+			continue
+		}
+		frs = append(frs, famRule{fam, targets, dstAddrs})
+	}
+	if len(frs) == 0 {
+		return nil
+	}
+	// The destination-port prefilter is family-independent: its sets
+	// are built once per rule and lead every family's kernel rule.
+	var portExprs []expr.Any
+	if len(r.Prefilter.DstPorts) > 0 {
+		if err := conn.AddSet(&nftables.Set{
+			Table:   table,
+			KeyType: nftables.TypeInetProto,
+			Name:    l4SetName(i),
+		}, l4Elements); err != nil {
+			return err
+		}
+		if err := conn.AddSet(&nftables.Set{
+			Table:   table,
+			KeyType: nftables.TypeInetService,
+			Name:    portSetName(i),
+		}, portElements(r.Prefilter.DstPorts)); err != nil {
+			return err
+		}
+		// Ports are transport-header bytes: gate on tcp and udp so no
+		// other protocol's header bytes can match the port set by
+		// accident — a ban reaches service traffic only.
+		portExprs = []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+			&expr.Lookup{SourceRegister: 1, SetName: l4SetName(i)},
+			&expr.Payload{DestRegister: 1, OperationType: expr.PayloadLoad,
+				Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+			&expr.Lookup{SourceRegister: 1, SetName: portSetName(i)},
+		}
+	}
+	for _, fr := range frs {
+		fam := fr.fam
 		if err := conn.AddSet(&nftables.Set{
 			Table:    table,
 			KeyType:  fam.keyType,
-			Name:     name,
+			Name:     fam.setName(i),
 			Interval: true,
-		}, intervalElements(prefixes)); err != nil {
+		}, intervalElements(fr.targets)); err != nil {
 			return err
 		}
+		exprs := []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{fam.proto}},
+		}
+		exprs = append(exprs, portExprs...)
+		if len(fr.dstAddrs) > 0 {
+			if err := conn.AddSet(&nftables.Set{
+				Table:    table,
+				KeyType:  fam.keyType,
+				Name:     fam.dstSetName(i),
+				Interval: true,
+			}, intervalElements(fr.dstAddrs)); err != nil {
+				return err
+			}
+			exprs = append(exprs,
+				&expr.Payload{DestRegister: 1, OperationType: expr.PayloadLoad,
+					Base: expr.PayloadBaseNetworkHeader, Offset: fam.dstOff, Len: fam.srcLen},
+				&expr.Lookup{SourceRegister: 1, SetName: fam.dstSetName(i)},
+			)
+		}
+		exprs = append(exprs,
+			&expr.Payload{DestRegister: 1, OperationType: expr.PayloadLoad,
+				Base: expr.PayloadBaseNetworkHeader, Offset: matchOff(fam), Len: fam.srcLen},
+			&expr.Lookup{SourceRegister: 1, SetName: fam.setName(i)},
+		)
+		exprs = append(exprs, verdict...)
 		conn.AddRule(&nftables.Rule{
 			Table: table,
 			Chain: chain,
-			Exprs: append([]expr.Any{
-				&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{fam.proto}},
-				&expr.Payload{DestRegister: 1, OperationType: expr.PayloadLoad,
-					Base: expr.PayloadBaseNetworkHeader, Offset: matchOff(fam), Len: fam.srcLen},
-				&expr.Lookup{SourceRegister: 1, SetName: name},
-			}, verdict...),
+			Exprs: exprs,
 		})
 	}
 	return nil
+}
+
+// familyPrefixes returns the prefixes of one address family.
+func familyPrefixes(prefixes []netip.Prefix, fam addrFamily) []netip.Prefix {
+	var out []netip.Prefix
+	for _, p := range prefixes {
+		if fam.is(p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// l4Elements is the l4proto gate of the port prefilter: tcp and udp,
+// the transports whose packets carry a destination port.
+var l4Elements = []nftables.SetElement{
+	{Key: []byte{unix.IPPROTO_TCP}},
+	{Key: []byte{unix.IPPROTO_UDP}},
+}
+
+// portElements encodes destination ports as a service set's exact
+// keys: two-byte big-endian port numbers, the transport header's own
+// byte order.
+func portElements(ports []uint16) []nftables.SetElement {
+	elems := make([]nftables.SetElement, 0, len(ports))
+	for _, p := range ports {
+		elems = append(elems, nftables.SetElement{Key: []byte{byte(p >> 8), byte(p)}})
+	}
+	return elems
 }
 
 // verdictExprs maps a ban rule's stance onto its verdict expressions
