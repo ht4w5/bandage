@@ -1,11 +1,5 @@
-// Package memory is the in-memory tracker cache adapter: a sharded map
-// with per-key atomic updates and sliding TTL expiry (enforced lazily on
-// access plus a periodic sweep), bounded by a global entry cap enforced
-// by per-shard LRU eviction. Every eviction is logged with its tracker
-// namespace and its key — the true Target (and path, where the key has
-// one) decoded from the domain's key convention for tracker entries,
-// the path alone for the filesize namespace — and counted in
-// statistics.
+// Package memory is the in-memory tracker cache adapter: a sharded map with
+// per-key atomic updates, sliding TTL expiry and per-shard LRU eviction.
 package memory
 
 import (
@@ -25,15 +19,8 @@ import (
 
 const defaultShards = 256
 
-// Store is an in-memory tracker cache (the TrackerCache port declared
-// beside its consumer in domain/evaluation is satisfied structurally)
-// bounded to maxEntries across all shards and namespaces. It is safe for
-// concurrent use.
-//
-// TTL expiry is enforced lazily on Update and by SweepExpired, which the
-// owner runs periodically (the daemon ticks it at an internal cadence).
-// An entry with ttl == 0 never expires (the filesize enrichment
-// namespace shares this store without TTL).
+// Store is an in-memory tracker cache (the TrackerCache port is satisfied
+// structurally) bounded to maxEntries; ttl == 0 never expires, concurrent-safe.
 type Store struct {
 	shards   []shard
 	perShard int
@@ -59,16 +46,14 @@ type entry struct {
 	expires time.Time
 }
 
-// New returns an empty store bounded to maxEntries (clamped to at least
-// 1) across all shards and namespaces. now is the wall clock expiry
-// runs on; logger receives a warning for every eviction.
+// New returns an empty store bounded to maxEntries (clamped to at least 1);
+// now is the wall clock expiry runs on, logger receives a warning per eviction.
 func New(maxEntries int, now func() time.Time, logger zerolog.Logger) *Store {
 	return newStore(maxEntries, defaultShards, now, logger)
 }
 
-// newStore pins the shard count (tests use one shard to observe exact
-// LRU order). The entry cap becomes a per-shard budget summing to at
-// most maxEntries.
+// newStore pins the shard count (tests use one shard to observe exact LRU
+// order); the entry cap becomes a per-shard budget summing to at most maxEntries.
 func newStore(maxEntries, shards int, now func() time.Time, logger zerolog.Logger) *Store {
 	if maxEntries < 1 {
 		maxEntries = 1
@@ -92,14 +77,8 @@ func newStore(maxEntries, shards int, now func() time.Time, logger zerolog.Logge
 	return s
 }
 
-// Update atomically applies fn to the record for (ns, key) and returns
-// it. An expired entry is treated as absent (lazy expiry): the record
-// restarts from zero. Inserting over the cap drops the shard's
-// least-recently-used entry — an eviction, logged with its tracker
-// namespace and its key (target for tracker entries, path for filesize
-// entries) and counted in statistics. fn runs under the shard lock and
-// must not perform I/O or use ctx; the eviction record is emitted after
-// the lock is released (PLAN house rule: no I/O under the lock).
+// Update atomically applies fn to the record for (ns, key); expired entries restart
+// from zero, over-cap inserts evict the shard's LRU (logged and counted; fn: no I/O).
 func (s *Store) Update(ctx context.Context, ns, key string, ttl time.Duration, fn func(*track.Record)) (track.Record, error) {
 	if fn == nil {
 		return track.Record{}, errors.New("memory: update fn must not be nil")
@@ -110,9 +89,8 @@ func (s *Store) Update(ctx context.Context, ns, key string, ttl time.Duration, f
 
 	rec, evicted := s.updateLocked(sh, fullKey, ns, key, ttl, fn)
 
-	// Evictions are logged and counted after the shard lock is released:
-	// rendering the record is I/O, which never happens under the store's
-	// locks (PLAN house rule) — a log sink may call back into the store.
+	// Log and count evictions after the lock is released: no I/O under
+	// the store's locks, since a log sink may call back into the store.
 	for _, e := range evicted {
 		s.evictions.Add(1)
 		evictionAttrs(s.logger.Warn(), e).Msg("tracker cache eviction")
@@ -120,10 +98,8 @@ func (s *Store) Update(ctx context.Context, ns, key string, ttl time.Duration, f
 	return rec, nil
 }
 
-// updateLocked applies fn to the record for (ns, key) under the shard
-// lock and returns the record plus any entries evicted to make room for
-// it (for the caller to log and count outside the lock). fn runs under
-// the shard lock and must not perform I/O or use ctx.
+// updateLocked applies fn under the shard lock, returning the record plus any
+// entries evicted to make room (the caller logs and counts them outside the lock).
 func (s *Store) updateLocked(sh *shard, fullKey, ns, key string, ttl time.Duration, fn func(*track.Record)) (track.Record, []*entry) {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
@@ -153,11 +129,8 @@ func (s *Store) updateLocked(sh *shard, fullKey, ns, key string, ttl time.Durati
 	return e.rec, s.evictLocked(sh)
 }
 
-// Clear empties the tracker record for (ns, key) — the Trigger reset
-// (GLOSSARY Trigger) — so later updates start from zero; clearing an
-// absent record is a no-op. It is atomic with respect to Update (the
-// shard lock) and counts in no statistics: a clear is neither a get nor
-// a set and never an eviction.
+// Clear empties the record for (ns, key) (the Trigger reset) so later updates
+// start from zero; absent records are a no-op. Counts in no statistics.
 func (s *Store) Clear(_ context.Context, ns, key string) error {
 	fullKey := ns + "\x00" + key
 	sh := s.shardFor(fullKey)
@@ -169,9 +142,8 @@ func (s *Store) Clear(_ context.Context, ns, key string) error {
 	return nil
 }
 
-// SweepExpired removes every expired entry across all shards. Entries
-// without a TTL never expire. TTL removals are not evictions: nothing
-// is logged or counted for them.
+// SweepExpired removes every expired entry across all shards (no-TTL entries
+// never expire). TTL removals are not evictions: nothing is logged or counted.
 func (s *Store) SweepExpired() {
 	now := s.now()
 	for i := range s.shards {
@@ -188,12 +160,8 @@ func (s *Store) SweepExpired() {
 	}
 }
 
-// Statistics returns the operational counters (flux's Statistics
-// precedent): Gets and Sets count Update lookups and writes, Misses
-// counts lookups that found no live entry (absent or TTL-expired),
-// Evictions counts evictions, Size is the current entry count (expired
-// entries count until lazily removed or swept), and EntryCap is the
-// configured entry cap the store is bounded to.
+// Statistics returns the operational counters; Misses counts lookups that found
+// no live entry, Size counts expired entries until removed or swept.
 func (s *Store) Statistics() track.Statistics {
 	var size int64
 	for i := range s.shards {
@@ -218,10 +186,8 @@ func (s *Store) shardFor(fullKey string) *shard {
 	return &s.shards[h.Sum32()%uint32(len(s.shards))]
 }
 
-// evictLocked drops least-recently-used entries until the shard is
-// within its budget of the entry cap and returns the evicted entries,
-// for the caller to log and count after unlocking (GLOSSARY: Eviction).
-// Called under the shard lock.
+// evictLocked drops least-recently-used entries until the shard is within its
+// budget and returns them for the caller to log and count after unlocking.
 func (s *Store) evictLocked(sh *shard) []*entry {
 	var evicted []*entry
 	for sh.l.Len() > s.perShard {
@@ -233,12 +199,8 @@ func (s *Store) evictLocked(sh *shard) []*entry {
 	return evicted
 }
 
-// evictionAttrs renders an eviction's identity per the domain's key
-// convention: every record carries the tracker namespace and its key —
-// for tracker entries the key decodes to the true Target (never the raw
-// key) plus the path for per-(Target, path) keys; the filesize
-// namespace is keyed by paths and logs the path as its own case (never
-// an invented Target).
+// evictionAttrs renders an eviction's identity per the domain's key convention:
+// tracker keys decode to the true Target (plus path), the filesize namespace logs its path.
 func evictionAttrs(ev *zerolog.Event, ent *entry) *zerolog.Event {
 	if ent.ns == bandage.FilesizeNamespace {
 		return ev.Str("namespace", ent.ns).Str("path", ent.key)

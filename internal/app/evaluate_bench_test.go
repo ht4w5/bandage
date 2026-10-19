@@ -17,58 +17,22 @@ import (
 	"github.com/HT4w5/bandage/internal/infra/persistence/sqlite"
 )
 
-// The integration variants of BenchmarkEvaluate (spec Phase 1): full
-// chain evaluation over pre-parsed corpus events with the real memory
-// tracker store and the production report service (report.Service),
-// first over an in-memory report store (the production path minus
-// sqlite) and then over the sqlite store to expose the write-path cost
-// (H4, H6). The stub-port variant lives beside the domain code in
-// domain/evaluation; the domain lint keeps these adapters out of that
-// package.
-//
-// The scenarios are the v0-hot-path episode re-modeling (spec stories
-// 30–31): the retired overflow-every-event trick — a report write per
-// event — no longer models the world under the Trigger semantics (a
-// Trigger empties the tracker and a live report suppresses its write),
-// so the write scenarios model report episodes instead. The report
-// lifetime is the episode: first-trigger measures the world where each
-// (rule, Target) writes at its first Trigger and every later Trigger in
-// the same lifetime is suppressed, while rearm-delete and rearm-expiry
-// measure the re-arm episodes where the operator's delete (spec story
-// 9) or report expiry (spec story 10) lets the next Trigger write over
-// the old row again. Across all of them one write lands per (rule,
-// Target) per report lifetime — the write-rate evidence is in the
-// baseline itself as writes/op.
+// Integration variants of BenchmarkEvaluate: full chain evaluation with the
+// real memory tracker store and production report service (memory and sqlite).
 
 const (
-	// benchEpisodeVolume is the episode fixture's tracker volume: with
-	// the rate tracker's +1 per event and leak 0, a Target accumulates
-	// benchEpisodeLen events per episode and every benchEpisodeLen-th
-	// event Triggers (Overflow is strictly above volume). The Trigger
-	// empties the tracker (GLOSSARY Trigger), so episodes recur at that
-	// cadence however long the run is. Volume is deliberately above the
-	// per-event increment: the retired overflow-every-event trick is
-	// not the episode model.
+	// benchEpisodeVolume is the episode fixture's tracker volume: a
+	// Target accumulates benchEpisodeLen events per episode before Triggering.
 	benchEpisodeVolume = 3.0
 	benchEpisodeLen    = 4
 
 	// benchRearmStep is the wall time one corpus pass advances in
-	// rearm-expiry. The fixture's 30m report TTL sits below it (a
-	// report is expired at the next lifetime boundary and the Trigger
-	// writes over its row) while the tracker's cache TTL
-	// (bandage.DefaultTTL, 1h, from leak 0) sits above it (a tracker
-	// record touched during the pass survives the step and its
-	// accumulation episode continues).
+	// rearm-expiry: past the 30m report TTL, below the 1h tracker cache TTL.
 	benchRearmStep = 45 * time.Minute
 )
 
-// benchEpisodeChains is the episode fixture: the four single-rule
-// chains of the retired match-every fixture (identical filter and
-// tracker work per event) with an accumulation episode of
-// benchEpisodeLen events per Target instead of the overflow-every-event
-// trick. The 30m report TTL only matters for rearm-expiry (see
-// benchRearmStep); under a frozen clock the report is alive for the
-// whole run.
+// benchEpisodeChains is the episode fixture: four single-rule chains with
+// benchEpisodeLen events per Target per episode.
 const benchEpisodeChains = `
 version: 0
 chains:
@@ -98,11 +62,8 @@ chains:
         actions: [{report: {reason: error-probe, ttl: 30m}}]
 `
 
-// benchMatchNeverChains decays at 10/s (rate) and 1GB/s (bandwidth,
-// against increments below 8MB) and, at benchEvent's one-second event
-// spacing, never overflows, so no rule ever Matches and neither the
-// Trigger path nor the write path runs. It is the fast-path floor the
-// episode scenarios are read against.
+// benchMatchNeverChains decays fast enough that no event ever overflows:
+// the fast-path floor the episode scenarios are read against.
 const benchMatchNeverChains = `
 version: 0
 chains:
@@ -132,27 +93,20 @@ chains:
         actions: [{report: {reason: error-probe, ttl: 1h}}]
 `
 
-// benchClock is the fixture event-time origin the corpus's timestamps
-// march from (internal/bench.Epoch). Report timestamps and cache expiry
-// run on the scenario's own wall clock (benchEpisodeRun.clock), which
-// the re-arm steps move.
+// benchClock is the fixture event-time origin the corpus timestamps march
+// from.
 func benchClock() time.Time { return bench.Epoch }
 
-// benchEvent returns corpus event i with its timestamp at the i-th
-// second of the fixture epoch. Evaluation time must march forward per
-// op: cycling the corpus timestamps would freeze the leaky bucket's
-// LastUpdate and let the quiet rules' value creep past their volume.
-// The same step drives the benchmark loops and the fixture test.
+// benchEvent returns corpus event i at the i-th second of the fixture epoch;
+// time must march forward per op or the leaky buckets creep past their volume.
 func benchEvent(corpus *bench.Corpus, i int) bandage.Event {
 	ev := corpus.Event(i)
 	ev.Time = benchClock().Add(time.Duration(i) * time.Second)
 	return ev
 }
 
-// memRepo is the in-memory report store: the production report
-// lifecycle (report.Service over a report.Repository) minus the sqlite
-// write path — the rows a map holds. Serial use only: the evaluate
-// benchmarks and their fixture test drive one event at a time.
+// memRepo is the in-memory report store behind the report service; serial use
+// only.
 type memRepo struct {
 	rows map[string]bandage.Report
 }
@@ -217,13 +171,8 @@ func (m *memRepo) DeleteExpired(_ context.Context, now time.Time) (int, error) {
 
 func (m *memRepo) Close() error { return nil }
 
-// writeLedger counts report writes at the store seam — the write is
-// the observable unit of the episode contract ("one write per (rule,
-// Target) per report lifetime"): every Upsert is recorded per
-// (rule, Target) per report lifetime, and newLifetime rolls the ledger
-// when the harness re-arms, so the scenario pins can read per-lifetime
-// cells. total feeds the benchmarks' writes/op metric — the write-rate
-// evidence lives in the baseline itself.
+// writeLedger counts report writes per (rule, Target) per report lifetime;
+// newLifetime rolls the ledger when the harness re-arms.
 type writeLedger struct {
 	reportStore
 	mu    sync.Mutex
@@ -232,8 +181,8 @@ type writeLedger struct {
 	cells map[ledgerCell]int
 }
 
-// ledgerCell is one report-lifetime cell: (rule, Target) within a
-// lifetime. The contract is at most one write per cell.
+// ledgerCell is one (rule, Target) cell within a report lifetime; the
+// contract is at most one write per cell.
 type ledgerCell struct {
 	rule   string
 	target string
@@ -251,8 +200,7 @@ func (l *writeLedger) Upsert(ctx context.Context, rec bandage.Report) error {
 	return l.reportStore.Upsert(ctx, rec)
 }
 
-// newLifetime rolls the ledger to the next report lifetime (one per
-// re-arm boundary).
+// newLifetime rolls the ledger to the next report lifetime.
 func (l *writeLedger) newLifetime() {
 	l.mu.Lock()
 	l.life++
@@ -275,10 +223,8 @@ func (l *writeLedger) counts() map[ledgerCell]int {
 	return out
 }
 
-// countingSink counts report actions run — Trigger calls at the
-// evaluation seam. The report action runs on every Trigger even while
-// its write is suppressed (spec story 3), so this count is the episode
-// cadence, not the write count (that lives on the writeLedger).
+// countingSink counts report actions run; the action runs on every Trigger
+// even while the write is suppressed, so this is the episode cadence.
 type countingSink struct {
 	reports  *report.Service
 	triggers int
@@ -289,9 +235,7 @@ func (s *countingSink) Trigger(ctx context.Context, rec bandage.Report) error {
 	return s.reports.Trigger(ctx, rec)
 }
 
-// rearmKind selects how a report lifetime ends in the episode
-// scenarios: not at all (first-trigger's lifetime is the whole run),
-// the operator's delete, or report expiry.
+// rearmKind selects how a report lifetime ends: never, delete, or expiry.
 type rearmKind int
 
 const (
@@ -300,31 +244,23 @@ const (
 	rearmExpiry
 )
 
-// benchEpisode is one report-lifetime scenario. The benchmark
-// sub-names are the scenario names; the scenario contract is pinned by
-// TestEvaluateBenchScenarios.
+// benchEpisode is one report-lifetime scenario; name is the benchmark
+// sub-name.
 type benchEpisode struct {
 	name string
 	kind rearmKind
 }
 
-// benchEpisodes is the episode scenario vocabulary (spec stories 9–10,
-// 30): first-Trigger vs re-arm after delete/expiry.
+// benchEpisodes is the episode scenario vocabulary: first-trigger and re-arm
+// after delete/expiry.
 var benchEpisodes = []benchEpisode{
 	{name: "first-trigger", kind: rearmNone},
 	{name: "rearm-delete", kind: rearmDelete},
 	{name: "rearm-expiry", kind: rearmExpiry},
 }
 
-// rearm performs the scenario's re-arm step at a report-lifetime
-// boundary (one corpus pass in the pin and in the benchmark). A delete
-// (rearm-delete) removes the fixture's reports like the API's
-// delete-by-filter (spec story 9); expiry (rearm-expiry) advances the
-// wall clock past the report TTL so the next Trigger finds the report
-// expired and writes over its row — the write re-arms before any
-// sweeper runs (spec story 10). first-trigger never re-arms. It
-// reports whether the report lifetime rolled, so the ledger and the
-// oracle advance together.
+// rearm performs the scenario's re-arm step at a report-lifetime boundary,
+// returning whether the lifetime rolled (so ledger and oracle advance together).
 func (ep benchEpisode) rearm(tb testing.TB, reports *report.Service, ruleIDs []string, clock *testClock) bool {
 	tb.Helper()
 	switch ep.kind {
@@ -342,11 +278,8 @@ func (ep benchEpisode) rearm(tb testing.TB, reports *report.Service, ruleIDs []s
 	return true
 }
 
-// benchEpisodeRun is one scenario run's wiring: the evaluation service
-// over a real memory tracker store and the production report service
-// over the run's report store behind a write ledger, plus the wall
-// clock the re-arm step moves. The Memory and SQLite benchmark
-// variants differ only in the report store.
+// benchEpisodeRun is one scenario run's wiring: evaluation service, report
+// service behind a write ledger, and the wall clock the re-arm step moves.
 type benchEpisodeRun struct {
 	svc     *evaluation.Service
 	sink    *countingSink
@@ -367,9 +300,8 @@ func newBenchEpisodeRun(tb testing.TB, rules string, repo reportStore) *benchEpi
 	return &benchEpisodeRun{svc: svc, sink: sink, reports: reports, ledger: ledger, clock: clock, rules: chains}
 }
 
-// rearm runs the scenario's re-arm step at a report-lifetime boundary,
-// rolls the ledger when the lifetime rolled, and reports whether it
-// did.
+// rearm runs the scenario's re-arm step, rolling the ledger when the
+// lifetime rolls.
 func (r *benchEpisodeRun) rearm(tb testing.TB, ep benchEpisode) bool {
 	tb.Helper()
 	if ep.rearm(tb, r.reports, ruleIDs(r.rules), r.clock) {
@@ -379,8 +311,7 @@ func (r *benchEpisodeRun) rearm(tb testing.TB, ep benchEpisode) bool {
 	return false
 }
 
-// ruleIDs lists the fixture's rule IDs in load order (the re-arm
-// delete's filters).
+// ruleIDs lists the fixture's rule IDs in load order.
 func ruleIDs(chains []bandage.Chain) []string {
 	var ids []string
 	for _, c := range chains {
@@ -391,18 +322,8 @@ func ruleIDs(chains []bandage.Chain) []string {
 	return ids
 }
 
-// episodeOracle is the episode contract, simulated beside the run so
-// its expectations can disagree with the code under test (the suite's
-// fixture-derived oracle convention: expectations come from the
-// documented semantics, never from the implementation). It encodes the
-// episode fixture only (rate, leak 0, volume benchEpisodeVolume, every
-// rule matching): a Target accumulates one per event and Trigger at
-// every benchEpisodeLen-th event since the last Trigger (the Trigger
-// empties the tracker — GLOSSARY Trigger); a tracker record untouched
-// for the cache TTL (bandage.DefaultTTL of wall time) expires and its
-// next event starts from zero; and a Trigger writes once per (rule,
-// Target) per report lifetime — the lifetime's first Trigger writes,
-// later ones are suppressed (spec stories 2 and 9–10).
+// episodeOracle is the episode contract simulated beside the run, so its
+// expectations can disagree with the code under test.
 type episodeOracle struct {
 	chains   []bandage.Chain
 	life     int
@@ -460,8 +381,8 @@ func (o *episodeOracle) event(ev bandage.Event, wall time.Time) {
 	}
 }
 
-// boundary rolls the report lifetime (the re-arm step's effect): the
-// next Trigger for any (rule, Target) writes again.
+// boundary rolls the report lifetime: the next Trigger for any (rule, Target)
+// writes again.
 func (o *episodeOracle) boundary() {
 	o.life++
 	for _, st := range o.states {
@@ -469,10 +390,8 @@ func (o *episodeOracle) boundary() {
 	}
 }
 
-// assertWrites checks the ledger against the oracle's write cells: the
-// episode contract is exactly one write per (rule, Target) per report
-// lifetime for every lifetime that Triggered and none for any other
-// cell.
+// assertWrites checks the ledger against the oracle's write cells: exactly
+// one write per (rule, Target) per report lifetime that Triggered.
 func assertWrites(t *testing.T, ledger *writeLedger, want map[ledgerCell]int) {
 	t.Helper()
 	got := ledger.counts()
@@ -501,15 +420,8 @@ func benchRules(tb testing.TB, rules string) []bandage.Chain {
 	return chains
 }
 
-// TestEvaluateBenchScenarios verifies the episode fixtures measure the
-// scenario they name (the write-path measurements rest on it): over
-// several corpus passes with the scenario's re-arm cadence, every
-// episode Trigger runs the report action but exactly one write lands
-// per (rule, Target) per report lifetime — the lifetime's first Trigger
-// writes and later Triggers in it are suppressed — while match-never
-// does nothing at all. Expected Triggers and write cells come from the
-// fixture events alone (episodeOracle), so they can disagree with the
-// pipeline.
+// TestEvaluateBenchScenarios pins the episode fixtures: one write per
+// (rule, Target) per report lifetime, and match-never does nothing.
 func TestEvaluateBenchScenarios(t *testing.T) {
 	corpus := bench.NewCorpus(bench.Seed, bench.ShapeFull, bench.DistZipf, 1024)
 	const passes = 10
@@ -551,9 +463,8 @@ func TestEvaluateBenchScenarios(t *testing.T) {
 				}
 				return
 			}
-			// The report action runs on every episode (spec story 3),
-			// and one write per (rule, Target) per report lifetime
-			// lands exactly where the contract says (spec story 2).
+			// The report action runs on every episode; the write lands per
+			// the contract.
 			if run.sink.triggers != oracle.triggers {
 				t.Errorf("triggers = %d, want %d (one Trigger per %d-event episode)",
 					run.sink.triggers, oracle.triggers, benchEpisodeLen)
@@ -563,10 +474,8 @@ func TestEvaluateBenchScenarios(t *testing.T) {
 	}
 }
 
-// benchEvaluate runs the shared evaluate loop against a prepared run.
-// One op is one pre-parsed corpus event, i.e. one log line; ep's re-arm
-// step runs at every corpus-pass boundary — the episode scenario's
-// report-lifetime boundary (nil for match-never).
+// benchEvaluate runs the shared evaluate loop; one op is one pre-parsed
+// corpus event (one log line).
 func benchEvaluate(b *testing.B, run *benchEpisodeRun, ep *benchEpisode) {
 	b.Helper()
 	corpus := bench.NewCorpus(bench.Seed, bench.ShapeFull, bench.DistZipf, 1024)
@@ -588,10 +497,8 @@ func benchEvaluate(b *testing.B, run *benchEpisodeRun, ep *benchEpisode) {
 	bench.ReportLinesPerSec(b, lines)
 }
 
-// benchEpisodeCases are the evaluate benchmarks' scenario matrix: the
-// episode scenarios (first Trigger vs re-arm after delete/expiry) and
-// the match-never floor. The names are stable: they are the benchmark
-// sub-names.
+// benchEpisodeCases is the evaluate benchmarks' scenario matrix; names are
+// the benchmark sub-names.
 var benchEpisodeCases = []struct {
 	name  string
 	rules string
@@ -603,9 +510,8 @@ var benchEpisodeCases = []struct {
 	{"match-never", benchMatchNeverChains, nil},
 }
 
-// BenchmarkEvaluateMemory is BenchmarkEvaluate with the real memory
-// tracker store and the production report service over the in-memory
-// report store: the production path minus the sqlite write (H4, H6).
+// BenchmarkEvaluateMemory is BenchmarkEvaluate with the real memory tracker
+// store and the production report service over the in-memory report store.
 func BenchmarkEvaluateMemory(b *testing.B) {
 	for _, tc := range benchEpisodeCases {
 		b.Run(tc.name, func(b *testing.B) {
@@ -615,9 +521,8 @@ func BenchmarkEvaluateMemory(b *testing.B) {
 	}
 }
 
-// BenchmarkEvaluateSQLite is BenchmarkEvaluate with the sqlite report
-// store (:memory: database): the write-path cost the in-memory variant
-// excludes (H4).
+// BenchmarkEvaluateSQLite is BenchmarkEvaluate with the sqlite report store,
+// exposing the write-path cost the in-memory variant excludes.
 func BenchmarkEvaluateSQLite(b *testing.B) {
 	for _, tc := range benchEpisodeCases {
 		b.Run(tc.name, func(b *testing.B) {

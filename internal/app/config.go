@@ -1,5 +1,5 @@
 // Package app wires the daemon: strict config and rules loading, the
-// ingest → parse → evaluate → report pipeline, and the HTTP API server.
+// ingest -> parse -> evaluate -> report pipeline, and the HTTP API server.
 package app
 
 import (
@@ -59,8 +59,7 @@ type Cache struct {
 }
 
 // Pipeline configures the event-processing worker pool (ADR 0007).
-// Workers is the resolved worker-goroutine count: always at least 1
-// (validated at load).
+// Workers is always at least 1.
 type Pipeline struct {
 	Workers int
 }
@@ -70,9 +69,8 @@ type API struct {
 	Listen string
 }
 
-// Log configures the program-wide logger (ADR 0005). Level is the
-// four-word vocabulary; the rendering is fixed console-style text on
-// stderr.
+// Log configures the program-wide logger (ADR 0005); output is fixed
+// console-style text on stderr.
 type Log struct {
 	Level bandage.Level
 }
@@ -169,9 +167,8 @@ func validateConfig(raw rawConfig) (Config, error) {
 		API:   API{Listen: raw.API.Listen},
 		Cache: Cache{MaxEntries: DefaultCacheEntries},
 		Log:   Log{Level: bandage.LevelInfo},
-		// pipeline.workers defaults to the machine's CPU count (spec
-		// story 15): config.go is the single owner of that default — the
-		// command's -w precedence resolves onto this value.
+		// pipeline.workers defaults to the machine's CPU count; this is
+		// the only owner of that default.
 		Pipeline: Pipeline{Workers: runtime.NumCPU()},
 	}
 
@@ -222,8 +219,6 @@ func validateConfig(raw rawConfig) (Config, error) {
 		return Config{}, errors.New("config: api.listen: required")
 	}
 	if raw.Log.Level != "" {
-		// log.level shares the one level parser with the log action: the
-		// same four words, so both always mean the same thing.
 		level, err := bandage.ParseLevel(raw.Log.Level)
 		if err != nil {
 			return Config{}, fmt.Errorf("config: log.level: %w", err)

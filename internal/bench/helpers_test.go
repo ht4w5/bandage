@@ -5,9 +5,7 @@ import (
 	"time"
 )
 
-// Contracts of the bench helpers: the lines/s rate (including the
-// degenerate zero-elapsed case) and the shape/distribution names that
-// land in benchmark sub-names and recorded baselines.
+// Helper contracts: the lines/s rate and the shape/distribution names.
 
 func TestLinesPerSec(t *testing.T) {
 	tests := []struct {
@@ -31,8 +29,7 @@ func TestLinesPerSec(t *testing.T) {
 }
 
 func TestShapeAndDistNames(t *testing.T) {
-	// The names land in benchmark sub-names and committed baselines:
-	// they must stay short and stable.
+	// The names land in benchmark sub-names and committed baselines: keep them stable.
 	tests := []struct{ got, want string }{
 		{ShapeMinimal.String(), "minimal"},
 		{ShapeFull.String(), "full"},

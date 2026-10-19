@@ -1,16 +1,7 @@
 package bandage
 
-// Record is leaky-bucket state for one key (flux's CacheEntry): the
-// shared value type PLAN §5 defines for tracker state, living in the
-// domain core so every domain module can speak it.
-//
-// The math is ported from flux (.reference/flux/pkg/engine/bucket.go):
-// for each contributing event, value += increment; then, if the event is
-// newer than the last contributing event (Δt > 0 in unix seconds), value
-// decays by leak·Δt floored at zero and LastUpdate moves to the event time.
-// Out-of-order or equal-time events (Δt ≤ 0) increment without decay and
-// leave LastUpdate unchanged. Overflow is checked after decay and is
-// strictly above volume.
+// Record is leaky-bucket state for one key (flux's CacheEntry): value
+// accumulates per event and decays by leak*dt floored at zero.
 type Record struct {
 	// Value is the amount accumulated since the last decay.
 	Value float64
@@ -19,9 +10,8 @@ type Record struct {
 	LastUpdate int64
 }
 
-// Accumulate applies the leaky-bucket math for one contributing event at
-// eventTime (unix seconds) with the given increment and leak (per second).
-// Whether the record overflows is read off the record with Overflow.
+// Accumulate applies the leaky-bucket math for one event at eventTime
+// (unix seconds); dt <= 0 increments without decay or LastUpdate change.
 func (r *Record) Accumulate(increment, leak float64, eventTime int64) {
 	if r.LastUpdate == 0 {
 		// First event for this key: no decay.
@@ -32,7 +22,7 @@ func (r *Record) Accumulate(increment, leak float64, eventTime int64) {
 	dt := eventTime - r.LastUpdate
 	r.Value += increment
 	if dt > 0 {
-		// Flux order: increment first, then decay, then floor at zero.
+		// Flux order: increment, then decay.
 		if decayed := r.Value - leak*float64(dt); decayed > 0 {
 			r.Value = decayed
 		} else {
@@ -42,8 +32,8 @@ func (r *Record) Accumulate(increment, leak float64, eventTime int64) {
 	}
 }
 
-// Overflow reports whether the record's value is strictly above volume.
-// It is checked after decay, i.e. on the record as returned by the cache.
+// Overflow reports whether the record's value is strictly above volume
+// (checked after decay).
 func (r Record) Overflow(volume float64) bool {
 	return r.Value > volume
 }

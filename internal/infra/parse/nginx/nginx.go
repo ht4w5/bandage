@@ -1,10 +1,5 @@
-// Package nginx parses nginx JSON access-log lines (flux log format:
-// escape=json, $msec/$remote_addr/$request_method/$uri/$status/
-// $body_bytes_sent/$http_user_agent) into domain events.
-//
-// The $msec time keeps its fractional part (DECISIONS §7); every required
-// field is validated and a bad one drops the line. Host, server and
-// duration are reserved and ignored; unknown fields are ignored.
+// Package nginx parses nginx JSON access-log lines (flux log format,
+// escape=json) into domain events: required fields validated, reserved and unknown ignored.
 package nginx
 
 import (
@@ -24,18 +19,15 @@ import (
 	bandage "github.com/HT4w5/bandage/internal/domain"
 )
 
-// decodeOpts keeps the log-format contract of the historic map decoder:
-// duplicate member names resolve last-wins instead of being rejected, and
-// raw non-UTF-8 bytes (nginx escape=json passes them through unescaped)
-// are accepted and kept as U+FFFD instead of dropping the line.
+// decodeOpts keeps the historic map-decoder contract: duplicate names resolve
+// last-wins, raw non-UTF-8 bytes are kept as U+FFFD instead of dropping the line.
 var decodeOpts = json.JoinOptions(
 	jsontext.AllowDuplicateNames(true),
 	jsontext.AllowInvalidUTF8(true),
 )
 
-// FieldError reports an invalid required (or typed) field. Its identity —
-// the field name and message — is the parser's field-level error contract;
-// drop accounting counts every parse error alike.
+// FieldError reports an invalid required (or typed) field; Field and Msg are
+// the parser's field-level error contract (drop accounting counts all errors alike).
 type FieldError struct {
 	Field string
 	Msg   string
@@ -52,10 +44,8 @@ type Parser struct{}
 // New returns a new nginx JSON parser.
 func New() *Parser { return &Parser{} }
 
-// fieldValue is one captured JSON member value. A JSON string is decoded
-// once at capture time into str; every other kind keeps its exact bytes
-// in raw (a zero-copy view of the input line, valid for the duration of
-// Parse). A field absent from the line is not present at all.
+// fieldValue is one captured JSON member value: strings decode once into str,
+// other kinds keep exact bytes in raw (zero-copy for Parse's duration).
 type fieldValue struct {
 	str     string
 	raw     []byte
@@ -63,10 +53,8 @@ type fieldValue struct {
 	present bool
 }
 
-// UnmarshalJSONFrom captures the member's value without copying (except
-// the decoded string) or validating; the typed helpers below do the
-// validating. The last member wins on duplicate names, matching map
-// semantics.
+// UnmarshalJSONFrom captures the member's value without copying (except the
+// decoded string) or validating; last member wins on duplicate names.
 func (v *fieldValue) UnmarshalJSONFrom(d *jsontext.Decoder) error {
 	*v = fieldValue{present: true}
 	if d.PeekKind() == jsontext.KindString {
@@ -91,8 +79,8 @@ func isNull(v fieldValue) bool {
 	return v.present && !v.isStr && string(v.raw) == "null"
 }
 
-// rawFields holds the captured values of the known log fields. Unknown
-// and reserved fields are never captured.
+// rawFields holds the captured values of the known log fields; unknown and
+// reserved fields are never captured.
 type rawFields struct {
 	Time   fieldValue `json:"time"`
 	Client fieldValue `json:"client"`
@@ -103,14 +91,8 @@ type rawFields struct {
 	Agent  fieldValue `json:"agent"`
 }
 
-// Parse maps one raw log line onto a domain Event, validating all
-// required fields. Malformed lines and invalid fields return an error and
-// the event is dropped.
-//
-// The malformed-line error text is byte-identical to the pre-rewrite
-// parser's: every decode failure is re-rendered as encoding/json v1
-// would have (legacyLineError), so the drop log shows the same text as
-// before the parser rewrite (spec stories 25–26).
+// Parse maps one raw log line onto a domain Event, validating required fields;
+// malformed lines and invalid fields return an error and the event is dropped.
 func (p *Parser) Parse(line []byte) (bandage.Event, error) {
 	var fields rawFields
 	if err := json.Unmarshal(line, &fields, decodeOpts); err != nil {
@@ -160,7 +142,7 @@ func (p *Parser) Parse(line []byte) (bandage.Event, error) {
 		return bandage.Event{}, &FieldError{Field: "status", Msg: err.Error()}
 	}
 	if n < 100 || n > 599 {
-		return bandage.Event{}, &FieldError{Field: "status", Msg: "out of range 100–599"}
+		return bandage.Event{}, &FieldError{Field: "status", Msg: "out of range 100-599"}
 	}
 	ev.Status = int(n)
 
@@ -187,29 +169,15 @@ func (p *Parser) Parse(line []byte) (bandage.Event, error) {
 	return ev, nil
 }
 
-// legacyLineError re-renders a decode failure with the pre-rewrite
-// parser's error text — the encoding/json v1 rendering — so the
-// drop-log message is byte-identical to the old decoder's (spec
-// stories 25–26's text half). The pre-rewrite parser decoded the line
-// into map[string]json.RawMessage with encoding/json v1: v1 scanned
-// the whole line before decoding (so a syntax error anywhere beats a
-// type error at the first value — `00` reports the trailing garbage),
-// and rendered plain wording with no position info. The rendering
-// mirrors encoding/json's own v1-compat shim (v2_scanner.go:
-// syntaxErrorReplacer, the unexpected-EOF rename, the
-// UnmarshalTypeError shape) because jsontext keeps position info and
-// v2's semantic renderer deliberately randomizes "cannot"/"unable to"
-// once per process (errors.go: errorModalVerb, Hyrum-proofing) —
-// normalizing restores the old text and its determinism. The happy
-// path is untouched; errors outside these classes pass through
-// unchanged.
+// legacyLineError re-renders a decode failure as the historic decoder's
+// encoding/json v1 text, keeping the drop-log message byte-identical.
 func legacyLineError(line []byte, err error) error {
 	var serr *jsontext.SyntacticError
 	if errors.As(err, &serr) {
 		return legacySyntaxError(err)
 	}
-	// v1's whole-line scan: a type error at the first value does not
-	// hide later syntax garbage (`00`, `5x`).
+	// v1's whole-line scan: a type error at the first value must not
+	// hide later syntax garbage.
 	var raw jsontext.Value
 	if serr := json.Unmarshal(line, &raw, decodeOpts); serr != nil {
 		return legacySyntaxError(serr)
@@ -221,10 +189,8 @@ func legacyLineError(line []byte, err error) error {
 	return err
 }
 
-// legacySyntaxError re-renders a jsontext syntactic error with the
-// pre-rewrite parser's error text — the encoding/json v1 rendering:
-// plain wording, no "jsontext: " prefix, no JSON pointer or byte
-// offset. Other errors pass through unchanged.
+// legacySyntaxError re-renders a jsontext syntactic error as the historic
+// v1 text: plain wording, no prefix or position info. Others pass through.
 func legacySyntaxError(err error) error {
 	var serr *jsontext.SyntacticError
 	if !errors.As(err, &serr) || serr.Err == nil {
@@ -241,10 +207,8 @@ func legacySyntaxError(err error) error {
 	return &syntaxTextError{text: msg, err: err}
 }
 
-// syntaxErrorReplacer replaces the v2 wording with the historical v1
-// rendering ("object key" for "object name", and the scanner's
-// "looking for …" phrasings) — the same table as encoding/json's v1
-// shim.
+// syntaxErrorReplacer maps v2 wording to the historical v1 rendering
+// ("object key", "looking for ..." phrasings), as encoding/json's v1 shim.
 var syntaxErrorReplacer = strings.NewReplacer(
 	"object name", "object key",
 	"at start of value", "looking for beginning of value",
@@ -253,8 +217,7 @@ var syntaxErrorReplacer = strings.NewReplacer(
 	"in number", "in numeric literal",
 )
 
-// syntaxTextError presents legacy error text while keeping the
-// underlying error in the chain.
+// syntaxTextError presents legacy error text while keeping the error chain.
 type syntaxTextError struct {
 	text string
 	err  error
@@ -264,9 +227,7 @@ func (e *syntaxTextError) Error() string { return e.text }
 func (e *syntaxTextError) Unwrap() error { return e.err }
 
 // legacySemanticError re-renders a v2 semantic (type) error as v1's
-// UnmarshalTypeError text: "json: cannot unmarshal <kind> into Go
-// value of type <target>", with v1's kind words and the pre-rewrite
-// parser's decode target.
+// UnmarshalTypeError text with the historic decode target.
 func legacySemanticError(err error, serr *json.SemanticError) error {
 	kind, ok := v1KindWords[serr.JSONKind]
 	if !ok {
@@ -278,14 +239,11 @@ func legacySemanticError(err error, serr *json.SemanticError) error {
 	}
 }
 
-// legacyTargetType is the pre-rewrite parser's decode target
-// (map[string]json.RawMessage; RawMessage is an alias of
-// jsontext.Value, so on this toolchain it renders exactly as the old
-// errors named it: "map[string]jsontext.Value").
+// legacyTargetType is the historic decode target (map[string]
+// json.RawMessage, rendering as "map[string]jsontext.Value").
 var legacyTargetType = reflect.TypeOf(map[string]jsonv1.RawMessage(nil))
 
-// v1KindWords maps a JSON kind onto encoding/json v1's
-// UnmarshalTypeError kind words.
+// v1KindWords maps a JSON kind onto encoding/json v1's UnmarshalTypeError kind words.
 var v1KindWords = map[jsontext.Kind]string{
 	jsontext.KindNull:        "null",
 	jsontext.KindFalse:       "bool",
@@ -296,8 +254,7 @@ var v1KindWords = map[jsontext.Kind]string{
 	jsontext.KindBeginArray:  "array",
 }
 
-// require returns a required field's value: absent and null fields are
-// reported as missing.
+// require returns a required field's value; absent and null fields report as missing.
 func require(v fieldValue, name string) (fieldValue, error) {
 	if !v.present || isNull(v) {
 		return fieldValue{}, &FieldError{Field: name, Msg: "required field missing"}

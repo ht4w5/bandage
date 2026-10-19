@@ -11,12 +11,8 @@ import (
 	bandage "github.com/HT4w5/bandage/internal/domain"
 )
 
-// NewLogger builds the program-wide logger (spec: Logging, ADR 0005):
-// zerolog rendering is fixed console-style text on w with timestamps,
-// filtered at the given level. Construction and level policy live here
-// alone — the command resolves the level (flag over config) and
-// passes the one logger to the daemon and the infra tree; tests capture
-// records at the daemon's logger option.
+// NewLogger builds the program-wide logger (ADR 0005): fixed
+// console-style text on w with timestamps, filtered at level.
 func NewLogger(w io.Writer, level bandage.Level) zerolog.Logger {
 	return zerolog.New(zerolog.ConsoleWriter{
 		Out:        w,
@@ -25,10 +21,8 @@ func NewLogger(w io.Writer, level bandage.Level) zerolog.Logger {
 	}).Level(zerologLevel(level)).With().Timestamp().Logger()
 }
 
-// zerologLevel maps the domain's four level words onto zerolog levels.
-// The domain enum has no fatal/panic (ADR 0005): a rule can never exit
-// the process. An unmapped value (only possible for an unvalidated
-// Level) falls back to info.
+// zerologLevel maps the four domain level words onto zerolog levels
+// (no fatal/panic: a rule can never exit). Unmapped values are info.
 func zerologLevel(level bandage.Level) zerolog.Level {
 	switch level {
 	case bandage.LevelDebug:
@@ -44,10 +38,8 @@ func zerologLevel(level bandage.Level) zerolog.Level {
 	}
 }
 
-// domainLogger adapts the zerolog logger to the domain's Logger port.
-// The adapter lives in the app wiring — no dedicated logging package
-// "for now" (spec: Logging). Fields are attached in sorted key order so
-// raw records are deterministic.
+// domainLogger adapts zerolog to the domain Logger port; fields are
+// attached in sorted key order so records are deterministic.
 type domainLogger struct {
 	logger zerolog.Logger
 }

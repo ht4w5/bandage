@@ -12,12 +12,8 @@ import (
 	bandage "github.com/HT4w5/bandage/internal/domain"
 )
 
-// stubRepository is the Repository stub the service is tested over
-// (spec Testing Decisions: the report service over a stub repository):
-// it records every call and returns configured results, no framework.
-// upWedge, when set, holds every Upsert in flight — the pending write
-// the contention tests drive — signalling upEntered on arrival and
-// failing exactly the first write that passes when upFailFirst is set.
+// stubRepository is a recording Repository stub; upWedge holds every Upsert in
+// flight (signalling upEntered) and upFailFirst fails the first write.
 type stubRepository struct {
 	mu          sync.Mutex
 	ups         []bandage.Report
@@ -86,9 +82,8 @@ func (s *stubRepository) upserts() int {
 	return len(s.ups)
 }
 
-// TestServiceTriggerWritesThroughRepository pins the Trigger write
-// contract: the report reaches the repository unchanged and a
-// repository failure surfaces wrapped but identifiable.
+// TestServiceTriggerWritesThroughRepository pins the Trigger write contract:
+// the report reaches the repository unchanged and failures wrap identifiably.
 func TestServiceTriggerWritesThroughRepository(t *testing.T) {
 	rec := bandage.Report{Rule: "sustained-egress", Target: "203.0.113.7/32"}
 	errStub := errors.New("stub failure")
@@ -112,11 +107,8 @@ func TestServiceTriggerWritesThroughRepository(t *testing.T) {
 	})
 }
 
-// TestServiceDeleteByFilter pins the delete-by-filter contract the API
-// calls through: the filter reaches the repository unchanged, the
-// deletion count is reported unchanged and repository errors —
-// including ErrUnfiltered — pass through unwrapped (their strings are
-// operator-visible).
+// TestServiceDeleteByFilter pins the delete-by-filter contract: the filter and
+// count pass through and repository errors (including ErrUnfiltered) are unwrapped.
 func TestServiceDeleteByFilter(t *testing.T) {
 	errStub := errors.New("stub failure")
 	tests := []struct {
@@ -148,10 +140,8 @@ func TestServiceDeleteByFilter(t *testing.T) {
 	}
 }
 
-// TestServiceDeleteExpired pins the expiry-deletion contract the
-// sweeper calls through: the wall clock reaches the repository
-// unchanged, the deletion count is reported unchanged and repository
-// errors pass through unwrapped.
+// TestServiceDeleteExpired pins the expiry-deletion contract: clock and count
+// pass through and repository errors are unwrapped.
 func TestServiceDeleteExpired(t *testing.T) {
 	now := time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)
 	errStub := errors.New("stub failure")
@@ -180,9 +170,8 @@ func TestServiceDeleteExpired(t *testing.T) {
 	}
 }
 
-// TestServiceList pins the read contract the API calls through: the
-// query reaches the repository unchanged and the matching reports come
-// back unchanged.
+// TestServiceList pins the read contract: the query reaches the repository and
+// the matching reports come back unchanged.
 func TestServiceList(t *testing.T) {
 	q := Query{Rule: "sustained-egress", Now: time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)}
 	rows := []bandage.Report{{Rule: "sustained-egress", Target: "203.0.113.7/32"}}
@@ -211,22 +200,16 @@ func TestServiceList(t *testing.T) {
 	})
 }
 
-// --- suppression (ticket 03): one live report per (rule, target) ---
+// --- suppression: one live report per (rule, target) ---
 
-// liveRec is a Trigger's report at the given wall times for the
-// suppression tests: UpdatedAt is the Trigger's wall time (aliveness is
-// decided against it), ExpiresAt the report's lifetime.
+// liveRec builds a Trigger's report at the given wall times: UpdatedAt is the
+// Trigger's wall time (aliveness is decided against it), ExpiresAt the lifetime.
 func liveRec(rule, target string, now, expires time.Time) bandage.Report {
 	return bandage.Report{Rule: rule, Target: target, UpdatedAt: now, ExpiresAt: expires}
 }
 
-// TestServiceTriggerSuppressesWhileReportAlive pins the suppression
-// rule (ADR 0008): while a report for (rule, target) is alive further
-// Triggers write nothing but complete without error (the report action
-// ran — the tracker reset follows from the nil result). Suppression is
-// per (rule, target): another rule or another target writes. A report
-// is alive until expiry or deletion (GLOSSARY Report): past its expiry
-// the Trigger writes over the stored row.
+// TestServiceTriggerSuppressesWhileReportAlive pins suppression (ADR 0008):
+// a live report suppresses later Triggers' writes; alive until expiry or deletion.
 func TestServiceTriggerSuppressesWhileReportAlive(t *testing.T) {
 	now := time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)
 	expiry := now.Add(time.Hour)
@@ -278,9 +261,8 @@ func TestServiceTriggerSuppressesWhileReportAlive(t *testing.T) {
 	})
 }
 
-// TestServiceDeleteRearmsWriting pins the delete re-arm (spec story 9):
-// once the report is deleted the next Trigger writes — and only the
-// deleted filter's (rule, target) pairs re-arm.
+// TestServiceDeleteRearmsWriting pins the delete re-arm: the next Trigger
+// writes once the report is deleted.
 func TestServiceDeleteRearmsWriting(t *testing.T) {
 	now := time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)
 	expiry := now.Add(time.Hour)
@@ -321,8 +303,8 @@ func TestServiceDeleteRearmsWriting(t *testing.T) {
 	})
 }
 
-// TestServiceDeleteExpiredRearmsWriting pins the expiry re-arm (spec
-// story 10): reports whose expiry the sweeper passes stop suppressing.
+// TestServiceDeleteExpiredRearmsWriting pins the expiry re-arm: reports whose
+// expiry the sweeper passes stop suppressing.
 func TestServiceDeleteExpiredRearmsWriting(t *testing.T) {
 	now := time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)
 	expiry := now.Add(time.Hour)
@@ -356,9 +338,8 @@ func TestServiceDeleteExpiredRearmsWriting(t *testing.T) {
 	}
 }
 
-// TestServiceFailedWriteDoesNotSuppressTheRetry pins story 5 at the
-// write path: a failed write is not a Trigger outcome — nothing was
-// written, so nothing suppresses the next Trigger's write.
+// TestServiceFailedWriteDoesNotSuppressTheRetry pins that a failed write
+// suppresses nothing: the retry writes.
 func TestServiceFailedWriteDoesNotSuppressTheRetry(t *testing.T) {
 	now := time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)
 	rec := liveRec("sticky", "203.0.113.7/32", now, now.Add(time.Hour))
@@ -377,10 +358,8 @@ func TestServiceFailedWriteDoesNotSuppressTheRetry(t *testing.T) {
 	}
 }
 
-// TestServiceRebuildDerivesLiveReportsFromTheTable pins the startup
-// derivation (spec story 13): the live-report set is the report table's
-// — Rebuild lists the table at Now and supplants the set, so alive rows
-// suppress and absent rows do not.
+// TestServiceRebuildDerivesLiveReportsFromTheTable pins the startup derivation:
+// Rebuild lists the table at Now and supplants the live set.
 func TestServiceRebuildDerivesLiveReportsFromTheTable(t *testing.T) {
 	now := time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)
 	expiry := now.Add(time.Hour)
@@ -432,14 +411,10 @@ func TestServiceRebuildDerivesLiveReportsFromTheTable(t *testing.T) {
 	})
 }
 
-// --- Trigger write contention (spec stories 4, 5, 14) ---
+// --- Trigger write contention ---
 
-// waitPending is the unit-level settle window: a Trigger must not
-// return while the key's write is still pending inside the repository
-// (a premature return is exactly the hole — suppression decided before
-// the write's outcome). The window is pure settle margin over goroutine
-// scheduling, never a progress dependency: a slow machine can only
-// weaken the assertion, never make it wrong.
+// waitPending is the settle window: a Trigger must not return while the key's
+// write is still pending. Pure settle margin: slowness only weakens the assertion.
 func waitPending(t *testing.T, done <-chan error) {
 	t.Helper()
 	select {
@@ -449,23 +424,15 @@ func waitPending(t *testing.T, done <-chan error) {
 	}
 }
 
-// triggerAsync runs Trigger off the test goroutine, handing back its
-// outcome (the in-test helpers fail inline and must not run from a
-// goroutine).
+// triggerAsync runs Trigger off the test goroutine (the helpers fail inline).
 func triggerAsync(svc *Service, rec bandage.Report) <-chan error {
 	done := make(chan error, 1)
 	go func() { done <- svc.Trigger(context.Background(), rec) }()
 	return done
 }
 
-// TestServiceConcurrentTriggerWaitsForTheWriteOutcome pins the
-// contention handoff: a Trigger arriving while the key's write is in
-// flight waits for that write's outcome and re-evaluates — suppressed
-// once it lands (a live report exists), writing it itself if it failed
-// (a failed write is not a Trigger outcome: nothing suppressed the
-// waiter and the detection must not be lost). Trigger returns nil
-// exactly when the write landed or a live report suppressed it, so the
-// caller's tracker reset follows the outcome (spec story 4).
+// TestServiceConcurrentTriggerWaitsForTheWriteOutcome pins the contention
+// handoff: a Trigger waits for an in-flight write's outcome and re-evaluates.
 func TestServiceConcurrentTriggerWaitsForTheWriteOutcome(t *testing.T) {
 	now := time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)
 	expiry := now.Add(time.Hour)
@@ -493,8 +460,7 @@ func TestServiceConcurrentTriggerWaitsForTheWriteOutcome(t *testing.T) {
 		if got := repo.upserts(); got != wantUpserts {
 			t.Errorf("write attempts = %d, want %d", got, wantUpserts)
 		}
-		// Whatever landed suppresses the next Trigger (one write per
-		// live (rule, Target)).
+		// Whatever landed suppresses the next Trigger (one write per live report).
 		if err := svc.Trigger(context.Background(), liveRec(rec.Rule, rec.Target, now.Add(time.Minute), expiry)); err != nil {
 			t.Fatalf("next Trigger: %v", err)
 		}
@@ -541,12 +507,8 @@ func TestServiceConcurrentTriggerWaitsForTheWriteOutcome(t *testing.T) {
 	})
 }
 
-// TestServiceRebuildKeepsInFlightWrites pins the rebuild/Trigger
-// interleaving: a write in flight while Rebuild derives the set must
-// keep its suppression — the derivation runs under the service lock
-// and in-flight entries settle on their own outcome, so a Trigger
-// racing the rebuild is never discarded (a discarded entry lets the
-// next Trigger duplicate the write).
+// TestServiceRebuildKeepsInFlightWrites pins the rebuild/Trigger interleaving:
+// an in-flight write keeps its suppression across Rebuild.
 func TestServiceRebuildKeepsInFlightWrites(t *testing.T) {
 	now := time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)
 	expiry := now.Add(time.Hour)
@@ -558,8 +520,7 @@ func TestServiceRebuildKeepsInFlightWrites(t *testing.T) {
 	a := triggerAsync(svc, rec)
 	<-repo.upEntered // the write is in flight
 
-	// Rebuild derives the set from the table mid-write: the pending
-	// report is not a row yet (List sees nothing).
+	// Rebuild mid-write: the pending report is not a row yet (List sees nothing).
 	if err := svc.Rebuild(context.Background(), now); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}

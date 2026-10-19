@@ -23,16 +23,11 @@ import (
 	"github.com/HT4w5/bandage/internal/identity"
 )
 
-// Primary seam (spec: Testing Decisions): the assembled daemon — real
-// rule loader, parser, evaluation, report service and sqlite :memory:
-// repository behind the HTTP API — driven by raw nginx-JSON syslog
-// messages at a real ingest listener, asserted through GET /reports JSON,
-// with the wall clock injected (never sleep).
+// Primary seam: the assembled daemon driven by raw nginx-JSON syslog messages
+// at a real ingest listener, asserted through GET /reports JSON.
 
-// testClock is the injected wall clock every seam runs on (never
-// sleep). Reads are atomic and lock-free: the clock sits in the
-// measured benchmark path too (the tracker store reads it per event),
-// so a mutex here would tax every measured event.
+// testClock is the injected wall clock every seam runs on (never sleep);
+// reads are atomic because the clock also sits in measured benchmark paths.
 type testClock struct {
 	t atomic.Pointer[time.Time]
 }
@@ -71,9 +66,8 @@ func nginxLine(t, client, method, path string, status int, sent int64) string {
 		t, client, method, path, status, sent)
 }
 
-// testDaemon bundles a running daemon with a raw-line sender and the
-// captured log records (log actions are observable through the daemon's
-// injectable logger).
+// testDaemon bundles a running daemon with a raw-line sender and captured
+// log records.
 type testDaemon struct {
 	*Daemon
 	send func(line string)
@@ -81,9 +75,7 @@ type testDaemon struct {
 }
 
 // logCapture is a concurrency-safe zerolog writer that records every
-// record's level, message and fields for assertions — the daemon seam's
-// log capture (spec: Log capture), reworked from a stdlib slog handler
-// to a zerolog writer capturing decoded fields.
+// record's level, message and fields for assertions.
 type logCapture struct {
 	mu   sync.Mutex
 	buf  []byte
@@ -134,8 +126,7 @@ func (c *logCapture) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// attrInto decodes a captured field into v through its JSON encoding:
-// typed values survive the record's JSON round trip.
+// attrInto decodes a captured field into v through its JSON encoding.
 func attrInto(t *testing.T, rec capturedLog, key string, v any) {
 	t.Helper()
 	raw, ok := rec.Attrs[key]
@@ -180,10 +171,8 @@ func startTestDaemon(t *testing.T, clock *testClock, network, dbPath, rulesYAML 
 	return startTestDaemonCfg(t, clock, network, dbPath, rulesYAML, nil)
 }
 
-// startTestDaemonCfg is startTestDaemon with a config mutation hook for
-// tests that need a non-default knob (e.g. a small cache entry cap) and
-// trailing daemon options applied last (e.g. a differently leveled
-// logger).
+// startTestDaemonCfg is startTestDaemon with a config mutation hook and
+// trailing daemon options.
 func startTestDaemonCfg(t *testing.T, clock *testClock, network, dbPath, rulesYAML string, mutate func(*Config), extra ...Option) *testDaemon {
 	t.Helper()
 	listen := filepath.Join(t.TempDir(), "log.sock")
@@ -204,9 +193,8 @@ func startTestDaemonCfg(t *testing.T, clock *testClock, network, dbPath, rulesYA
 		},
 		DB:    DB{Driver: "sqlite", SQLite: SQLite{Path: dbPath}},
 		Cache: Cache{MaxEntries: 65536},
-		// The existing suite asserts exact accumulation values, so it
-		// runs the deterministic single-worker pipeline; the worker-pool
-		// tests set pipeline.workers explicitly (ADR 0007).
+		// The suite asserts exact accumulation values, so it runs the
+		// deterministic single-worker pipeline.
 		Pipeline: Pipeline{Workers: 1},
 		API:      API{Listen: "127.0.0.1:0"},
 	}
@@ -227,12 +215,8 @@ func startTestDaemonCfg(t *testing.T, clock *testClock, network, dbPath, rulesYA
 		t.Fatalf("Start error: %v", err)
 	}
 	t.Cleanup(func() {
-		// Close pooled HTTP connections before shutting down: the shared
-		// client can leave a connection that was accepted but never used
-		// (a parked spare is not idle to http.Server), and
-		// http.Server.Shutdown waits on those until the peer closes them
-		// (golang/go#22682). Belt and braces: the one-shot apiClient
-		// never pools, but nothing may leave a connection behind.
+		// Close pooled HTTP connections first: http.Server.Shutdown waits
+		// on accepted-but-unused connections (golang/go#22682).
 		if tr, ok := http.DefaultTransport.(*http.Transport); ok {
 			tr.CloseIdleConnections()
 		}
@@ -275,9 +259,8 @@ func startTestDaemonCfg(t *testing.T, clock *testClock, network, dbPath, rulesYA
 	return td
 }
 
-// freeAddr reserves a free listen address for the network and returns
-// it. The probe matches the network's address family and transport: a
-// port free for TCP may well be busy for UDP.
+// freeAddr reserves a free listen address for the network; the probe matches
+// the network's transport (a TCP-free port may be busy for UDP).
 func freeAddr(t *testing.T, network string) string {
 	t.Helper()
 	var addr string
@@ -311,10 +294,8 @@ func (d *testDaemon) waitProcessed(t *testing.T, n int64) {
 	}
 }
 
-// apiClient makes one-shot HTTP calls (keep-alive disabled). A pooled
-// connection the client never reuses would sit un-started on the server
-// where net/http's Shutdown leaves brand-new connections alone for ~5s,
-// racing the cleanup deadline; the tests must leave no connections behind.
+// apiClient makes one-shot HTTP calls (keep-alive disabled) so no pooled
+// connection can outlive a test and race the cleanup deadline.
 var apiClient = &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 
 // reportEntry mirrors the version-0 report document entry.
@@ -415,9 +396,7 @@ func (d *testDaemon) getReports(t *testing.T, query url.Values) reportDoc {
 }
 
 // statsDoc is the /stats document decoded loosely into a generic map:
-// the shape is human-facing and unversioned (ADR 0006), so tests assert
-// 200 and the counter values that must be reflected, never
-// field-for-field equality.
+// the shape is human-facing and unversioned, so never assert field-for-field.
 type statsDoc map[string]any
 
 // getStats issues GET /stats and returns the raw body plus the decoded
@@ -501,13 +480,13 @@ chains:
               ttl: 24h
 `
 
-// Overflow writes exactly one report carrying rule, chain, reason,
-// target, wall-clock timestamps, the tracker reading and the sample.
+// TestE2EOverflowWritesReport: overflow writes exactly one report carrying
+// rule, chain, reason, target, timestamps, tracker reading and sample.
 func TestE2EOverflowWritesReport(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", bandwidthRules)
 
-	// 6000 + 6000 − 1000·1s = 11000 > 10000: overflows on the second event.
+	// 6000 + 6000 - 1000*1s = 11000 > 10000: overflows on the second event.
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/releases/24.04.iso", 200, 6000))
 	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/releases/24.04.iso", 200, 6000))
 	d.waitProcessed(t, 2)
@@ -544,8 +523,8 @@ func TestE2EOverflowWritesReport(t *testing.T) {
 	}
 }
 
-// The rate tracker overflows strictly above volume (flux bucket.yaml:
-// leak=0, volume=2 → third request triggers).
+// TestE2ERateOverflowStrictlyAboveVolume: the tracker overflows strictly
+// above volume (leak=0, volume=2 -> third request triggers).
 func TestE2ERateOverflowStrictlyAboveVolume(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -577,8 +556,8 @@ chains:
 	}
 }
 
-// Decay is computed from event time, not wall time: steady events drain
-// and never overflow, a same-second burst does.
+// TestE2EDecayUsesEventTime: decay is computed from event time, not wall
+// time: steady events drain, a same-second burst overflows.
 func TestE2EDecayUsesEventTime(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -601,8 +580,8 @@ chains:
 		t.Fatalf("steady traffic produced reports %+v, want none", doc.Reports)
 	}
 
-	// A six-request burst at one event time decays the leftover, then
-	// accumulates 1..5; value 5 > 4 overflows.
+	// A six-request burst at one event time accumulates 1..5; value 5 > 4
+	// overflows.
 	for i := 0; i < 6; i++ {
 		d.send(nginxLine("1734346000", "203.0.113.9", "GET", "/api", 200, 0))
 	}
@@ -616,7 +595,8 @@ chains:
 	}
 }
 
-// Malformed lines and invalid required fields are dropped and counted.
+// TestE2EMalformedLinesDroppedAndCounted: malformed lines and invalid
+// required fields are dropped and counted.
 func TestE2EMalformedLinesDroppedAndCounted(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", bandwidthRules)
@@ -638,10 +618,8 @@ func TestE2EMalformedLinesDroppedAndCounted(t *testing.T) {
 	}
 }
 
-// One report per (rule, target), with row identity: a live report's
-// write is suppressed — its Sample, update time and expiry freeze at
-// the first write (ADR 0008) — while a re-armed Trigger upserts the
-// stored row with created_at fixed at the row's first insert.
+// TestE2EReportUpsertIdentity: one report per (rule, target) with row
+// identity; a live report's write is suppressed and frozen at its first write.
 func TestE2EReportUpsertIdentity(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -677,7 +655,7 @@ chains:
 		t.Fatalf("sort order = %q then %q", first.Target, second.Target)
 	}
 	// The re-Trigger wrote nothing: the live report freezes at the first
-	// write — Sample and update time unchanged (story 11).
+	// write (Sample and update time unchanged).
 	if second.CreatedAt != wallBase || second.UpdatedAt != wallBase || second.ExpiresAt != "2025-10-17T19:00:00Z" {
 		t.Errorf("created_at/updated_at/expires_at = %q/%q/%q, want all frozen at the first write",
 			second.CreatedAt, second.UpdatedAt, second.ExpiresAt)
@@ -692,11 +670,8 @@ chains:
 		t.Errorf("new report updated_at = %q", first.UpdatedAt)
 	}
 
-	// Past expiry (19:00) the report is no longer alive: the next
-	// Trigger upserts the still-stored row — created_at stays fixed at
-	// the row's first insert while updated_at and expires_at recompute,
-	// and the reading is a fresh episode (every Trigger empties the
-	// bucket, so the suppressed re-Trigger left none of its 150 behind).
+	// Past expiry (19:00) the next Trigger upserts the still-stored row:
+	// created_at stays fixed while updated_at and expires_at recompute.
 	clock.Advance(90 * time.Minute) // 19:40
 	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 150))
 	d.waitProcessed(t, 4)
@@ -723,9 +698,8 @@ chains:
 	}
 }
 
-// GET /reports filters by ?rule= and ?target= and never returns expired
-// reports. Two chains report on one event: a chain's first terminal
-// match ends it, so one event reports from one rule per chain.
+// TestE2EReportFiltersAndExpiry: GET /reports filters by ?rule= and ?target=
+// and never returns expired reports.
 func TestE2EReportFiltersAndExpiry(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -772,13 +746,8 @@ chains:
 	}
 }
 
-// GET /stats (ticket 05, ADR 0006) answers on the report listener
-// with the build identity and cumulative-since-start counters: the
-// build block mirrors the identity module, the pipeline block counts
-// lines received/parsed/dropped, and the tracker cache block shows
-// gets, sets, misses, evictions, size and the entry cap. The snapshot
-// is self-describing (generation timestamp, uptime, worker count) and
-// explicitly human-facing: indented JSON with no format version.
+// TestE2EStatsBuildAndCumulativeCounters: /stats answers with the build
+// identity and cumulative counters, as human-facing indented JSON.
 func TestE2EStatsBuildAndCumulativeCounters(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	d := startTestDaemonCfg(t, clock, "unixgram", ":memory:", bandwidthRules, func(c *Config) {
@@ -824,7 +793,7 @@ func TestE2EStatsBuildAndCumulativeCounters(t *testing.T) {
 	}
 
 	// The pipeline block: the resolved worker count and exact line
-	// accounting (spec story 17) under the worker pool.
+	// accounting under the worker pool.
 	for _, f := range []struct {
 		field string
 		want  float64
@@ -839,12 +808,8 @@ func TestE2EStatsBuildAndCumulativeCounters(t *testing.T) {
 		}
 	}
 
-	// The tracker cache block: each parsed event updated the shared
-	// store twice (file-size record + tracker bucket) — two first-time
-	// misses, four gets and four sets — and both records are live. The
-	// traffic stays below the rule's volume (6000 < 10000), so no
-	// Trigger resets the bucket and perturbs the accounting: this block
-	// measures update accounting, not Trigger cadence.
+	// The tracker cache block: each parsed event updated the shared store
+	// twice (file-size record + tracker bucket), and both records stay live.
 	for _, f := range []struct {
 		field string
 		want  float64
@@ -862,11 +827,8 @@ func TestE2EStatsBuildAndCumulativeCounters(t *testing.T) {
 	}
 }
 
-// The periodic statistics log line keeps its cadence and its fields,
-// and its counters agree with /stats: both render the same snapshot, so
-// the log trail and a poll can never tell different stories (spec
-// stories 22 and 27). The record is driven at the sweep's per-tick
-// entry point (like sweepOnce) — never by sleeping.
+// TestE2EStatisticsLogAgreesWithStats: the periodic statistics log line's
+// counters agree with /stats (both render the same snapshot).
 func TestE2EStatisticsLogAgreesWithStats(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", bandwidthRules)
@@ -901,9 +863,8 @@ func TestE2EStatisticsLogAgreesWithStats(t *testing.T) {
 	}
 }
 
-// Evictions surface in /stats' tracker cache block: the counter counts
-// the same events the eviction log records (spec story 23 — Evictions
-// resetting tracker state are visible without scraping logs).
+// TestE2EStatsCountsEvictions: evictions surface in /stats' tracker cache
+// block, counting the same events the eviction log records.
 func TestE2EStatsCountsEvictions(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -916,8 +877,7 @@ chains:
         actions: [{report: {reason: api-rate-overflow, ttl: 1h}}]
 `
 	// max_entries 1: the file-size record and the tracker bucket share
-	// one slot, so inserting the bucket evicts the record — one logged,
-	// counted eviction.
+	// one slot, so inserting the bucket evicts the record.
 	d := startTestDaemonCfg(t, clock, "unixgram", ":memory:", rules, func(c *Config) {
 		c.Cache.MaxEntries = 1
 	})
@@ -943,8 +903,8 @@ chains:
 	}
 }
 
-// GET /ping is liveness; nothing else is exposed beyond the report API
-// and the /stats snapshot (ADR 0006).
+// TestE2EAPIPingAndUnknownPaths: GET /ping is liveness; nothing else is
+// exposed beyond the report API and the /stats snapshot.
 func TestE2EAPIPingAndUnknownPaths(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", bandwidthRules)
@@ -971,8 +931,8 @@ func TestE2EAPIPingAndUnknownPaths(t *testing.T) {
 	}
 }
 
-// Reports survive restarts (sqlite); tracker state is memory-only and
-// restart-cold (per ADR 0002).
+// TestE2ERestartPersistsReportsNotTrackers: reports survive restarts (sqlite);
+// tracker state is memory-only and restart-cold.
 func TestE2ERestartPersistsReportsNotTrackers(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	dbPath := filepath.Join(t.TempDir(), "reports.db")
@@ -1005,7 +965,8 @@ func TestE2ERestartPersistsReportsNotTrackers(t *testing.T) {
 	}
 }
 
-// All three syslog transports accept raw nginx JSON lines.
+// TestE2ESyslogTransports: all three syslog transports accept raw nginx
+// JSON lines.
 func TestE2ESyslogTransports(t *testing.T) {
 	rules := `
 version: 0
@@ -1029,10 +990,8 @@ chains:
 	}
 }
 
-// Bounded tracker cache (ticket 07, ADR 0002): an evicted bucket
-// accumulates fresh state from zero on the next event — never a crash,
-// never a stale Match — and the rule matches again after re-accumulating
-// past volume.
+// TestE2EEvictedBucketAccumulatesFresh: an evicted bucket accumulates fresh
+// state from zero on the next event and matches again past volume.
 func TestE2EEvictedBucketAccumulatesFresh(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -1044,23 +1003,14 @@ chains:
         tracker: {track: rate, leak: 0, volume: 2}
         actions: [{report: {reason: api-rate-overflow, ttl: 1h}}, {log: "debug,MARK:BURSTY"}]
 `
-	// max_entries 2: file-size enrichment shares the store (namespace
-	// "filesize", ticket 05), so one slot holds its per-path record and
-	// one the live tracker bucket. The store evicts per shard (the cap
-	// splits into a per-shard budget of one), so the test's fixed keys
-	// must place both tracker targets in one shard and the filesize
-	// record in the other: FNV-1a of "bursty-api\x00203.0.113.7/32" and
-	// "bursty-api\x00203.0.113.9/32" (the store keys) agree mod 2 and
-	// "filesize\x00/api" differs. Then an event for another target caps
-	// the cache and evicts the previous bucket (logged and counted by
-	// the store).
+	// max_entries 2 with a per-shard budget of one: the fixed keys place
+	// both tracker targets in one shard and the filesize record in the other.
 	d := startTestDaemonCfg(t, clock, "unixgram", ":memory:", rules, func(c *Config) {
 		c.Cache.MaxEntries = 2
 	})
 
-	// 203.0.113.7 overflows on its third event: value 3 > 2. The
-	// Trigger empties the bucket (ticket 02), so a fourth event re-arms
-	// it at value 1 — the entry the next insert can evict.
+	// 203.0.113.7 overflows on its third event (value 3 > 2); the fourth
+	// event re-arms the emptied bucket at value 1, the entry an insert can evict.
 	for i := 0; i < 3; i++ {
 		d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/api", 200, 0))
 	}
@@ -1072,23 +1022,20 @@ chains:
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/api", 200, 0))
 	d.waitProcessed(t, 4)
 
-	// One event for another target caps the cache: 203.0.113.7's bucket
-	// is evicted and restarts from zero on its next event, so that event
-	// must not Match — the report stays untouched.
+	// The new target caps the cache and evicts 203.0.113.7's bucket, so
+	// that bucket's next event must not Match (no stale Match).
 	clock.Advance(10 * time.Minute)
 	d.send(nginxLine(eventTime2, "203.0.113.9", "GET", "/api", 200, 0))
 	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/api", 200, 0))
 	d.waitProcessed(t, 6)
-	// The eviction of the old bucket is logged with its tracker
-	// namespace and Target (ticket 07): nothing resets silently.
+	// The eviction is logged with its tracker namespace and Target.
 	if evictions := d.logs.withMessage("tracker cache eviction"); !slices.ContainsFunc(evictions, func(r capturedLog) bool {
 		return r.Attrs["namespace"] == "bursty-api" && r.Attrs["target"] == "203.0.113.7/32"
 	}) {
 		t.Errorf("eviction log for bursty-api/203.0.113.7/32 missing in %v", evictions)
 	}
-	// The evicted bucket's fresh event must not Match (no stale Match):
-	// the log action runs per match, so the report alone cannot show it
-	// while a live report suppresses the write.
+	// The log action shows the fresh event did not Match (the report write
+	// is suppressed while the report is alive, so marks are the observable).
 	if got := marks(d); len(got) != 1 {
 		t.Errorf("log-action marks = %v, want 1 (only the first episode matched)", got)
 	}
@@ -1097,10 +1044,8 @@ chains:
 		t.Fatalf("after eviction + one fresh event: %+v, want untouched report (no stale Match)", doc.Reports)
 	}
 
-	// The rule matches again after the tracker re-accumulates past
-	// volume from zero — and the DELETE re-arms the write (the live
-	// report would suppress it): the fresh report carries the new
-	// episode's reading under a fresh identity (the old row is gone).
+	// After re-accumulating past volume the rule matches again; the DELETE
+	// re-arms the write (a live report would suppress it).
 	if _, n := d.del(t, url.Values{"rule": {"bursty-api"}}); n != 1 {
 		t.Fatalf("delete count = %d, want 1", n)
 	}
@@ -1125,7 +1070,8 @@ chains:
 	}
 }
 
-// Real syslog framing (RFC3164-style) carries the nginx JSON as content.
+// TestE2ESyslogFramedMessage: real syslog framing (RFC3164-style) carries
+// the nginx JSON as content.
 func TestE2ESyslogFramedMessage(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -1145,9 +1091,8 @@ chains:
 	}
 }
 
-// DELETE /reports requires ?rule= and/or ?target= (400 without) and
-// returns deleted-row counts per filter combination. Deletion is
-// storage-level: expired rows count too.
+// TestE2EDeleteByFilterCounts: DELETE /reports requires ?rule= and/or
+// ?target= (400 without) and returns deleted-row counts per filter.
 func TestE2EDeleteByFilterCounts(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -1166,8 +1111,7 @@ chains:
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
-	// Two clients in far-apart networks, so target aggregation can
-	// never merge them into one target.
+	// Two clients in far-apart networks: aggregation never merges them.
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
 	d.send(nginxLine(eventTime1, "198.51.100.7", "GET", "/big", 200, 150))
 	d.waitProcessed(t, 2)
@@ -1229,10 +1173,8 @@ chains:
 	}
 }
 
-// Deleting reports does not touch tracker state: a Target that still
-// overflows is reported again on the next trigger — with a fresh
-// identity and a tracker reading that kept accumulating across the
-// deletion (ticket 05; the API docs say it plainly).
+// TestE2EDeleteDoesNotTouchTrackerState: deleting reports never touches
+// tracker state; the reading keeps accumulating across the deletion.
 func TestE2EDeleteDoesNotTouchTrackerState(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -1246,9 +1188,8 @@ chains:
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
-	// 150 + 150 = 300 > 200 overflows on the second event; the Trigger
-	// empties the bucket (ticket 02). The third event re-accumulates a
-	// partial episode (150) while the report is alive.
+	// 150 + 150 = 300 > 200 overflows on the second event; the third
+	// event re-accumulates a partial episode (150) while the report is alive.
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
@@ -1265,9 +1206,7 @@ chains:
 		t.Fatalf("after delete: %+v, want none", doc.Reports)
 	}
 
-	// The condition persists and deletion touched no tracker state: the
-	// partial episode survives the delete (had it been wiped, this
-	// event would sit at 150 and stay quiet), so the report comes back
+	// The partial episode survives the delete: the report comes back
 	// carrying the accumulated reading.
 	clock.Advance(10 * time.Minute)
 	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 150))
@@ -1288,9 +1227,8 @@ chains:
 	}
 }
 
-// The periodic sweeper deletes expired rows from storage at the
-// injected wall clock: an expired row is gone without any DELETE, a
-// live row survives the pass.
+// TestE2ESweeperDeletesExpiredRows: the periodic sweeper deletes expired rows
+// at the injected wall clock; live rows survive the pass.
 func TestE2ESweeperDeletesExpiredRows(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -1325,8 +1263,7 @@ chains:
 	if doc := d.getReports(t, nil); len(doc.Reports) != 1 || doc.Reports[0].Rule != "rule-two" {
 		t.Fatalf("after 90m: %+v, want only rule-two", doc.Reports)
 	}
-	// ...but they are still in storage until swept: deletion counts
-	// them like any other row.
+	// ...but they are still stored until swept.
 	if _, n := d.del(t, url.Values{"rule": {"rule-three"}}); n != 1 {
 		t.Errorf("delete of an expired row = %d, want 1 (still stored pre-sweep)", n)
 	}
@@ -1343,12 +1280,8 @@ chains:
 	}
 }
 
-// expires_at is recomputed from each landed write's ttl over the stored
-// row while created_at stays fixed at the row's first insert. A live
-// report is never refreshed — its expiry freezes with its sample and
-// update time (ADR 0008) — so the recomputation is observable once
-// expiry re-arms writing: a restart with a longer ttl pulls expiry
-// later over the stale, earlier-expiring value.
+// TestE2EExpiresAtRecomputedOnWrite: expires_at recomputes from each landed
+// write's ttl while created_at stays fixed at the row's first insert.
 func TestE2EExpiresAtRecomputedOnWrite(t *testing.T) {
 	expiryRules := func(ttl string) string {
 		return fmt.Sprintf(`
@@ -1381,10 +1314,8 @@ chains:
 	}
 	cancel()
 
-	// Restart with a longer ttl for the same rule after the one-minute
-	// report expired (its row still stored, unswept): the re-trigger
-	// writes over the row — expiry recomputes over the stale value while
-	// created_at stays fixed at the row's first insert.
+	// The re-trigger writes over the expired row: expiry recomputes
+	// while created_at stays fixed.
 	clock.Advance(30 * time.Minute)
 	d2 := startTestDaemon(t, clock, "unixgram", dbPath, expiryRules("24h"))
 	d2.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 150))
@@ -1412,8 +1343,8 @@ func mustTime(t *testing.T, s string) time.Time {
 	return tm
 }
 
-// A rule's filter gates its tracker: non-matching events neither
-// accumulate nor decay it and never match the rule.
+// TestE2EFilterGatesTracker: a rule's filter gates its tracker; non-matching
+// events neither accumulate nor decay it.
 func TestE2EFilterGatesTracker(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -1437,14 +1368,8 @@ chains:
 		t.Fatalf("reports after non-matching traffic = %+v, want none", doc.Reports)
 	}
 
-	// Matching events see only their own contributions. Two events at the
-	// same second accumulate 10 + 10 = 20 (no overflow at volume 20); the
-	// non-matching 500-byte event far in the future must neither
-	// accumulate nor move LastUpdate; the third matching event at t+2
-	// then decays 2s and overflows: 20 + 10 − 2 = 28 > 20. Had the
-	// non-matching event touched the tracker it would have drained it to
-	// zero and its later LastUpdate would suppress decay on the
-	// out-of-order third event (increment only → 10), never overflowing.
+	// Matching events see only their own contributions: 20 + 10 - 2 = 28
+	// > 20; a touched tracker would have drained and never overflowed.
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/releases/24.04.iso", 200, 10))
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/releases/24.04.iso", 200, 10))
 	d.send(nginxLine("1734345984.123", "203.0.113.7", "GET", "/api/data", 200, 500))
@@ -1466,10 +1391,8 @@ chains:
 		t.Errorf("sample path = %q, want the matching event", r.Sample.Path)
 	}
 
-	// Once the tracker overflows, non-matching events still never match:
-	// this one would run the rule's actions (and re-Trigger the report)
-	// if the filter did not gate — while a live report suppresses the
-	// write, the log action is the observable.
+	// Non-matching events still never match after overflow: the log
+	// action is the observable (the report write is suppressed).
 	clock.Advance(time.Hour)
 	d.send(nginxLine("1734345936.123", "203.0.113.7", "POST", "/releases/24.04.iso", 200, 500))
 	d.waitProcessed(t, 7)
@@ -1485,12 +1408,8 @@ chains:
 	}
 }
 
-// goto runs the target chain and then ends the current chain (DECISIONS
-// §1: flux's buildStmtGoto is buggy and behaves as jump — this test
-// cannot pass with that port). The topic chain's rule overflows only on
-// its second traversal of one event (rate leak=0 volume=1): the report
-// after a single event proves goto ran the target chain, and the missing
-// after-goto report proves goto ended the routing chain.
+// TestE2EGotoRunsTargetAndEndsCurrentChain: goto runs the target chain and
+// then ends the current chain (its later rules skipped).
 func TestE2EGotoRunsTargetAndEndsCurrentChain(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -1528,8 +1447,8 @@ chains:
 	}
 }
 
-// jump runs the target chain and then resumes the current chain: the
-// rule after the jump still runs on the same event.
+// TestE2EJumpRunsTargetAndResumesCurrentChain: jump runs the target chain
+// and then resumes the current chain.
 func TestE2EJumpRunsTargetAndResumesCurrentChain(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -1562,10 +1481,8 @@ chains:
 	}
 }
 
-// Rules within a chain run in order and the first match of a terminal
-// rule ends the chain: later rules are skipped even when they would
-// match, while a non-terminal match (log/jump only) lets traversal
-// continue to the next rule.
+// TestE2EFirstMatchPerChainEndsTraversal: a terminal rule's first match ends
+// the chain; a non-terminal match lets traversal continue.
 func TestE2EFirstMatchPerChainEndsTraversal(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -1601,8 +1518,8 @@ chains:
 	}
 }
 
-// stop ends traversal of its chain only: other chains are still
-// evaluated for the same event.
+// TestE2EStopEndsChainWithoutStoppingOtherChains: stop ends traversal of its
+// chain only.
 func TestE2EStopEndsChainWithoutStoppingOtherChains(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -1631,10 +1548,8 @@ chains:
 	}
 }
 
-// log actions log the rule, its Target, the Event and the rule's
-// tracker reading at the Match (PLAN §1), in flux's "level,message"
-// shape: the level and message name the record, the fields are
-// attached.
+// TestE2ELogActionLogsEventAndTrackerReading: log actions log the rule, its
+// Target, the Event and the tracker reading in "level,message" shape.
 func TestE2ELogActionLogsEventAndTrackerReading(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -1684,33 +1599,25 @@ chains:
 		}
 	}
 
-	// Log content is contractual here (spec story 18: a log action
-	// "logs the event and the tracker reading" — Testing Decisions:
-	// never assert log text except where logging is the contract).
+	// Log content is contractual here (logging is the contract).
 	doc := d.getReports(t, nil)
 	if len(doc.Reports) != 1 {
 		t.Fatalf("reports = %+v, want the overflow rule's report", doc.Reports)
 	}
-	// The trigger-time reading is report evidence (story 34): the log
-	// record's reading must equal it — kind, leak and volume shaped by
-	// the rule's config — and never a hand-computed bucket value.
+	// The log record's reading must equal the report's trigger-time reading.
 	reportReading := doc.Reports[0].Tracker
 	if reportReading.Track != "bandwidth" || reportReading.Leak != 0 || reportReading.Volume != 100 {
 		t.Errorf("report reading shape = %+v, want {bandwidth 0 100} from the rule's config", reportReading)
 	}
 
-	// A tracker-less rule matches on filter alone and logs an empty
-	// reading; the tracker rule logs the trigger-time reading. The
-	// Target is the report's Target — the event's source aggregated to
-	// the tracker's prefix; the tracker-less rule uses the default
-	// per-address aggregation (203.0.113.7 → 203.0.113.7/32).
+	// The tracker-less rule logs an empty reading; the tracker rule logs
+	// the trigger-time reading. Both use per-address aggregation.
 	checkLog("SEEN:", zerolog.DebugLevel, "seen", "203.0.113.7/32", bandage.TrackerReading{})
 	checkLog("OVERFLOW:", zerolog.InfoLevel, "overflow", "203.0.113.7/32", reportReading)
 }
 
-// Level filtering is observable (spec: level filtering): a daemon
-// logger built from a configured level keeps records at or above it and
-// drops the rest — the domain's four words map onto the real levels.
+// TestE2ELevelFilteringDropsRecordsBelowConfiguredLevel: a configured log
+// level keeps records at or above it and drops the rest.
 func TestE2ELevelFilteringDropsRecordsBelowConfiguredLevel(t *testing.T) {
 	rules := `
 version: 0
@@ -1774,10 +1681,8 @@ func (s *syncBuffer) String() string {
 	return s.b.String()
 }
 
-// Chains are traversed in file order and rules within a chain in order;
-// goto runs its target chain at the point of dispatch and then ends the
-// current chain (its later rules skipped), while later chains are still
-// evaluated for the event.
+// TestE2EChainFileOrderAndFirstMatchSemantics: chains run in file order;
+// goto runs its target chain at dispatch and ends the current chain.
 func TestE2EChainFileOrderAndFirstMatchSemantics(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -1807,11 +1712,8 @@ chains:
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
 	d.waitProcessed(t, 1)
 
-	// Traversal facts from report evidence: a3 is absent, so goto ended
-	// alpha; b1 reports, so later chains were still evaluated. gamma's
-	// double run (a2's dispatch plus its own file-order traversal)
-	// shows in the doubled MARK:G1 below — its rule Triggers on each
-	// traversal, and every Trigger empties the bucket (ticket 02).
+	// a3 is absent (goto ended alpha), b1 reports (later chains still
+	// ran), and the doubled MARK:G1 shows gamma ran twice.
 	doc := d.getReports(t, nil)
 	byRule := make(map[string]reportEntry, len(doc.Reports))
 	for _, r := range doc.Reports {
@@ -1834,12 +1736,8 @@ chains:
 		t.Errorf("g1 tracker value = %v, want 150 (each Trigger empties the bucket)", g1.Tracker.Value)
 	}
 
-	// The remaining fact — the emission order within the one event — is
-	// only observable as log content, and log content IS the contract
-	// for the log action (spec story 18: "logs the event and the tracker
-	// reading"; Testing Decisions: never assert log text except where
-	// logging is the contract). The markers are the action's message
-	// argument.
+	// The emission order is only observable as log content, which is the
+	// contract for the log action.
 	var got []string
 	for _, msg := range d.logs.messages() {
 		if strings.HasPrefix(msg, "MARK:") {
@@ -1852,9 +1750,8 @@ chains:
 	}
 }
 
-// A terminal rule runs its FULL action list before ending its chain
-// (spec: Actions and control flow): goto runs the target chain mid-list,
-// the report after it still runs, and only then does the chain end.
+// TestE2EFullActionListRunsBeforeTerminality: a terminal rule runs its full
+// action list (goto mid-list included) before ending its chain.
 func TestE2EFullActionListRunsBeforeTerminality(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -1898,19 +1795,15 @@ chains:
 	if !ok {
 		t.Fatalf("reports = %+v, want topic-match (goto runs the target chain)", doc.Reports)
 	}
-	// The topic chain ran twice for the one event — once at the goto
-	// dispatch and once at its own file-order traversal — so its
-	// tracker accumulated 2×150 bytes and overflows volume 250 only on
-	// the second traversal (a single run would stay quiet).
+	// The topic chain ran twice (goto dispatch plus its own file-order
+	// traversal), so its tracker accumulated 2x150 bytes.
 	if topic.Tracker.Value != 300 {
 		t.Errorf("topic-match tracker value = %v, want 300 (dispatch plus file-order traversal)", topic.Tracker.Value)
 	}
 }
 
-// Target aggregation (spec: target_prefix): sources in one aggregated
-// prefix share the tracker's state and produce ONE Report Target
-// rendered as the prefix; a single IPv6 source is never reported finer
-// than /64.
+// TestE2ETargetAggregationSharesStatePerPrefix: sources in one aggregated
+// prefix share tracker state and produce one Report Target (the prefix).
 func TestE2ETargetAggregationSharesStatePerPrefix(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1976,8 +1869,8 @@ chains:
 				t.Errorf("tracker value = %v, want 3 (three sources accumulated)", r.Tracker.Value)
 			}
 
-			// Another source in the same prefix lands in the bucket the
-			// Trigger emptied and stays quiet: still exactly one report.
+			// Another source in the same prefix lands in the emptied
+			// bucket and stays quiet: still exactly one report.
 			d.send(nginxLine(eventTime2, tt.fourth, "GET", "/api", 200, 0))
 			d.waitProcessed(t, int64(len(tt.clients))+1)
 			doc = d.getReports(t, nil)
@@ -1996,8 +1889,8 @@ chains:
 	}
 }
 
-// Sources in different aggregated prefixes never share tracker state and
-// produce one Report Target each; ?target= matches the prefix string.
+// TestE2ETargetAggregationSeparatesPrefixes: different aggregated prefixes
+// never share tracker state and produce one Report Target each.
 func TestE2ETargetAggregationSeparatesPrefixes(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -2011,9 +1904,8 @@ chains:
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
-	// Two sources per prefix: two buckets at value 2 each. Nothing
-	// overflows (value == volume does not overflow) — state does not
-	// smear across prefixes.
+	// Two sources per prefix give two buckets at value 2 each; nothing
+	// overflows (value == volume does not overflow).
 	for _, client := range []string{"203.0.113.7", "203.0.113.8", "203.0.114.7", "203.0.114.8"} {
 		d.send(nginxLine(eventTime1, client, "GET", "/api", 200, 0))
 	}
@@ -2051,11 +1943,8 @@ chains:
 	}
 }
 
-// File-size enrichment is per path with a warm-up gate (period 5,
-// minSamples 5 — DECISIONS §3): the replay tracker is blind until a
-// path's estimate warms, then accumulates transferred fractions of the
-// estimated size per (Target, path) and reports the computed volume with
-// the enriched sample size.
+// TestE2EReplayWarmUpBlindThenReports: the replay tracker is blind until a
+// path's file-size estimate warms, then accumulates and reports.
 func TestE2EReplayWarmUpBlindThenReports(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -2070,8 +1959,7 @@ chains:
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
 	// Warm-up (the first 4 of 5 samples): the size estimate is unknown,
-	// so every event is skipped entirely. Volume 2 would overflow on the
-	// second transfer had anything accumulated.
+	// so every event is skipped entirely.
 	for i := 0; i < 4; i++ {
 		d.send(nginxLine(fmt.Sprintf("%d", 1734345934+i), "203.0.113.7", "GET", "/releases/24.04.iso", 200, 1000))
 	}
@@ -2099,11 +1987,8 @@ chains:
 	}
 }
 
-// The volume method scales tolerance with file size at trigger time and
-// replay state stays separated per (Target, path): a small file (1
-// tolerated equivalent) overflows while a big file of the same target
-// (3 tolerated equivalents) with the same accumulated fractions does
-// not.
+// TestE2EReplayVolumeMethodScalesTolerance: the volume method scales
+// tolerance with file size; a small file overflows where a big one does not.
 func TestE2EReplayVolumeMethodScalesTolerance(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -2134,7 +2019,7 @@ chains:
 	}
 	r := doc.Reports[0]
 	// The small file's samples 5 and 6 add fraction 1 each: value 2
-	// overflows its volume 1 — the step method's volume_low at size 100.
+	// overflows its volume 1 (volume_low at size 100).
 	if r.Tracker.Track != "replay" || r.Tracker.Value != 2 || r.Tracker.Volume != 1 {
 		t.Errorf("tracker = %+v, want {replay 2 0 1} (volume_low at size 100)", r.Tracker)
 	}
@@ -2143,10 +2028,8 @@ chains:
 	}
 }
 
-// The daemon's startup log record carries the build identity fields —
-// name, version, commit and build date (spec story 14, ticket 02) — so
-// the log stream itself identifies the running build. The test binary is
-// not linker-injected, so the values are the identity module's defaults.
+// TestStartupLogCarriesBuildIdentity: the startup log record carries the
+// build identity fields, so the log stream identifies the running build.
 func TestStartupLogCarriesBuildIdentity(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", bandwidthRules)

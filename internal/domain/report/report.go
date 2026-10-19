@@ -1,8 +1,5 @@
-// Package report holds the report lifecycle: the Service every report
-// mutation flows through — the Trigger write, delete-by-filter (the API)
-// and expiry deletion (the sweeper) — and the persistence port behind
-// it. The report action is the only write path to the report table
-// (spec: Reports).
+// Package report holds the report lifecycle: the Service every report mutation
+// flows through (Trigger write, delete-by-filter, expiry deletion) and its port.
 package report
 
 import (
@@ -19,63 +16,34 @@ import (
 type Query struct {
 	Rule   string
 	Target string
-	// Now bounds expiry: rows with expires_at <= Now are never returned
-	// (safety net for the periodic sweeper).
+	// Now bounds expiry: rows with expires_at <= Now are never returned.
 	Now time.Time
 }
 
-// Matches reports whether a (rule, target) pair falls in the query's
-// filter: an empty Rule or Target matches everything. It is the one
-// filter predicate — the service applies it to the live set, the
-// repositories to their rows.
+// Matches reports whether a (rule, target) pair falls in the query's filter: an empty Rule or Target matches everything.
 func (q Query) Matches(rule, target string) bool {
 	return (q.Rule == "" || q.Rule == rule) && (q.Target == "" || q.Target == target)
 }
 
-// ErrUnfiltered is returned by Repository.Delete when neither Rule nor
-// Target is set: deletion is by filter, never delete-all.
+// ErrUnfiltered is returned by Repository.Delete when neither Rule nor Target is set: deletion is never delete-all.
 var ErrUnfiltered = errors.New("report: delete requires a rule or target filter")
 
 // Repository persists reports, one row per (rule, target).
 type Repository interface {
-	// Upsert inserts or overwrites the report for (rule, target).
-	// created_at stays fixed at the row's first insert; updated_at,
-	// expires_at, tracker reading and sample are overwritten.
+	// Upsert inserts or overwrites the report for (rule, target); created_at
+	// stays fixed at the row's first insert.
 	Upsert(ctx context.Context, rec bandage.Report) error
-	// List returns matching, unexpired reports sorted by created_at
-	// descending.
+	// List returns matching, unexpired reports sorted by created_at descending.
 	List(ctx context.Context, q Query) ([]bandage.Report, error)
-	// Delete removes reports matching the query and returns the number
-	// of deleted rows. At least one of Rule or Target must be set
-	// (ErrUnfiltered otherwise): deletion is never delete-all. Rows
-	// match regardless of expiry — deletion addresses storage, not
-	// just the live list — and tracker state is untouched.
+	// Delete removes reports matching the query and returns the deleted row count.
+	// Rule or Target must be set (ErrUnfiltered otherwise); rows match regardless of expiry.
 	Delete(ctx context.Context, q Query) (int, error)
-	// DeleteExpired deletes rows whose expires_at has passed and returns
-	// the number of deleted rows.
+	// DeleteExpired deletes rows whose expires_at has passed and returns the number of deleted rows.
 	DeleteExpired(ctx context.Context, now time.Time) (int, error)
 }
 
-// Service is the one report lifecycle module: a Trigger upserts exactly
-// one report per (rule, target), delete-by-filter and expiry deletion
-// remove rows. Every report mutation goes through it — the API and the
-// sweeper call the service, never the repository directly — so later
-// lifecycle rules can hang off these methods.
-//
-// The service also owns the write suppression (ADR 0008): while a
-// report for (rule, target) is alive a Trigger writes nothing but
-// completes without error (the report action ran). The live-report set
-// behind it is keyed exactly like report rows — (rule, target) — and
-// derived from the report table: rebuilt at startup (Rebuild),
-// maintained on Trigger, delete and expiry. In-memory state is only an
-// optimization: the report table is the correctness source, so a
-// restart re-derives it. A report is alive until expiry or deletion
-// (spec: Report): an expired entry stops suppressing even before the
-// sweeper removes its row, and the Trigger writes over it.
-//
-// Delete and DeleteExpired pass repository errors through unwrapped:
-// the repository's error contract (ErrUnfiltered, the adapter's error
-// strings) is operator-visible and unchanged.
+// Service is the one report lifecycle module: Trigger upserts one report per (rule, target);
+// while a report is alive Triggers write nothing but return nil (ADR 0008).
 type Service struct {
 	repo Repository
 
@@ -89,16 +57,12 @@ type reportKey struct {
 	target string
 }
 
-// liveEntry is one (rule, target)'s suppression state. A settled entry
-// is the live report's expiry: it decides aliveness at Trigger time.
-// An entry with inflight set marks a report write pending for the key:
-// concurrent Triggers wait for its outcome instead of mistaking the
-// pending write for a live report (spec stories 4, 5, 14).
+// liveEntry is one (rule, target)'s suppression state: settled expiry decides
+// aliveness at Trigger time; a non-nil inflight marks a pending write.
 type liveEntry struct {
 	expiresAt time.Time
-	// inflight is non-nil only while this key's write is in flight and
-	// is closed under s.mu once the outcome is settled (expiresAt set
-	// on success, the entry deleted on failure).
+	// inflight is non-nil only while this key's write is in flight; closed under
+	// s.mu once settled (entry kept on success, deleted on failure).
 	inflight chan struct{}
 }
 
@@ -106,22 +70,8 @@ func NewService(repo Repository) *Service {
 	return &Service{repo: repo, live: make(map[reportKey]*liveEntry)}
 }
 
-// Trigger records the report for the matching (rule, target) — unless
-// that report is already alive, in which case the write is suppressed
-// and Trigger completes without error (the report action ran; its
-// caller empties the tracker either way). Aliveness is decided at the
-// Trigger's wall time (rec.UpdatedAt): a report is alive while
-// expires_at is still ahead of it.
-//
-// Concurrent Triggers for one (rule, target) produce at most one write
-// (spec story 14): the first writes while the key is marked in flight,
-// and later Triggers wait for that write's outcome and re-evaluate —
-// suppressed once it lands (a live report now exists), writing it
-// themselves if it failed (spec story 5: a failed write is not a
-// Trigger outcome and must not lose the episode's detection; the
-// GLOSSARY Trigger carve-out). Trigger returns nil exactly when the
-// write landed or a live report suppressed it, so the caller's tracker
-// reset stays honest (spec story 4).
+// Trigger records the report for (rule, target) unless it is already alive, in
+// which case the write is suppressed; concurrent Triggers produce at most one write.
 func (s *Service) Trigger(ctx context.Context, rec bandage.Report) error {
 	key := reportKey{rule: rec.Rule, target: rec.Target}
 	var e *liveEntry
@@ -129,8 +79,8 @@ func (s *Service) Trigger(ctx context.Context, rec bandage.Report) error {
 		s.mu.Lock()
 		cur, ok := s.live[key]
 		if ok && cur.inflight != nil {
-			// A write for this key is pending: wait for its outcome,
-			// then re-evaluate. The pending write is not a live report.
+			// A write for this key is pending: wait for its outcome, then
+			// re-evaluate (the pending write is not a live report).
 			ch := cur.inflight
 			s.mu.Unlock()
 			select {
@@ -169,15 +119,8 @@ func (s *Service) Trigger(ctx context.Context, rec bandage.Report) error {
 	return nil
 }
 
-// Rebuild derives the live-report set from the report table at startup
-// (spec story 13): the rows the table still serves — the unexpired ones
-// at now — suppress; deleted or expired rows have left no state behind.
-// It supplants whatever the set held, except entries whose write is
-// still in flight: those settle on their own outcome and are never
-// discarded, so a Trigger racing the rebuild keeps its suppression.
-// The whole derivation runs under s.mu — including the repository
-// list — so a Trigger cannot interleave between the listing and the
-// swap.
+// Rebuild derives the live-report set from the report table at now and
+// supplants the set, keeping in-flight entries; runs under s.mu (no interleaving).
 func (s *Service) Rebuild(ctx context.Context, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -198,18 +141,13 @@ func (s *Service) Rebuild(ctx context.Context, now time.Time) error {
 	return nil
 }
 
-// List returns matching, unexpired reports sorted by created_at
-// descending (Repository.List).
+// List returns matching, unexpired reports (Repository.List).
 func (s *Service) List(ctx context.Context, q Query) ([]bandage.Report, error) {
 	return s.repo.List(ctx, q)
 }
 
-// Delete removes reports matching the query and returns the number of
-// deleted rows. At least one of Rule or Target must be set
-// (ErrUnfiltered otherwise); rows match regardless of expiry and
-// tracker state is untouched (Repository.Delete). The deleted rows'
-// (rule, target) pairs leave the live-report set: deletion re-arms
-// writing (spec story 9).
+// Delete removes reports matching the query and returns the number of deleted
+// rows (Repository.Delete). The deleted pairs leave the live set: re-arms writing.
 func (s *Service) Delete(ctx context.Context, q Query) (int, error) {
 	n, err := s.repo.Delete(ctx, q)
 	if err != nil {
@@ -225,10 +163,8 @@ func (s *Service) Delete(ctx context.Context, q Query) (int, error) {
 	return n, nil
 }
 
-// DeleteExpired deletes rows whose expires_at has passed and returns
-// the number of deleted rows (Repository.DeleteExpired). The swept
-// reports leave the live-report set: expiry re-arms writing (spec story
-// 10).
+// DeleteExpired deletes rows whose expires_at has passed and returns the number
+// of deleted rows (Repository.DeleteExpired). Swept reports leave the live set.
 func (s *Service) DeleteExpired(ctx context.Context, now time.Time) (int, error) {
 	n, err := s.repo.DeleteExpired(ctx, now)
 	if err != nil {

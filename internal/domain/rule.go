@@ -14,17 +14,12 @@ const (
 	// TrackBandwidth accumulates sent bytes (flux BYTE-BUCKET).
 	TrackBandwidth TrackKind = "bandwidth"
 	// TrackReplay accumulates the transferred fraction of an estimated
-	// file size (flux FILE-RATIO-BUCKET). Its state is keyed per
-	// (Target, path) and its volume may scale with the file size through
-	// a VolumeMethod.
+	// file size (flux FILE-RATIO-BUCKET); keyed per (Target, path).
 	TrackReplay TrackKind = "replay"
 )
 
-// VolumeMethod computes a tracker's tolerated volume from the estimated
-// file size in bytes: the replay tracker's volume is "tolerated download
-// equivalents" scaling with object size (PLAN §1; DECISIONS §8). The
-// implementations (constant, clamped-linear, inverse-square, step) live
-// in the track module; only the replay tracker configures one.
+// VolumeMethod computes a tracker's tolerated volume (download
+// equivalents) from the estimated file size; only replay configures one.
 type VolumeMethod interface {
 	Volume(sizeBytes float64) float64
 	// String renders the method for the --test plan.
@@ -36,26 +31,21 @@ type VolumeMethod interface {
 type TrackerConfig struct {
 	Kind TrackKind
 	Leak float64
-	// Volume is the constant volume: request counts for rate, bytes for
-	// bandwidth, tolerated download equivalents for a plain scalar
-	// replay volume.
+	// Volume is the constant volume: requests (rate), bytes (bandwidth),
+	// or tolerated download equivalents (plain scalar replay).
 	Volume float64
 	// VolumeMethod computes the replay volume from the estimated file
-	// size instead of the constant Volume; nil for rate and bandwidth
-	// and for a scalar replay volume.
+	// size instead of Volume; nil otherwise.
 	VolumeMethod VolumeMethod
-	// TTL is the cache-entry TTL derived at build (volume/leak) for rate
-	// and bandwidth. Replay derives it per event from the volume-method
-	// output (DECISIONS §8) and leaves this zero.
+	// TTL is the cache-entry TTL derived at build (volume/leak); replay
+	// derives it per event and leaves this zero.
 	TTL time.Duration
-	// TargetPrefix is the tracker's target aggregation, defaulted at
-	// build (DefaultTargetPrefix).
+	// TargetPrefix is the tracker's target aggregation (defaulted at build).
 	TargetPrefix TargetPrefix
 }
 
 // VolumeFor returns the tolerated volume for an estimated file size in
-// bytes: the volume method's output when configured, the constant
-// volume otherwise.
+// bytes: the volume method's output when configured, Volume otherwise.
 func (c *TrackerConfig) VolumeFor(sizeBytes float64) float64 {
 	if c.VolumeMethod != nil {
 		return c.VolumeMethod.Volume(sizeBytes)
@@ -63,8 +53,7 @@ func (c *TrackerConfig) VolumeFor(sizeBytes float64) float64 {
 	return c.Volume
 }
 
-// VolumeDesc renders the volume configuration for the --test plan: the
-// volume method's description or the constant volume.
+// VolumeDesc renders the volume configuration for the --test plan.
 func (c *TrackerConfig) VolumeDesc() string {
 	if c.VolumeMethod != nil {
 		return c.VolumeMethod.String()
@@ -81,21 +70,18 @@ type ReportAction struct {
 	TTL time.Duration
 }
 
-// LogAction emits debug output for a match: flux's "level,message"
-// shape (e.g. `log: "debug,ROUTE:"`), logging the rule, its Target, the
-// event and the rule's tracker reading. It is never terminal.
+// LogAction emits debug output for a match (flux's "level,message"
+// shape). It is never terminal.
 type LogAction struct {
-	// Level is the domain level parsed from the "level" argument (the
-	// four-word vocabulary — a rule can never reach a process-exiting
-	// level, ADR 0005).
+	// Level is the parsed "level" argument: the four-word vocabulary can
+	// never reach a process-exiting level (ADR 0005).
 	Level Level
 	// Message is the "message" argument (flux's prefix).
 	Message string
 }
 
-// Action is a step executed when a rule matches; the actions of a match
-// run in order. Exactly one field is set. The vocabulary is report, log,
-// goto, jump and stop (the chains/actions ticket).
+// Action is a step executed when a rule matches; a match's actions run
+// in order. Exactly one field is set.
 type Action struct {
 	Report *ReportAction
 	Log    *LogAction
@@ -108,9 +94,8 @@ type Action struct {
 	Stop bool
 }
 
-// ActionVisitor handles one action variant. The evaluation dispatcher
-// and the --test describer both walk action lists through Action.Accept,
-// so the five-case action vocabulary has a single dispatch point.
+// ActionVisitor handles one action variant; Action.Accept dispatches
+// each action to its matching method.
 type ActionVisitor interface {
 	VisitReport(*ReportAction) error
 	VisitLog(*LogAction) error
@@ -143,10 +128,8 @@ type Matcher interface {
 	Match(event *Event) bool
 }
 
-// Rule is a named condition-action pairing: a filter, at most one
-// tracker, and an ordered list of actions. A rule matches when its filter
-// accepts the event and its tracker (if any) overflows. The ID namespaces
-// the rule's tracker state.
+// Rule is a named condition-action pairing: a filter, at most one tracker
+// and ordered actions. It matches when the filter accepts and the tracker (if any) overflows; the ID namespaces tracker state.
 type Rule struct {
 	ID string
 	// FilterSource is the effective filter expression as written
@@ -157,10 +140,8 @@ type Rule struct {
 	Actions      []Action
 }
 
-// Terminal reports whether a match of this rule ends traversal of its
-// chain after the rule's full action list has run (PLAN §1: a rule
-// containing report, goto or stop is terminal; other chains are still
-// evaluated for the event).
+// Terminal reports whether a match of this rule ends chain traversal
+// after its action list has run (report, goto or stop actions).
 func (r Rule) Terminal() bool {
 	for _, a := range r.Actions {
 		if a.Report != nil || a.Goto != "" || a.Stop {

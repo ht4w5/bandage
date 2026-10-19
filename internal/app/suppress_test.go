@@ -14,25 +14,16 @@ import (
 	"github.com/HT4w5/bandage/internal/infra/persistence/sqlite"
 )
 
-// The report write is suppressed while a report for (rule, Target) is
-// alive (ticket 03, ADR 0008): further Triggers for it write nothing —
-// the rule keeps matching and all its actions keep running, and the
-// tracker still empties — while the live report's Sample and update
-// time freeze. Deleting or expiring the report re-arms writing, and a
-// restart re-derives suppression from the report table. Assertions are
-// external only (spec Testing Decisions): whether a write landed or was
-// suppressed, actions run, re-arm behavior and what /reports serves.
+// Report write suppression while a report for (rule, Target) is alive: further
+// Triggers write nothing but actions keep running; delete/expiry re-arms writes.
 
-// nginxLineAgent is nginxLine with the optional agent field (the
-// tracker-less tripwire matches on it).
+// nginxLineAgent is nginxLine with the optional agent field.
 func nginxLineAgent(t, client, method, path string, status int, sent int64, agent string) string {
 	return fmt.Sprintf(`{"time":%q,"client":%q,"method":%q,"url":%q,"status":%d,"sent":%d,"agent":%q}`,
 		t, client, method, path, status, sent, agent)
 }
 
-// marks returns the captured MARK-prefixed log-action messages in
-// emission order: the log action is the observable proof that a rule
-// matched and ran its actions even while the write is suppressed.
+// marks returns the captured MARK log-action messages in emission order.
 func marks(d *testDaemon) []string {
 	var out []string
 	for _, msg := range d.logs.messages() {
@@ -43,8 +34,8 @@ func marks(d *testDaemon) []string {
 	return out
 }
 
-// stickyRules is a one-rule fixture that overflows on any single
-// 150-byte event (bandwidth volume 100) and reports for an hour.
+// stickyRules is a one-rule fixture that overflows on any single 150-byte
+// event (bandwidth volume 100) and reports for an hour.
 const stickyRules = `
 version: 0
 chains:
@@ -55,9 +46,8 @@ chains:
         actions: [{report: {reason: sticky, ttl: 1h}}]
 `
 
-// tripwireRules is the tracker-less tripwire (spec story 12/29): an
-// agent keyword filter with a report action and no tracker — legal by
-// decision; suppression alone bounds its writes.
+// tripwireRules is the tracker-less tripwire: an agent keyword filter with a
+// report action and no tracker; suppression alone bounds its writes.
 const tripwireRules = `
 version: 0
 chains:
@@ -68,10 +58,8 @@ chains:
         actions: [{report: {reason: ua-trip, ttl: 1h}}]
 `
 
-// While the report is alive, further Triggers write nothing but the
-// rule keeps matching and its actions keep running per event: the
-// report freezes at the first write — Sample and update time unchanged
-// (stories 2, 3, 11).
+// TestE2ESuppressedTriggersFreezeReportButRunActions: while the report is
+// alive further Triggers write nothing, but actions run and the report freezes.
 func TestE2ESuppressedTriggersFreezeReportButRunActions(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -96,9 +84,7 @@ chains:
 		t.Fatalf("first write updated_at/expires_at = %q/%q", first.UpdatedAt, first.ExpiresAt)
 	}
 
-	// A fresh episode Triggers again 10 minutes later, but the report is
-	// alive: nothing is written. A write would move updated_at to 18:10
-	// and the Sample to the new event.
+	// A fresh episode Triggers again, but the report is alive: nothing is written.
 	clock.Advance(10 * time.Minute)
 	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big2", 200, 150))
 	d.waitProcessed(t, 2)
@@ -124,9 +110,8 @@ chains:
 	}
 }
 
-// Each Trigger empties the rule's tracker even while the write is
-// suppressed (story 4): the episode cadence survives the silence, so a
-// later re-arm writes a fresh episode's reading, not a running total.
+// TestE2ESuppressedTriggersStillEmptyTheTracker: each Trigger empties the
+// tracker even while the write is suppressed.
 func TestE2ESuppressedTriggersStillEmptyTheTracker(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -141,8 +126,7 @@ chains:
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
 	// 150 + 150 = 300 > 200 overflows on every second event: event 2
-	// Triggers and writes, event 4 Triggers and is suppressed. Both
-	// Triggers empty the bucket.
+	// writes, event 4 is suppressed. Both Triggers empty the bucket.
 	for range 4 {
 		d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
 	}
@@ -156,9 +140,8 @@ chains:
 		t.Fatalf("delete count = %d, want 1", n)
 	}
 
-	// The suppressed Trigger emptied the bucket: one fresh 150-byte
-	// event must stay quiet (had the bucket kept its 300, this event
-	// would overflow and report at reading 450).
+	// The suppressed Trigger emptied the bucket: a fresh 150-byte event
+	// must stay quiet.
 	clock.Advance(10 * time.Minute) // 18:10
 	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 150))
 	d.waitProcessed(t, 5)
@@ -166,8 +149,8 @@ chains:
 		t.Fatalf("reports after one fresh event = %+v, want none (a fresh episode, not a running total)", doc.Reports)
 	}
 
-	// One full volume later the re-armed write lands with a fresh
-	// episode's reading: 150 kept + 150 new.
+	// One full volume later the re-armed write lands with a fresh episode's
+	// reading: 150 kept + 150 new.
 	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 150))
 	d.waitProcessed(t, 6)
 	doc = d.getReports(t, nil)
@@ -183,9 +166,8 @@ chains:
 	}
 }
 
-// A tracker-less report rule (the tripwire) writes at most one report
-// per (rule, Target) while it is alive (story 12): every matching event
-// Triggers, but suppression bounds the writes per Target.
+// TestE2ETrackerlessTripwireWritesOncePerTarget: every matching event
+// Triggers, but suppression bounds the writes to one per Target.
 func TestE2ETrackerlessTripwireWritesOncePerTarget(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", tripwireRules)
@@ -197,8 +179,7 @@ func TestE2ETrackerlessTripwireWritesOncePerTarget(t *testing.T) {
 		t.Fatalf("reports = %+v, want one for 203.0.113.7/32", doc.Reports)
 	}
 
-	// Every further curl event Triggers (tracker-less rules match on the
-	// filter alone) but the live report suppresses its write.
+	// Every further curl event Triggers but the live report suppresses its write.
 	clock.Advance(10 * time.Minute)
 	d.send(nginxLineAgent(eventTime2, "203.0.113.7", "GET", "/", 200, 0, "curl/8.0"))
 	d.send(nginxLineAgent(eventTime2, "203.0.113.8", "GET", "/", 200, 0, "curl/8.0"))
@@ -219,10 +200,8 @@ func TestE2ETrackerlessTripwireWritesOncePerTarget(t *testing.T) {
 	}
 }
 
-// Suppression is per (rule, Target) (story 6): one rule's report never
-// silences another rule's write, so reasons keep accruing across rules
-// for the same Target, and deleting one rule's report re-arms only that
-// rule.
+// TestE2ESuppressionIsPerRuleAndTarget: one rule's report never silences
+// another rule's write, and deleting re-arms only that rule.
 func TestE2ESuppressionIsPerRuleAndTarget(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -241,8 +220,8 @@ chains:
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
-	// Both rules report the same Target on the first event: two reports,
-	// one per (rule, Target) — reasons accrue across rules.
+	// Both rules report the same Target on the first event: one report per
+	// (rule, Target).
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
 	d.waitProcessed(t, 1)
 	doc := d.getReports(t, nil)
@@ -250,9 +229,8 @@ chains:
 		t.Fatalf("reports = %+v, want one per rule for the shared Target", doc.Reports)
 	}
 
-	// Both rules Trigger again on the next event; both writes are
-	// suppressed (their own live reports), each frozen at its first
-	// write.
+	// Both rules Trigger again; both writes are suppressed at their own
+	// live reports.
 	clock.Advance(10 * time.Minute)
 	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 150))
 	d.waitProcessed(t, 2)
@@ -266,8 +244,7 @@ chains:
 		}
 	}
 
-	// Deleting rule-one's report re-arms rule-one only: its next Trigger
-	// writes while rule-two stays suppressed.
+	// Deleting rule-one's report re-arms rule-one only.
 	if _, n := d.del(t, url.Values{"rule": {"rule-one"}}); n != 1 {
 		t.Fatalf("delete count = %d, want 1", n)
 	}
@@ -290,8 +267,8 @@ chains:
 	}
 }
 
-// Deleting a report re-arms a tracker-less rule immediately (story 9):
-// its next matching event writes — there is no episode to re-accumulate.
+// TestE2EDeleteRearmsTrackerlessOnNextEvent: the next matching event writes
+// (there is no episode to re-accumulate).
 func TestE2EDeleteRearmsTrackerlessOnNextEvent(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", tripwireRules)
@@ -309,8 +286,7 @@ func TestE2EDeleteRearmsTrackerlessOnNextEvent(t *testing.T) {
 		t.Fatalf("delete count = %d, want 1", n)
 	}
 
-	// The very next matching event writes again: tracker-less rules
-	// re-Trigger immediately once writing is re-armed.
+	// The very next matching event writes again.
 	clock.Advance(10 * time.Minute) // 18:20
 	d.send(nginxLineAgent(eventTime2, "203.0.113.7", "GET", "/", 200, 0, "curl/8.0"))
 	d.waitProcessed(t, 3)
@@ -320,10 +296,8 @@ func TestE2EDeleteRearmsTrackerlessOnNextEvent(t *testing.T) {
 	}
 }
 
-// Expiry re-arms writing identically to deletion (story 10) — and a
-// report is alive only until expiry or deletion (GLOSSARY Report), so
-// an expired report stops suppressing even before the sweeper removes
-// its row.
+// TestE2EExpiryRearmsWriting: a report is alive only until expiry or deletion,
+// so expiry re-arms writing even before the sweeper removes its row.
 func TestE2EExpiryRearmsWriting(t *testing.T) {
 	t.Run("the sweeper re-arms", func(t *testing.T) {
 		clock := newTestClock(mustTime(t, wallBase))
@@ -332,7 +306,7 @@ func TestE2EExpiryRearmsWriting(t *testing.T) {
 		d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
 		d.waitProcessed(t, 1)
 
-		clock.Advance(90 * time.Minute) // 19:30 — past the 19:00 expiry
+		clock.Advance(90 * time.Minute) // 19:30 - past the 19:00 expiry
 		if n, err := d.sweepOnce(context.Background()); err != nil || n != 1 {
 			t.Fatalf("sweepOnce = (%d, %v), want (1, nil)", n, err)
 		}
@@ -356,7 +330,7 @@ func TestE2EExpiryRearmsWriting(t *testing.T) {
 		d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
 		d.waitProcessed(t, 1)
 
-		clock.Advance(90 * time.Minute) // 19:30 — past expiry, nothing swept
+		clock.Advance(90 * time.Minute) // 19:30 - past expiry, nothing swept
 		d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 150))
 		d.waitProcessed(t, 2)
 		doc := d.getReports(t, nil)
@@ -364,8 +338,8 @@ func TestE2EExpiryRearmsWriting(t *testing.T) {
 			t.Fatalf("reports = %+v, want the re-armed write over the stored row", doc.Reports)
 		}
 		r := doc.Reports[0]
-		// The row was still stored (unswept), so the upsert keeps its
-		// identity: created_at stays fixed at the row's first insert.
+		// The stored row keeps its identity: created_at stays fixed at the
+		// row's first insert.
 		if r.CreatedAt != wallBase {
 			t.Errorf("created_at = %q, want fixed %q (upsert over the stored row)", r.CreatedAt, wallBase)
 		}
@@ -375,8 +349,8 @@ func TestE2EExpiryRearmsWriting(t *testing.T) {
 	})
 }
 
-// After a restart suppression is rebuilt from the report table (story
-// 13): a still-alive report suppresses the next Trigger's write.
+// TestE2ERestartSuppressesForAliveReports: suppression is rebuilt from the
+// report table, so a still-alive report suppresses the next Trigger's write.
 func TestE2ERestartSuppressesForAliveReports(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	dbPath := filepath.Join(t.TempDir(), "reports.db")
@@ -390,7 +364,7 @@ func TestE2ERestartSuppressesForAliveReports(t *testing.T) {
 	}
 	cancel()
 
-	clock.Advance(10 * time.Minute) // 18:10 — the report is alive until 19:00
+	clock.Advance(10 * time.Minute) // 18:10 - the report is alive until 19:00
 	d2 := startTestDaemon(t, clock, "unixgram", dbPath, stickyRules)
 	d2.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 150))
 	d2.waitProcessed(t, 1)
@@ -404,8 +378,7 @@ func TestE2ERestartSuppressesForAliveReports(t *testing.T) {
 	}
 }
 
-// A deleted report does not suppress after a restart: the next Trigger
-// writes.
+// TestE2ERestartDoesNotSuppressDeletedReports: the next Trigger writes.
 func TestE2ERestartDoesNotSuppressDeletedReports(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	dbPath := filepath.Join(t.TempDir(), "reports.db")
@@ -432,8 +405,8 @@ func TestE2ERestartDoesNotSuppressDeletedReports(t *testing.T) {
 	}
 }
 
-// An expired report does not suppress after a restart either: the row
-// may still be stored (unswept), but it is no longer alive.
+// TestE2ERestartDoesNotSuppressExpiredReports: an expired report no longer
+// suppresses even while its row is still stored (unswept).
 func TestE2ERestartDoesNotSuppressExpiredReports(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	dbPath := filepath.Join(t.TempDir(), "reports.db")
@@ -447,7 +420,7 @@ func TestE2ERestartDoesNotSuppressExpiredReports(t *testing.T) {
 	}
 	cancel()
 
-	clock.Advance(90 * time.Minute) // 19:30 — the report expired at 19:00
+	clock.Advance(90 * time.Minute) // 19:30 - the report expired at 19:00
 	d2 := startTestDaemon(t, clock, "unixgram", dbPath, stickyRules)
 	d2.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 150))
 	d2.waitProcessed(t, 1)
@@ -456,16 +429,14 @@ func TestE2ERestartDoesNotSuppressExpiredReports(t *testing.T) {
 		t.Fatalf("reports = %+v, want the re-armed write", doc.Reports)
 	}
 	r := doc.Reports[0]
-	// The expired row is still stored (unswept), so the write upserts it
-	// with its identity intact.
+	// The stored (unswept) row keeps its identity through the upsert.
 	if r.CreatedAt != wallBase || r.UpdatedAt != "2025-10-17T19:30:00Z" {
 		t.Errorf("created_at/updated_at = %q/%q, want fixed %q and the 19:30 write",
 			r.CreatedAt, r.UpdatedAt, wallBase)
 	}
 }
 
-// countingStore counts report writes at the store seam: the write is
-// the observable unit for "at most one write per live report".
+// countingStore counts report writes at the store seam.
 type countingStore struct {
 	*sqlite.ReportRepository
 	writes atomic.Int64
@@ -476,9 +447,8 @@ func (c *countingStore) Upsert(ctx context.Context, rec bandage.Report) error {
 	return c.ReportRepository.Upsert(ctx, rec)
 }
 
-// Concurrent workers agree on suppression per (rule, Target) (story
-// 14): a storm of simultaneously overflowing events produces at most
-// one write under the relaxed-ordering worker pool (ADR 0007).
+// TestE2EConcurrentTriggersAtMostOneWrite: a storm of simultaneously
+// overflowing events produces at most one write under the worker pool.
 func TestE2EConcurrentTriggersAtMostOneWrite(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	inner, err := sqlite.Open(":memory:")
@@ -505,11 +475,8 @@ func TestE2EConcurrentTriggersAtMostOneWrite(t *testing.T) {
 	}
 }
 
-// A flagged Target's events keep enriching Filesize and feeding other
-// rules' trackers (story 8): nothing is dropped from analysis once a
-// report is alive — every event parses, the flagging rule keeps
-// matching (its actions run per event) and the replay rule still warms
-// its estimate and reports.
+// TestE2EFlaggedTargetEventsKeepFeedingAnalysis: nothing is dropped from
+// analysis once a report is alive; other rules' trackers keep feeding.
 func TestE2EFlaggedTargetEventsKeepFeedingAnalysis(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -528,10 +495,8 @@ chains:
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
-	// Six full transfers of one path from one Target: the bandwidth rule
-	// Triggers every event (1000 > 100) but writes only the first; the
-	// replay rule is blind while the Filesize estimate warms (the first
-	// 4 samples) and overflows on the sixth (value 2 > 1).
+	// The bandwidth rule Triggers every event (1000 > 100) but writes only
+	// the first; the replay rule overflows on the sixth (value 2 > 1).
 	const events = 6
 	for i := range events {
 		d.send(nginxLine(fmt.Sprintf("%d", 1734345934+i), "203.0.113.7", "GET", "/releases/24.04.iso", 200, 1000))
@@ -550,8 +515,8 @@ chains:
 	if r := byRule["egress"]; r.UpdatedAt != wallBase || r.Sample.Time != "2024-12-16T10:45:34Z" {
 		t.Errorf("egress report = %+v, want it frozen at the first Trigger's write", r)
 	}
-	// ...while the flagged Target's events still fed Filesize (the
-	// estimate warmed from their samples) and the replay tracker.
+	// ...while the flagged Target's events still fed Filesize and the replay
+	// tracker.
 	r := byRule["iso-replay"]
 	if r.Tracker.Track != "replay" || r.Tracker.Value != 2 || r.Tracker.Volume != 1 {
 		t.Errorf("iso-replay tracker = %+v, want {replay 2 0 1}", r.Tracker)
@@ -560,8 +525,7 @@ chains:
 		t.Errorf("iso-replay sample = %+v, want the triggering transfer with enriched size 1000", r.Sample)
 	}
 
-	// The flagging rule matched and ran its actions for every event and
-	// no event was dropped from analysis.
+	// The flagging rule ran its actions for every event; nothing was dropped.
 	if got := marks(d); len(got) != events {
 		t.Errorf("log-action marks = %v, want %d (one per event)", got, events)
 	}
@@ -571,10 +535,8 @@ chains:
 	}
 }
 
-// Suppression grain for a replay rule is (rule, Target) like every
-// other rule (story 17): per-path episodes keep Triggering per
-// (Target, path), but one live report per (rule, Target) is the single
-// uniform rule — the second path's Trigger writes nothing.
+// TestE2EReplaySuppressionGrainIsRuleAndTarget: per-path episodes keep
+// Triggering, but one live report per (rule, Target) suppresses the rest.
 func TestE2EReplaySuppressionGrainIsRuleAndTarget(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -588,10 +550,8 @@ chains:
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
-	// Two paths, one Target: each path warms its own Filesize estimate
-	// (4 blind samples) and overflows on its sixth transfer (value 2 >
-	// 1). The first path's Trigger writes; the second path's Trigger is
-	// suppressed at (rule, Target) grain.
+	// Two paths, one Target: each path overflows on its sixth transfer;
+	// the second path's Trigger is suppressed at (rule, Target) grain.
 	for i := range 6 {
 		d.send(nginxLine(fmt.Sprintf("%d", 1734345934+i), "203.0.113.7", "GET", "/a.iso", 200, 1000))
 	}
@@ -613,8 +573,7 @@ chains:
 	if r.UpdatedAt != wallBase || r.Sample.Path != "/a.iso" {
 		t.Errorf("report = %+v, want it frozen at the first path's write", r)
 	}
-	// Both paths reached a Trigger (two rule matches ran the actions)
-	// while only one write landed.
+	// Both paths Triggered while only one write landed.
 	if got := marks(d); len(got) != 2 {
 		t.Errorf("log-action marks = %v, want one per Triggering path", got)
 	}

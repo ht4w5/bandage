@@ -5,10 +5,8 @@ import (
 	"testing"
 )
 
-// Quantity parsing (DECISIONS §5): plain numbers for rate and replay,
-// decimal human sizes for bandwidth — each optionally followed by "/s".
-// The bucket math and TTL derivation live on the domain core's Record
-// (internal/domain), where every domain module can speak them.
+// Quantity parsing: plain numbers for rate and replay, decimal human sizes for
+// bandwidth - each optionally followed by "/s".
 
 func TestParseNumber(t *testing.T) {
 	tests := []struct {

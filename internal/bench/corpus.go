@@ -1,14 +1,5 @@
-// Package bench is the shared harness for the v0 benchmark suite
-// (spec v0-benchmarks, Phase 0): a deterministic nginx-JSON line
-// fixture corpus with controlled key distributions, and testing.B
-// helpers. It is imported only by tests and benchmarks, never by
-// production code.
-//
-// Corpus generation is deterministic by construction: a self-contained
-// splitmix64 PRNG seeded per corpus, so the same arguments always yield
-// byte-identical lines on every Go version and platform. Benchmarks
-// build their corpus once before the b.Loop() loop and cycle it via
-// Line/Event, so no fixture is ever rebuilt inside the timed region.
+// Package bench is the shared harness for the v0 benchmark suite: a
+// deterministic nginx-JSON fixture corpus and testing.B helpers, for tests only.
 package bench
 
 import (
@@ -20,22 +11,16 @@ import (
 	bandage "github.com/HT4w5/bandage/internal/domain"
 )
 
-// Seed is the fixed seed every benchmark in the suite generates its
-// fixtures from, so runs stay comparable across benchmarks and machines.
+// Seed is the fixed fixture seed, keeping runs comparable across machines.
 const Seed uint64 = 0x5eed
 
-// LineShape selects the JSON shape of a generated nginx-JSON line
-// (flux log format: escape=json, $msec/$remote_addr/$request_method/
-// $uri/$status/$body_bytes_sent/$http_user_agent).
+// LineShape selects the JSON shape of a generated nginx-JSON line.
 type LineShape int
 
 const (
-	// ShapeMinimal renders only the required fields: time, client,
-	// method, url, status, sent. Its events have no agent.
+	// ShapeMinimal renders only the required fields; its events have no agent.
 	ShapeMinimal LineShape = iota
-	// ShapeFull additionally renders the optional and reserved fields
-	// (agent, host, server, duration) and an unknown field the parser
-	// must ignore.
+	// ShapeFull additionally renders optional, reserved and unknown fields.
 	ShapeFull
 )
 
@@ -47,19 +32,15 @@ func (s LineShape) String() string {
 	return "minimal"
 }
 
-// KeyDist selects how paths and client IPs — the tracker-cache key
-// material — are distributed across a corpus.
+// KeyDist selects how paths and client IPs are distributed across a corpus.
 type KeyDist int
 
 const (
-	// DistUniform draws paths and client IPs uniformly from their
-	// pools: the spread-out baseline.
+	// DistUniform draws paths and client IPs uniformly: the spread-out baseline.
 	DistUniform KeyDist = iota
-	// DistZipf draws both Zipfian (weight 1/(rank+1)): a few hot keys
-	// with a long tail, modelling hot Targets.
+	// DistZipf draws both Zipfian (weight 1/(rank+1)): a few hot keys.
 	DistZipf
-	// DistHot pins every line to the one hot (path, client) pair: a
-	// single tracker-cache key, forcing single-shard contention.
+	// DistHot pins every line to one (path, client) pair: single-shard contention.
 	DistHot
 )
 
@@ -75,22 +56,18 @@ func (d KeyDist) String() string {
 	}
 }
 
-// HotPath and HotIP are the hot (path, client) pair every DistHot line
-// carries: one tracker-cache key, hence one shard under contention.
-// They are also the head of both key pools, making them the hottest
-// Zipfian keys as well.
+// HotPath and HotIP are the hot (path, client) pair DistHot pins to: one
+// cache key, hence one shard under contention. Also the hottest pool keys.
 const (
 	HotPath = "/releases/24.04.iso"
 	HotIP   = "203.0.113.7"
 )
 
-// poolSize is the number of distinct paths and of distinct client IPs
-// a corpus draws its keys from. Both pools share one Zipf CDF, so the
-// sizes must match.
+// poolSize is the distinct-key count of both pools; the shared Zipf CDF
+// requires the sizes to match.
 const poolSize = 256
 
-// Fixed field values of full-shape lines (the reserved and ignored
-// fields of the flux log format).
+// Fixed field values of full-shape lines (reserved and ignored flux fields).
 const (
 	fullServer   = "203.0.113.1"
 	fullHost     = "example.org"
@@ -98,20 +75,15 @@ const (
 	fullExtra    = "ignored" // unknown field the parser must ignore
 )
 
-// EpochSec is the $msec second of line 0; line i is EpochSec + i
-// seconds later, so times are distinct and monotone across the corpus.
+// EpochSec is the $msec second of line 0; line i is EpochSec + i seconds later.
 const EpochSec int64 = 1734345934
 
-// Epoch is the fixture wall-clock origin every benchmark fixture keeps
-// its event times and frozen clocks on (do not mutate). Packages the
-// domain dependency lint keeps away from internal/bench
-// (internal/domain/...) hold their own copy of this instant; keep the
-// values identical.
+// Epoch is the fixture wall-clock origin (do not mutate). Packages that
+// cannot import internal/bench keep identical copies of this instant.
 var Epoch = time.Unix(EpochSec, 0).UTC()
 
 var (
-	// methods and statuses are the observed value pools: weighted by
-	// repetition to look like real access logs.
+	// methods and statuses are the observed value pools, weighted by repetition.
 	methods  = [...]string{"GET", "GET", "GET", "GET", "HEAD", "POST"}
 	statuses = [...]int{200, 200, 200, 206, 304, 404, 403, 500, 502}
 	agents   = [...]string{
@@ -120,14 +92,12 @@ var (
 		"Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
 	}
 
-	// pathPool and clientPool hold poolSize distinct keys, hottest
-	// first: index 0 is the hot (path, client) pair, the tail is
-	// generated.
+	// pathPool and clientPool hold poolSize keys, hottest (index 0) first.
 	pathPool   = buildPool(HotPath, "/files/obj-%04d.bin")
 	clientPool = buildPool(HotIP, "198.51.100.%d")
 
-	// zipfCDF maps uniform draws to pool ranks with P(rank) ∝
-	// 1/(rank+1) (Zipf s=1) via inverse transform.
+	// zipfCDF maps uniform draws to pool ranks with P(rank) ~ 1/(rank+1)
+	// (Zipf s=1) via inverse transform.
 	zipfCDF = buildZipfCDF(poolSize)
 )
 
@@ -141,9 +111,8 @@ func buildPool(hot, format string) [poolSize]string {
 	return pool
 }
 
-// buildZipfCDF precomputes the cumulative P(rank) ∝ 1/(rank+1) over a
-// pool of n ranks. Inverse transform over this fixed CDF keeps Zipfian
-// draws stable by construction: they depend only on the PRNG stream.
+// buildZipfCDF precomputes the cumulative P(rank) ~ 1/(rank+1) over n ranks;
+// inverse-transform draws stay stable (they depend only on the PRNG stream).
 func buildZipfCDF(n int) []float64 {
 	cdf := make([]float64, n)
 	var sum float64
@@ -158,9 +127,8 @@ func buildZipfCDF(n int) []float64 {
 	return cdf
 }
 
-// eventContent is the content of one fixture Event (GLOSSARY: Event —
-// never "record"). It is the single source of truth for both
-// renderings: the raw JSON line and the domain Event it parses to.
+// eventContent is the fixture data rendered both as a raw JSON line and
+// as the domain Event that line parses to.
 type eventContent struct {
 	sec    int64 // $msec seconds
 	msec   int64 // $msec fraction, milliseconds
@@ -183,8 +151,7 @@ func (ec eventContent) line(shape LineShape) string {
 		t, ec.client, ec.method, ec.path, ec.status, ec.sent)
 }
 
-// event renders the content as the domain Event its line parses to
-// (nginx.Parser field mapping).
+// event renders the content as the domain Event its line parses to (nginx.Parser mapping).
 func (ec eventContent) event() bandage.Event {
 	return bandage.Event{
 		Time:       time.Unix(ec.sec, ec.msec*int64(time.Millisecond)).UTC(),
@@ -198,21 +165,15 @@ func (ec eventContent) event() bandage.Event {
 	}
 }
 
-// Corpus is a deterministic, pre-generated fixture set of raw
-// nginx-JSON access-log lines and the events they parse to. All
-// generation happens in NewCorpus; Line and Event only index the
-// result, so benchmarks cycle them freely inside a b.Loop() loop.
+// Corpus is a deterministic pre-generated fixture set of raw nginx-JSON
+// lines and their events; Line/Event only index it (never rebuilt).
 type Corpus struct {
 	lines  []string
 	events []eventContent
 }
 
-// NewCorpus generates n fixture lines and their events for (seed,
-// shape, dist): the same arguments always yield byte-identical output
-// (pinned by TestCorpusIsDeterministic). n is clamped to at least 1.
-//
-// Benchmarks call it once before their b.Loop() loop and cycle the
-// result with Line/Event — the corpus is never rebuilt per iteration.
+// NewCorpus generates n fixture lines and events for (seed, shape, dist),
+// byte-identical for identical arguments (TestCorpusIsDeterministic); n >= 1.
 func NewCorpus(seed uint64, shape LineShape, dist KeyDist, n int) *Corpus {
 	if n < 1 {
 		n = 1
@@ -220,8 +181,8 @@ func NewCorpus(seed uint64, shape LineShape, dist KeyDist, n int) *Corpus {
 	r := &rng{state: seed}
 	c := &Corpus{lines: make([]string, n), events: make([]eventContent, n)}
 	for i := range c.events {
-		// Two key draws per event content, always, so events line up
-		// across distributions for a given seed.
+		// Two key draws per event, always, so events line up across
+		// distributions for a given seed.
 		client := clientPool[drawKey(r.unit(), dist)]
 		path := pathPool[drawKey(r.unit(), dist)]
 		agent := agents[int(r.below(uint64(len(agents))))]
@@ -247,21 +208,19 @@ func NewCorpus(seed uint64, shape LineShape, dist KeyDist, n int) *Corpus {
 // Len is the corpus size.
 func (c *Corpus) Len() int { return len(c.events) }
 
-// Line returns the corpus's raw line for index i. i may be any
-// non-negative counter: indices beyond Len wrap around, so a
-// benchmark loop cycles the corpus without rebuilding it.
+// Line returns the raw line for index i; i may be any non-negative counter:
+// indices beyond Len wrap around, so loops cycle the corpus without rebuilding.
 func (c *Corpus) Line(i int) string { return c.lines[i%len(c.lines)] }
 
-// Event returns the domain Event line i parses to, on the same cycling
-// index as Line. Parsing Line(i) yields exactly Event(i) (pinned by
-// TestCorpusLinesParseToTheirEvents).
+// Event returns the domain Event line i parses to, on the same cycling index
+// as Line (pinned by TestCorpusLinesParseToTheirEvents).
 func (c *Corpus) Event(i int) bandage.Event { return c.events[i%len(c.events)].event() }
 
 // drawKey maps a uniform draw to a pool index for dist.
 func drawKey(u float64, dist KeyDist) int {
 	switch dist {
 	case DistZipf:
-		// Rank of the first CDF entry >= u: P(rank) ∝ 1/(rank+1).
+		// Rank of the first CDF entry >= u: P(rank) ~ 1/(rank+1).
 		rank, _ := slices.BinarySearch(zipfCDF, u)
 		return rank
 	case DistHot:
@@ -271,10 +230,8 @@ func drawKey(u float64, dist KeyDist) int {
 	}
 }
 
-// rng is a self-contained splitmix64 PRNG: fixture generation must
-// yield identical corpora on every Go version and platform, so it
-// depends on no external random stream. Its outputs are pinned by
-// TestRNGMatchesSplitmix64Reference.
+// rng is a self-contained splitmix64 PRNG so fixture corpora are identical on
+// every Go version and platform (outputs pinned by TestRNGMatchesSplitmix64Reference).
 type rng struct{ state uint64 }
 
 // next returns the next random word.
@@ -291,6 +248,5 @@ func (r *rng) unit() float64 {
 	return float64(r.next()>>11) / float64(1<<53)
 }
 
-// below draws a uniform uint64 in [0, n). The modulo bias against
-// 2^64 is negligible for fixture draws and keeps the stream simple.
+// below draws a uniform uint64 in [0, n); modulo bias is negligible for fixtures.
 func (r *rng) below(n uint64) uint64 { return r.next() % n }

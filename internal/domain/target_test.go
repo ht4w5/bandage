@@ -5,10 +5,8 @@ import (
 	"testing"
 )
 
-// Target aggregation (spec: target_prefix, GLOSSARY "Target"): the
-// source address is masked to the tracker's per-family prefix length and
-// rendered canonically as a prefix string (DECISIONS §9). Expected
-// strings are worked examples from the spec, not derived by the code.
+// TestTargetPrefixAggregate checks per-family masking; expected
+// strings are spec examples.
 func TestTargetPrefixAggregate(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -49,9 +47,8 @@ func TestTargetPrefixAggregate(t *testing.T) {
 	}
 }
 
-// Two sources in one aggregated prefix produce the same Target string
-// (shared tracker state and one Report Target); different prefixes do
-// not.
+// TestTargetPrefixAggregateGroupsSources: sources in one prefix share
+// a Target string, different prefixes do not.
 func TestTargetPrefixAggregateGroupsSources(t *testing.T) {
 	p := TargetPrefix{IPv4: 24, IPv6: 64}
 	a := p.Aggregate(netip.MustParseAddr("203.0.113.7"))
@@ -65,9 +62,8 @@ func TestTargetPrefixAggregateGroupsSources(t *testing.T) {
 	}
 }
 
-// TrackerConfig.Target is the tracker-state key and report Target. A nil
-// tracker (report without tracker cannot be loaded) falls back to the
-// default per-address aggregation.
+// TestTrackerConfigTarget checks the tracker-state key and report
+// Target; a nil tracker falls back to the default aggregation.
 func TestTrackerConfigTarget(t *testing.T) {
 	addr := netip.MustParseAddr("203.0.113.7")
 	var nilCfg *TrackerConfig
@@ -80,9 +76,7 @@ func TestTrackerConfigTarget(t *testing.T) {
 	}
 }
 
-// TargetString is the one target derivation behind tracker cache keys
-// and report Targets: it renders the tracker's aggregated prefix
-// canonically.
+// TestTrackerConfigTargetString checks the canonical prefix rendering.
 func TestTrackerConfigTargetString(t *testing.T) {
 	addr := netip.MustParseAddr("203.0.113.7")
 	cfg := &TrackerConfig{TargetPrefix: TargetPrefix{IPv4: 24, IPv6: 64}}

@@ -4,10 +4,7 @@ import (
 	"testing"
 )
 
-// ParseLevel is the one level parser for the log action's
-// "level,message" shape and the log.level config key (spec: the
-// vocabulary stays exactly debug, info, warn, error — never zerolog's
-// fatal/panic, which could exit the process).
+// TestParseLevel covers the four-word vocabulary and its errors.
 func TestParseLevel(t *testing.T) {
 	tests := []struct {
 		in      string
@@ -45,8 +42,7 @@ func TestParseLevel(t *testing.T) {
 	}
 }
 
-// Level.String is the canonical word — the vocabulary is exactly the
-// four words, round-tripped through ParseLevel.
+// TestLevelStringRoundTrip checks the words round-trip through ParseLevel.
 func TestLevelStringRoundTrip(t *testing.T) {
 	for _, l := range []Level{LevelDebug, LevelInfo, LevelWarn, LevelError} {
 		got, err := ParseLevel(l.String())

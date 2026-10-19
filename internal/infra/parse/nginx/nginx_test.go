@@ -6,10 +6,8 @@ import (
 	"time"
 )
 
-// Field mapping and drop cases for the nginx JSON access-log format
-// (flux log format: escape=json, $msec/$remote_addr/$request_method/$uri/
-// $status/$body_bytes_sent/$http_user_agent). The parser keeps the $msec
-// fraction (DECISIONS §7) and validates every required field.
+// fullLine is a full-shape flux log-format line (optional, reserved and
+// unknown fields included).
 const fullLine = `{"time":"1734345934.123","client":"203.0.113.7","server":"203.0.113.1","method":"GET","url":"/releases/24.04.iso","duration":"0.125","host":"example.org","status":200,"sent":123456,"agent":"Wget/1.21","extra":"ignored"}`
 
 func TestParseFieldMapping(t *testing.T) {
@@ -99,21 +97,15 @@ func TestParseMalformedLine(t *testing.T) {
 	}
 }
 
-// TestParseMalformedLineErrorText pins the malformed-line error text
-// to the pre-rewrite parser's, byte for byte: that parser rendered
-// errors through encoding/json v1 — plain wording, no decoder position
-// info, whole-line syntax scan before decoding — and the drop log
-// prints this text verbatim (the type-error line names the old decode
-// target; on this toolchain json.RawMessage aliases jsontext.Value, so
-// it renders as map[string]jsontext.Value exactly as the old errors
-// did).
+// TestParseMalformedLineErrorText pins the malformed-line error text to the
+// historic decoder's (encoding/json v1 wording), byte for byte.
 func TestParseMalformedLineErrorText(t *testing.T) {
 	tests := []struct {
 		name string
 		line string
 		want string
 	}{
-		// Byte-identical with the pre-rewrite parser (encoding/json v1 text).
+		// Byte-identical with the historic decoder (encoding/json v1 text).
 		{"empty", ``, `parse nginx json: unexpected end of JSON input`},
 		{"truncated object", `{"time":`, `parse nginx json: unexpected end of JSON input`},
 		{"truncated at open", `{`, `parse nginx json: unexpected end of JSON input`},
@@ -128,8 +120,7 @@ func TestParseMalformedLineErrorText(t *testing.T) {
 		{"trailing garbage", `{"time":"1"} 0`, `parse nginx json: invalid character '0' after top-level value`},
 
 		// Type errors keep the old decode target's name and v1's kind
-		// words; a syntax error anywhere in the line still wins over the
-		// type error at its first value (v1 scanned the whole line first).
+		// words; a syntax error anywhere still wins (v1 scanned the whole line first).
 		{"top-level array", `[]`, `parse nginx json: json: cannot unmarshal array into Go value of type map[string]jsontext.Value`},
 		{"top-level number", `5`, `parse nginx json: json: cannot unmarshal number into Go value of type map[string]jsontext.Value`},
 		{"top-level bool", `true`, `parse nginx json: json: cannot unmarshal bool into Go value of type map[string]jsontext.Value`},

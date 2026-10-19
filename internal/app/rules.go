@@ -18,7 +18,7 @@ import (
 	"github.com/HT4w5/bandage/internal/domain/track"
 )
 
-// reasonRe is the machine-readable reason slug pattern (spec: Reports).
+// reasonRe is the machine-readable reason slug pattern.
 var reasonRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
 // raw rules wire types (strict decode).
@@ -40,9 +40,8 @@ type rawRule struct {
 	Actions []yaml.Node `yaml:"actions"`
 }
 
-// rawTracker keeps leak and volume as nodes: presence is validated
-// ("explicit leak and volume") and replay's volume may be a scalar or a
-// volume-method block (DECISIONS §8). A missing node has Kind zero.
+// rawTracker keeps leak and volume as yaml.Nodes so presence is
+// validated; replay volume may be a scalar or a volume-method block.
 type rawTracker struct {
 	Track        string          `yaml:"track"`
 	Leak         yaml.Node       `yaml:"leak"`
@@ -50,9 +49,8 @@ type rawTracker struct {
 	TargetPrefix rawTargetPrefix `yaml:"target_prefix"`
 }
 
-// rawTargetPrefix is the tracker's target aggregation, per family:
-// missing families default ({32, 64}); out-of-range values are load
-// errors (spec: load-time validation of out-of-range target prefixes).
+// rawTargetPrefix is the tracker's per-family target aggregation;
+// missing families default to {32, 64}.
 type rawTargetPrefix struct {
 	IPv4 *int `yaml:"ipv4"`
 	IPv6 *int `yaml:"ipv6"`
@@ -77,8 +75,7 @@ func LoadRules(path string) ([]bandage.Chain, error) {
 }
 
 // ParseRules strictly decodes and validates a format-version-0 rules
-// document into chains. Unknown keys and invalid values are errors; every
-// error names the rule it belongs to where possible.
+// document into chains. Errors name the rule they belong to.
 func ParseRules(data []byte) ([]bandage.Chain, error) {
 	var raw rawRules
 	dec := yaml.NewDecoder(bytes.NewReader(data))
@@ -175,18 +172,15 @@ func buildRule(chainName string, raw *rawRule, seen map[string]bool) (bandage.Ru
 		if err != nil {
 			return bandage.Rule{}, err
 		}
-		// A report action needs no tracker: tracker-less rules (the
-		// tripwire pattern) match on the filter alone and their writes
-		// are bounded by report suppression (spec stories 12, 29).
+		// A report action needs no tracker; suppression bounds
+		// tracker-less writes.
 		rule.Actions = append(rule.Actions, action)
 	}
 	return rule, nil
 }
 
-// parseTracker builds the rule's tracker config: explicit leak and
-// volume. The cache TTL (volume/leak) is fixed at build for rate and
-// bandwidth; replay re-derives it per event from its volume method
-// output (DECISIONS §8), so its build-time TTL stays zero.
+// parseTracker builds the rule's tracker config. Rate and bandwidth
+// fix the TTL at build; replay derives it per event, so TTL stays zero.
 func parseTracker(id string, raw *rawTracker) (*bandage.TrackerConfig, error) {
 	var kind bandage.TrackKind
 	switch raw.Track {
@@ -214,9 +208,6 @@ func parseTracker(id string, raw *rawTracker) (*bandage.TrackerConfig, error) {
 
 	cfg := &bandage.TrackerConfig{Kind: kind, Leak: leak, TargetPrefix: prefix}
 	if kind == bandage.TrackReplay {
-		// Replay volume is a plain scalar (the constant method) or a
-		// volume-method block scaling tolerated download equivalents
-		// with file size (DECISIONS §8).
 		volume, method, err := parseReplayVolume(id, &raw.Volume)
 		if err != nil {
 			return nil, err
@@ -239,11 +230,8 @@ func parseTracker(id string, raw *rawTracker) (*bandage.TrackerConfig, error) {
 	return cfg, nil
 }
 
-// parseTargetPrefix builds the tracker's target aggregation: {32, 64} by
-// default with each family defaulted independently; a value must fit its
-// family (IPv4 up to 32, IPv6 up to 64 — IPv6 is never finer than /64)
-// and be non-negative. Errors name the rule and the field (DECISIONS §5
-// style).
+// parseTargetPrefix builds the per-family target aggregation, default
+// {32, 64}; values must fit the family (IPv4 0-32, IPv6 0-64).
 func parseTargetPrefix(id string, raw *rawTargetPrefix) (bandage.TargetPrefix, error) {
 	prefix := bandage.DefaultTargetPrefix
 	if raw.IPv4 != nil {
@@ -261,10 +249,8 @@ func parseTargetPrefix(id string, raw *rawTargetPrefix) (bandage.TargetPrefix, e
 	return prefix, nil
 }
 
-// parseTrackerQuantity parses one explicit scalar tracker quantity per
-// kind: rate uses plain numbers (request counts), replay plain numbers
-// (fractions per second), bandwidth byte quantities. Errors name the
-// rule and the field (DECISIONS §5).
+// parseTrackerQuantity parses one scalar tracker quantity: plain
+// numbers for rate and replay, byte quantities for bandwidth.
 func parseTrackerQuantity(id, field string, node *yaml.Node, kind bandage.TrackKind) (float64, error) {
 	if node == nil || node.Kind == 0 {
 		return 0, fmt.Errorf("rules: rule %q: %s: required", id, field)
@@ -287,10 +273,8 @@ func parseTrackerQuantity(id, field string, node *yaml.Node, kind bandage.TrackK
 	return v, nil
 }
 
-// parseReplayVolume parses the replay tracker's volume: a plain scalar
-// number (the constant method, returned as the constant volume) or a
-// volume-method block (returned as a VolumeMethod). A volume method is
-// replay-only — rate and bandwidth reject non-scalar volumes at load.
+// parseReplayVolume parses replay's volume: a plain scalar (the
+// constant method) or a volume-method block. Methods are replay-only.
 func parseReplayVolume(id string, node *yaml.Node) (float64, bandage.VolumeMethod, error) {
 	if node == nil || node.Kind == 0 {
 		return 0, nil, fmt.Errorf("rules: rule %q: tracker.volume: required", id)
@@ -312,9 +296,8 @@ func parseReplayVolume(id string, node *yaml.Node) (float64, bandage.VolumeMetho
 	return 0, method, err
 }
 
-// volumeMethodKeys is each volume method's strict parameter set
-// (besides the method name itself): unknown keys are load errors (spec:
-// strict decode).
+// volumeMethodKeys is each volume method's strict parameter set;
+// unknown keys are load errors.
 var volumeMethodKeys = map[string]map[string]bool{
 	"constant":       {"value": true},
 	"clamped-linear": {"intercept": true, "slope": true, "min": true, "max": true},
@@ -322,8 +305,8 @@ var volumeMethodKeys = map[string]map[string]bool{
 	"step":           {"threshold": true, "volume_low": true, "volume_high": true},
 }
 
-// parseVolumeMethod builds one replay volume method from its block,
-// validating each method's parameters at load (DECISIONS §8).
+// parseVolumeMethod builds one replay volume method, validating its
+// parameters at load (DECISIONS section 8).
 func parseVolumeMethod(id string, node *yaml.Node) (bandage.VolumeMethod, error) {
 	fields := map[string]*yaml.Node{}
 	for i := 0; i+1 < len(node.Content); i += 2 {
@@ -438,8 +421,8 @@ func volumeNumber(id, key string, node *yaml.Node) (float64, error) {
 	return v, nil
 }
 
-// volumeSize parses one byte-size volume-method parameter (flux decimal
-// human sizes: 1GB = 1e9; DECISIONS §5).
+// volumeSize parses one byte-size volume-method parameter (decimal
+// human sizes: 1GB = 1e9).
 func volumeSize(id, key string, node *yaml.Node) (float64, error) {
 	if node == nil {
 		return 0, fmt.Errorf("rules: rule %q: tracker.volume.%s: required", id, key)
@@ -454,11 +437,8 @@ func volumeSize(id, key string, node *yaml.Node) (float64, error) {
 	return v, nil
 }
 
-// actionForms is the single source of truth for the action vocabulary
-// of format version 0 (DECISIONS §9): one entry per action name, mapping
-// to its options parser. A parser receives a nil node for the bare form
-// (`- stop`) and returns "wants options" when the action requires
-// options; an action that takes none rejects options.
+// actionForms is the format-version-0 action vocabulary (DECISIONS
+// section 9); a nil node is the bare form (`- stop`).
 var actionForms = map[string]func(id, name string, val *yaml.Node) (bandage.Action, error){
 	"report": parseReportAction,
 	"log":    parseLogAction,
@@ -467,9 +447,8 @@ var actionForms = map[string]func(id, name string, val *yaml.Node) (bandage.Acti
 	"stop":   parseStopAction,
 }
 
-// parseAction parses one action item (DECISIONS §9): `- stop`,
-// `- goto: <chain>`, `- jump: <chain>`, `- log: "level,message"`, or
-// `- report: {reason, ttl}`.
+// parseAction parses one action item: a bare name (`- stop`) or a name
+// with options.
 func parseAction(id string, node *yaml.Node) (bandage.Action, error) {
 	switch node.Kind {
 	case yaml.ScalarNode:
@@ -498,8 +477,7 @@ func wantsOptions(id, name string) error {
 	return fmt.Errorf("rules: rule %q: action %q: wants options", id, name)
 }
 
-// parseStopAction parses `- stop`: the one bare action; it takes no
-// options.
+// parseStopAction parses the bare `- stop` action; it takes no options.
 func parseStopAction(id, name string, val *yaml.Node) (bandage.Action, error) {
 	if val != nil {
 		return bandage.Action{}, fmt.Errorf("rules: rule %q: action stop takes no options", id)
@@ -534,9 +512,8 @@ func parseReportAction(id, name string, val *yaml.Node) (bandage.Action, error) 
 	return bandage.Action{Report: &bandage.ReportAction{Reason: raw.Reason, TTL: ttl}}, nil
 }
 
-// parseChainAction parses `goto: <chain>` and `jump: <chain>`. The
-// target's existence and the graph's acyclicity are validated after all
-// chains are built (see validateChainGraph).
+// parseChainAction parses `goto: <chain>` and `jump: <chain>`; targets
+// are validated by validateChainGraph.
 func parseChainAction(id, name string, val *yaml.Node) (bandage.Action, error) {
 	if val == nil {
 		return bandage.Action{}, wantsOptions(id, name)
@@ -551,10 +528,7 @@ func parseChainAction(id, name string, val *yaml.Node) (bandage.Action, error) {
 	return bandage.Action{Jump: target}, nil
 }
 
-// parseLogAction parses `log: "level,message"` (flux's shape): exactly
-// two comma-separated arguments — a debug/info/warn/error level (the
-// shared bandage.ParseLevel) and a message. The event and the rule's
-// tracker reading are logged beside the message at evaluation time.
+// parseLogAction parses `log: "level,message"`: a level and a message.
 func parseLogAction(id, name string, val *yaml.Node) (bandage.Action, error) {
 	if val == nil {
 		return bandage.Action{}, wantsOptions(id, name)

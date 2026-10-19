@@ -10,8 +10,7 @@ import (
 	bandage "github.com/HT4w5/bandage/internal/domain"
 )
 
-// The config surface (PLAN §3) is strictly decoded before any socket
-// opens: unknown keys and invalid values abort startup.
+// validConfig is a minimal full config for the strict-decode tests.
 const validConfig = `
 ingest:
   driver: syslog
@@ -80,16 +79,13 @@ api: {listen: "127.0.0.1:8080"}
 	if cfg.Log.Level != bandage.LevelInfo {
 		t.Errorf("log.level = %q, want default %q", cfg.Log.Level, bandage.LevelInfo)
 	}
-	// pipeline.workers defaults to the machine's CPU count when absent
-	// (spec story 15; ADR 0007 names runtime.NumCPU() as the default).
+	// pipeline.workers defaults to the machine's CPU count when absent.
 	if cfg.Pipeline.Workers != runtime.NumCPU() {
 		t.Errorf("pipeline.workers = %d, want default %d (CPU count)", cfg.Pipeline.Workers, runtime.NumCPU())
 	}
 }
 
-// log.level accepts exactly the four level words (default info), shared
-// with the one level parser; the strict load rejects any other value
-// before any socket opens (spec: Config surface; stories 10, 13).
+// TestParseConfigLogLevel: log.level accepts exactly the four level words.
 func TestParseConfigLogLevel(t *testing.T) {
 	valid := strings.Replace(validConfig, "api:", "log:\n  level: %s\n\napi:", 1)
 	for _, level := range []string{"debug", "info", "warn", "error"} {

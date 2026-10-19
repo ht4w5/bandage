@@ -14,15 +14,11 @@ import (
 	"github.com/HT4w5/bandage/internal/infra/persistence/sqlite"
 )
 
-// BenchmarkReportsList measures the read path (GET /reports): sqlite
-// List with its per-row JSON body decode, plus the document marshal and
-// encode, at 10/1k/10k seeded rows. One op is one request. The request
-// and response recorder are reused across ops (the recorder's buffer is
-// reset), so B/op and allocs/op are the read path, not harness
-// allocation.
+// BenchmarkReportsList measures the read path (GET /reports) at
+// 10/1k/10k seeded rows. One op is one request, with the request and
+// recorder reused, so B/op is the read path alone.
 
-// benchNow is the fixed wall clock the report document runs on: the
-// shared fixture epoch (internal/bench.Epoch).
+// benchNow is the shared fixture epoch (internal/bench.Epoch).
 func benchNow() time.Time { return bench.Epoch }
 
 // benchStats is a StatsSource the /reports read path never calls.
@@ -46,9 +42,8 @@ func benchListReport(target string) bandage.Report {
 	}
 }
 
-// seedReports fills the repository with rows distinct reports through
-// the report service (every report write goes through it) and checks
-// the read path really returns every one of them.
+// seedReports seeds rows through the report service and checks the
+// read path returns every one of them.
 func seedReports(b *testing.B, repo *sqlite.ReportRepository, rows int) {
 	b.Helper()
 	ctx := context.Background()

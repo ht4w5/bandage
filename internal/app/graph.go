@@ -6,11 +6,8 @@ import (
 	bandage "github.com/HT4w5/bandage/internal/domain"
 )
 
-// validateChainGraph checks the goto/jump chain graph the loader built,
-// so that traversal can never loop at runtime (PLAN §8): chain names are
-// unique (goto/jump name their targets by name), every goto/jump target
-// names an existing chain, and the graph is acyclic — a DAG, so shared
-// target chains are allowed.
+// validateChainGraph checks the goto/jump graph: chain names unique,
+// targets existing, acyclic. Shared target chains are allowed.
 func validateChainGraph(chains []bandage.Chain) error {
 	index := make(map[string]int, len(chains))
 	for i, chain := range chains {
@@ -41,8 +38,8 @@ func validateChainGraph(chains []bandage.Chain) error {
 		}
 	}
 
-	// Depth-first cycle detection: 0 = unvisited, 1 = on the visit
-	// stack, 2 = done. A back edge to a chain on the stack is a cycle.
+	// DFS cycle detection: a back edge to a chain on the stack is a
+	// cycle.
 	const (
 		unvisited = 0
 		onStack   = 1

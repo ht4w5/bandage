@@ -1,19 +1,5 @@
-// Package httpapi serves the daemon's read-only HTTP surface: GET
-// /reports (the version-0 report document), DELETE /reports (delete by
-// filter), GET /ping and GET /stats (the human-facing ops snapshot,
-// ADR 0006). There is no URL version prefix and the API never writes
-// reports.
-//
-// Deletion semantics, plainly: deleting reports does not touch tracker
-// state, and it re-arms the suppressed report write (ADR 0008): a
-// still-abusive Target is reported again on the next trigger once its
-// report is deleted — immediately for tracker-less rules, after a
-// fresh accumulation episode for tracker rules.
-//
-// /stats is human-facing and unversioned — explicitly not a stable
-// machine contract (ADR 0006). Machine-readable metric gathering would
-// arrive later as a separate Prometheus-format endpoint; nothing
-// promises that /stats' shape survives field additions.
+// Package httpapi serves the daemon's read-only HTTP surface: GET /reports,
+// DELETE /reports, GET /ping and GET /stats (no URL version, no report writes).
 package httpapi
 
 import (
@@ -26,21 +12,16 @@ import (
 	"github.com/HT4w5/bandage/internal/domain/report"
 )
 
-// ReportStore is the port the API consumes (report.Repository, narrowed
-// beside its consumer): List reads the report document, Delete deletes
-// reports by filter. The report service satisfies it — the API calls the
-// report service, never the report repository directly, and never
-// writes reports.
+// ReportStore is the port the API consumes (report.Repository, narrowed beside
+// its consumer); the report service satisfies it, never the repository directly.
 type ReportStore interface {
 	List(ctx context.Context, q report.Query) ([]bandage.Report, error)
 	Delete(ctx context.Context, q report.Query) (int, error)
 }
 
-// Stats is the /stats snapshot a StatsSource assembles: build identity
-// plus cumulative-since-start pipeline and tracker cache counters.
+// Stats is the /stats snapshot: build identity plus cumulative-since-start counters.
 type Stats struct {
-	// StartedAt is the source's start time; the document measures its
-	// uptime from it.
+	// StartedAt is the source's start time; uptime is measured from it.
 	StartedAt    time.Time
 	Build        Build
 	Pipeline     Pipeline
@@ -58,8 +39,7 @@ type Build struct {
 	Platform  string `json:"platform"`
 }
 
-// Pipeline is the /stats pipeline block: the worker count and the line
-// accounting, cumulative since start.
+// Pipeline is the /stats pipeline block: worker count and line accounting, cumulative.
 type Pipeline struct {
 	Workers  int   `json:"workers"`
 	Received int64 `json:"received"`
@@ -67,8 +47,7 @@ type Pipeline struct {
 	Dropped  int64 `json:"dropped"`
 }
 
-// TrackerCache is the /stats tracker cache block: the cache statistics
-// (track.Statistics) with the entry cap, cumulative since start.
+// TrackerCache is the /stats tracker cache block: track.Statistics with the entry cap.
 type TrackerCache struct {
 	Gets      int64 `json:"gets"`
 	Sets      int64 `json:"sets"`
@@ -78,10 +57,8 @@ type TrackerCache struct {
 	EntryCap  int64 `json:"entry_cap"`
 }
 
-// StatsSource is the narrow stats port beside its consumer: one
-// snapshot in. The daemon satisfies it structurally, assembling the
-// snapshot from its counters, the cache statistics and the identity
-// module.
+// StatsSource is the narrow stats port beside its consumer: one snapshot in.
+// The daemon satisfies it structurally.
 type StatsSource interface {
 	Stats() Stats
 }
@@ -136,15 +113,13 @@ func (s *Server) handleReports(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// deleteResponse is the DELETE /reports body (DECISIONS §9).
+// deleteResponse is the DELETE /reports body.
 type deleteResponse struct {
 	Deleted int `json:"deleted"`
 }
 
-// handleDeleteReports deletes reports by filter. At least one of
-// ?rule= or ?target= is required (no accidental delete-all). Deleting
-// reports does not touch tracker state: a Target that still overflows
-// is reported again on the next trigger.
+// handleDeleteReports deletes reports by filter; ?rule= or ?target= is required
+// (no delete-all). Tracker state is untouched: still-abusive Targets report again.
 func (s *Server) handleDeleteReports(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	rule, target := q.Get("rule"), q.Get("target")
@@ -165,9 +140,8 @@ func (s *Server) handlePing(w http.ResponseWriter, _ *http.Request) {
 	w.Write([]byte("pong"))
 }
 
-// statsDocument is the rendered /stats document (ADR 0006): the
-// snapshot plus the generation timestamp and uptime. It deliberately
-// carries no format version — it is human-facing and unversioned.
+// statsDocument is the rendered /stats document (ADR 0006): the snapshot plus
+// generation timestamp and uptime; no format version (human-facing, unversioned).
 type statsDocument struct {
 	GeneratedAt  string       `json:"generated_at"`
 	Uptime       string       `json:"uptime"`
@@ -176,10 +150,8 @@ type statsDocument struct {
 	TrackerCache TrackerCache `json:"tracker_cache"`
 }
 
-// handleStats serves the human-facing ops snapshot as indented JSON:
-// build identity and cumulative-since-start counters (ADR 0006 — not a
-// stable machine contract; metrics would be a separate
-// Prometheus-format endpoint).
+// handleStats serves the human-facing ops snapshot as indented JSON (ADR 0006):
+// build identity and cumulative-since-start counters, not a stable machine contract.
 func (s *Server) handleStats(w http.ResponseWriter, _ *http.Request) {
 	st := s.stats.Stats()
 	now := s.now()

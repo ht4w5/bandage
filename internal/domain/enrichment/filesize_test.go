@@ -7,11 +7,6 @@ import (
 	bandage "github.com/HT4w5/bandage/internal/domain"
 )
 
-// File-size estimation is ported from webjail
-// (.reference/webjail/internal/domain/enrichment/filesize.go): integer
-// EWMA with seed-on-first-observation and a warm-up gate. webjail ships
-// no tests, so these are authored fresh per DECISIONS §2.
-
 // stubCache is a FilesizeCache test double keyed by path.
 type stubCache struct {
 	records map[string]FilesizeRecord
@@ -60,8 +55,7 @@ func TestNewFilesizeEnricherValidation(t *testing.T) {
 	}
 }
 
-// The first observation seeds the estimate exactly (no blending with an
-// implied zero): subsequent samples blend from the seed.
+// The first observation seeds the estimate exactly (no blend with an implied zero).
 func TestEnrichSeedsFirstObservation(t *testing.T) {
 	fe, err := NewFilesizeEnricher(&stubCache{}, 5, 1)
 	if err != nil {
@@ -70,24 +64,22 @@ func TestEnrichSeedsFirstObservation(t *testing.T) {
 	if got := enrichOnce(t, fe, "/a", 1000); got != 1000 {
 		t.Errorf("first size = %d, want 1000 (exact seed)", got)
 	}
-	// 1000 + (100 − 1000)/5 = 820. Had the first sample blended toward
-	// an implied zero (0 + 1000/5 = 200) this would be 200 + (100−200)/5.
+	// 1000 + (100-1000)/5 = 820.
 	if got := enrichOnce(t, fe, "/a", 100); got != 820 {
 		t.Errorf("second size = %d, want 820 (blended from the seed)", got)
 	}
 }
 
-// EWMA: SizeEWMA = prev + (observed − prev)/period with int64 truncating
-// division (DECISIONS §3: no floating point anywhere).
+// EWMA: prev + (observed-prev)/period with int64 truncating division.
 func TestEnrichEWMAIntegerMath(t *testing.T) {
 	tests := []struct {
 		observed int64
 		want     int64
 	}{
 		{1000, 1000}, // seed: first observation exactly
-		{100, 820},   // 1000 + (100−1000)/5 = 1000 − 180
+		{100, 820},   // 1000 + (100-1000)/5 = 1000 - 180
 		{1821, 1020}, // 820 + 1001/5 = 820 + 200 (truncates .2)
-		{993, 1015},  // 1020 + (−27)/5 = 1020 − 5 (truncates toward zero)
+		{993, 1015},  // 1020 + (-27)/5 = 1020 - 5 (truncates toward zero)
 		{2000, 1212}, // 1015 + 985/5
 	}
 	fe, err := NewFilesizeEnricher(&stubCache{}, 5, 1)
@@ -114,9 +106,8 @@ func TestEnrichPeriodOneTracksObservations(t *testing.T) {
 	}
 }
 
-// Warm-up gating: SizeBytes stays FilesizeUnknown until minSamples
-// observations, and the Nth sample's own event is already enriched (the
-// gate is evaluated after the sample is counted).
+// Warm-up: SizeBytes stays unknown until minSamples, and the Nth sample's
+// own event is already enriched.
 func TestEnrichWarmUpGating(t *testing.T) {
 	fe, err := NewFilesizeEnricher(&stubCache{}, 5, 3)
 	if err != nil {
@@ -131,8 +122,8 @@ func TestEnrichWarmUpGating(t *testing.T) {
 	}
 }
 
-// While warming, SizeBytes is overwritten with FilesizeUnknown on every
-// event — a stale derived value never leaks through.
+// While warming, SizeBytes is overwritten with FilesizeUnknown: a stale
+// derived value never leaks through.
 func TestEnrichOverwritesStaleSizeBytes(t *testing.T) {
 	fe, err := NewFilesizeEnricher(&stubCache{}, 5, 2)
 	if err != nil {
@@ -147,8 +138,7 @@ func TestEnrichOverwritesStaleSizeBytes(t *testing.T) {
 	}
 }
 
-// Estimates are per path: observations of one path never warm or move
-// another path's estimate.
+// Estimates are per path: one path's observations never move another's.
 func TestEnrichStateIsPerPath(t *testing.T) {
 	fe, err := NewFilesizeEnricher(&stubCache{}, 5, 2)
 	if err != nil {

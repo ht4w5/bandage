@@ -13,9 +13,8 @@ import (
 	"github.com/HT4w5/bandage/internal/domain/report"
 )
 
-// The schema contract (spec: Reports, Repository): one row per
-// (rule, target) with indexed rule, target and expiry columns, so that
-// ?target=-only queries never full-scan the table.
+// Schema contract: one row per (rule, target) with indexed rule, target and
+// expiry columns, so ?target=-only queries never full-scan the table.
 
 func openTestRepo(t *testing.T) *ReportRepository {
 	t.Helper()
@@ -27,10 +26,8 @@ func openTestRepo(t *testing.T) *ReportRepository {
 	return repo
 }
 
-// Concurrent writes are deterministic under concurrency: one
-// connection serializes them (ADR 0007), for file and memory databases
-// alike — every upsert lands without a locking error, and duplicate
-// concurrent triggers refresh the same (rule, target) row.
+// TestConcurrentUpsertsAreDeterministic: one connection serializes concurrent
+// writes (ADR 0007) - every upsert lands, duplicates refresh the same row.
 func TestConcurrentUpsertsAreDeterministic(t *testing.T) {
 	for _, path := range []string{":memory:", filepath.Join(t.TempDir(), "reports.db")} {
 		t.Run(path, func(t *testing.T) {
@@ -41,8 +38,8 @@ func TestConcurrentUpsertsAreDeterministic(t *testing.T) {
 			defer repo.Close()
 			base := time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)
 
-			// 8 writers × 8 upserts; the even writers all write the same
-			// (rule, target), the odd writers one distinct target each.
+			// 8 writers x 8 upserts; even writers share one
+			// (rule, target), odd writers have one distinct target each.
 			const writers, perWriter = 8, 8
 			var wg sync.WaitGroup
 			errs := make(chan error, writers*perWriter)
@@ -71,8 +68,7 @@ func TestConcurrentUpsertsAreDeterministic(t *testing.T) {
 				t.Errorf("Upsert error: %v", err)
 			}
 
-			// One row per (rule, target): the shared row plus the 8
-			// distinct ones, and every write is visible.
+			// The shared row plus the 8 distinct ones, all visible.
 			got, err := repo.List(context.Background(), report.Query{Now: base})
 			if err != nil {
 				t.Fatalf("List: %v", err)
@@ -84,8 +80,8 @@ func TestConcurrentUpsertsAreDeterministic(t *testing.T) {
 	}
 }
 
-// singleColumnIndexes returns the table's single-column index names by
-// the column they cover (PRAGMA index_list/index_info).
+// singleColumnIndexes returns the table's single-column index names by the
+// column they cover (PRAGMA index_list/index_info).
 func singleColumnIndexes(t *testing.T, repo *ReportRepository) map[string]bool {
 	t.Helper()
 	out := map[string]bool{}
@@ -130,9 +126,8 @@ func singleColumnIndexes(t *testing.T, repo *ReportRepository) map[string]bool {
 	return out
 }
 
-// The indexed columns contract: standalone indexes on rule and target
-// (the composite primary key alone serves rule-prefix lookups only),
-// plus the expiry index.
+// TestSchemaHasStandaloneIndexesOnRuleTargetAndExpiry: standalone indexes on
+// rule, target (the composite PK alone serves only rule-prefix lookups) and expiry.
 func TestSchemaHasStandaloneIndexesOnRuleTargetAndExpiry(t *testing.T) {
 	repo := openTestRepo(t)
 	indexed := singleColumnIndexes(t, repo)
@@ -143,8 +138,7 @@ func TestSchemaHasStandaloneIndexesOnRuleTargetAndExpiry(t *testing.T) {
 	}
 }
 
-// queryPlan returns the detail column of EXPLAIN QUERY PLAN for one
-// statement.
+// queryPlan returns the detail column of EXPLAIN QUERY PLAN for one statement.
 func queryPlan(t *testing.T, repo *ReportRepository, query string, args ...any) []string {
 	t.Helper()
 	rows, err := repo.read.Query("EXPLAIN QUERY PLAN "+query, args...)
@@ -167,8 +161,8 @@ func queryPlan(t *testing.T, repo *ReportRepository, query string, args ...any) 
 	return out
 }
 
-// ?target= without ?rule= must not full-scan: the target-only List and
-// Delete shapes run as index searches on the target column.
+// TestTargetOnlyQueriesDoNotFullScan: target-only List and Delete run as
+// index searches on the target column, never a full scan.
 func TestTargetOnlyQueriesDoNotFullScan(t *testing.T) {
 	repo := openTestRepo(t)
 	for _, tt := range []struct {
@@ -197,8 +191,8 @@ func TestTargetOnlyQueriesDoNotFullScan(t *testing.T) {
 	}
 }
 
-// Behavior of the target-only shapes stays correct with the indexes in
-// place (delete by target, list by target).
+// TestTargetOnlyListAndDelete: target-only delete and list stay correct
+// with the indexes in place.
 func TestTargetOnlyListAndDelete(t *testing.T) {
 	repo := openTestRepo(t)
 	ctx := context.Background()
@@ -233,14 +227,8 @@ func TestTargetOnlyListAndDelete(t *testing.T) {
 	}
 }
 
-// WAL and the split read/write paths (ADR 0009): file databases run
-// journal_mode=WAL with synchronous=NORMAL — a written report survives
-// a process crash, losing only the final moments on power failure —
-// while writes keep the single connection (ADR 0007) and queries run
-// on their own connections, so neither path queues behind the other.
-
-// File databases open in journal_mode=WAL with synchronous=NORMAL:
-// commits survive process crashes (ADR 0009).
+// TestFileDatabaseRunsInWALSynchronousNormal: file databases open in
+// journal_mode=WAL with synchronous=NORMAL (commits survive process crashes).
 func TestFileDatabaseRunsInWALSynchronousNormal(t *testing.T) {
 	repo, err := Open(filepath.Join(t.TempDir(), "reports.db"))
 	if err != nil {
@@ -264,9 +252,8 @@ func TestFileDatabaseRunsInWALSynchronousNormal(t *testing.T) {
 	}
 }
 
-// A written report survives reopening the database (the restart
-// durability promise behind WAL + synchronous=NORMAL, ADR 0009): the
-// row comes back with its original created_at.
+// TestWrittenReportSurvivesReopen: a written report survives reopening the
+// database (WAL + synchronous=NORMAL), keeping its original created_at.
 func TestWrittenReportSurvivesReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "reports.db")
 	ctx := context.Background()
@@ -301,10 +288,8 @@ func TestWrittenReportSurvivesReopen(t *testing.T) {
 	}
 }
 
-// A query does not wait for an in-flight write: holding the sole write
-// connection mid-write never blocks List, which runs on the read
-// path's own connections (ADR 0009). Before the split this hung:
-// List queued behind the held connection.
+// TestQueryDoesNotWaitBehindInflightWrite: holding the sole write connection
+// never blocks List (the read path has its own connections).
 func TestQueryDoesNotWaitBehindInflightWrite(t *testing.T) {
 	repo, err := Open(filepath.Join(t.TempDir(), "reports.db"))
 	if err != nil {
@@ -350,10 +335,8 @@ func TestQueryDoesNotWaitBehindInflightWrite(t *testing.T) {
 	}
 }
 
-// A write does not wait for an in-flight query: a query holding its
-// connection never blocks Upsert on the single write connection (ADR
-// 0007 keeps writes deterministic on their own connection; ADR 0009
-// gives reads theirs).
+// TestWriteDoesNotWaitBehindInflightQuery: a query holding its connection
+// never blocks Upsert on the single write connection.
 func TestWriteDoesNotWaitBehindInflightQuery(t *testing.T) {
 	repo, err := Open(filepath.Join(t.TempDir(), "reports.db"))
 	if err != nil {
@@ -394,10 +377,8 @@ func TestWriteDoesNotWaitBehindInflightQuery(t *testing.T) {
 	}
 }
 
-// :memory: databases cannot split connections — every connection is
-// its own database — so the read path falls back to the single write
-// connection and tests keep working unchanged (ADR 0009
-// consequences).
+// TestMemoryDatabaseWorksAcrossSplitPaths: :memory: cannot split connections,
+// so the read path falls back to the single write connection (ADR 0009).
 func TestMemoryDatabaseWorksAcrossSplitPaths(t *testing.T) {
 	repo := openTestRepo(t)
 	if repo.read != repo.write {
@@ -421,10 +402,8 @@ func TestMemoryDatabaseWorksAcrossSplitPaths(t *testing.T) {
 	}
 }
 
-// Upsert preserves created_at on update through the upsert statement
-// itself: a later Trigger overwrites updated_at, expiry, tracker and
-// sample but never the first-trigger timestamp (spec: The report
-// store — the statement preserves it, no read precedes the write).
+// TestUpsertPreservesCreatedAtOnUpdate: a later Trigger overwrites updated_at,
+// expiry, tracker and sample but never the first-trigger created_at (no pre-read).
 func TestUpsertPreservesCreatedAtOnUpdate(t *testing.T) {
 	repo := openTestRepo(t)
 	ctx := context.Background()
@@ -438,8 +417,8 @@ func TestUpsertPreservesCreatedAtOnUpdate(t *testing.T) {
 		t.Fatalf("Upsert: %v", err)
 	}
 
-	// The update arrives with a different CreatedAt (a fresh record
-	// would say otherwise): the row's first-trigger timestamp wins.
+	// The update arrives with a different CreatedAt; the row's
+	// first-trigger timestamp wins.
 	rec.CreatedAt = second
 	rec.UpdatedAt = second
 	rec.ExpiresAt = second.Add(24 * time.Hour)

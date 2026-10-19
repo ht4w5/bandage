@@ -5,19 +5,10 @@ import (
 	"strconv"
 )
 
-// Replay volume methods (DECISIONS §8): volume is "tolerated download
-// equivalents" as a function of the estimated file size in bytes —
-// overflow when the accumulated fractions exceed it. The formulas follow
-// flux FILE-RATIO-BUCKET (.reference/flux/pkg/engine/bucket.go) with
-// bandage's units: unlike flux, the method output IS the volume (it is
-// not multiplied by the file size), clamped-linear's slope is per
-// decimal GB, and inverse-square's pivot and step's threshold are byte
-// sizes. Only the replay tracker configures one; rate and bandwidth use
-// a constant volume. The types satisfy the domain core's VolumeMethod
-// interface structurally.
+// Replay volume methods: volume is "tolerated download equivalents" as a
+// function of the estimated file size; the method output IS the volume.
 
-// ConstantVolume tolerates value download equivalents regardless of
-// file size (a plain scalar `volume:`).
+// ConstantVolume tolerates value download equivalents regardless of file size.
 type ConstantVolume float64
 
 func (m ConstantVolume) Volume(sizeBytes float64) float64 { return float64(m) }
@@ -26,8 +17,8 @@ func (m ConstantVolume) String() string {
 	return "constant(value=" + fmtNum(float64(m)) + ")"
 }
 
-// ClampedLinearVolume tolerates intercept + slope × sizeGB equivalents,
-// clamped to [Min, Max]. Slope is per decimal GB (sizeGB = size/1e9).
+// ClampedLinearVolume tolerates intercept + slope*sizeGB equivalents, clamped
+// to [Min, Max]. Slope is per decimal GB (sizeGB = size/1e9).
 type ClampedLinearVolume struct {
 	Intercept float64
 	Slope     float64 // per decimal GB
@@ -47,10 +38,8 @@ func (m ClampedLinearVolume) String() string {
 		" max=" + fmtNum(m.Max) + ")"
 }
 
-// InverseSquareVolume tolerates base + pivot²/size² equivalents: small
-// objects get a large tolerance, huge objects approach base (flux's
-// formula). Pivot is a byte size; Volume is only called with a known
-// (positive) size — the replay tracker skips unknown sizes.
+// InverseSquareVolume tolerates base + pivot^2/size^2 equivalents: small objects
+// get a large tolerance, huge ones approach base. Pivot is a byte size.
 type InverseSquareVolume struct {
 	Base  float64
 	Pivot float64 // bytes
@@ -64,8 +53,8 @@ func (m InverseSquareVolume) String() string {
 	return "inverse-square(base=" + fmtNum(m.Base) + " pivot=" + fmtNum(m.Pivot) + ")"
 }
 
-// StepVolume tolerates VolumeLow equivalents for files smaller than
-// Threshold (a byte size) and VolumeHigh at or above it.
+// StepVolume tolerates VolumeLow equivalents for files smaller than Threshold
+// (a byte size) and VolumeHigh at or above it.
 type StepVolume struct {
 	Threshold  float64 // bytes
 	VolumeLow  float64

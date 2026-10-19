@@ -2,13 +2,8 @@ package bandage
 
 import "strings"
 
-// Tracker-cache key convention — the one shared definition. Tracker
-// state is stored as (namespace, key) pairs: the namespace is the rule
-// ID (which namespaces tracker state), and the key is the tracker's
-// Target string — or, for per-(Target, path) trackers (replay), the
-// Target and the path joined with KeySep (DECISIONS §9). File-size
-// enrichment state shares the store under the reserved FilesizeNamespace
-// and keys entries by path alone: it has no Target.
+// Tracker-cache key convention: state is stored as (namespace, key)
+// pairs; namespace is the rule ID, key is Target or Target+KeySep.
 
 // FilesizeNamespace is the reserved tracker-cache namespace for
 // file-size enrichment state (keyed by path, no TTL, no Target).
@@ -31,9 +26,8 @@ func ReplayTrackerKey(target, path string) string {
 }
 
 // SplitTrackerKey splits a tracker cache key into its Target and, for
-// per-(Target, path) keys, its path (empty for plain Target keys). It
-// is the inverse of TrackerKey/ReplayTrackerKey and the drop log's
-// decoder: log attributes must name the true Target, never the raw key.
+// per-(Target, path) keys, its path (empty for plain Target keys): the
+// inverse of TrackerKey/ReplayTrackerKey.
 func SplitTrackerKey(key string) (target, path string) {
 	if i := strings.IndexByte(key, 0); i >= 0 {
 		return key[:i], key[i+1:]

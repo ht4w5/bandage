@@ -2,12 +2,8 @@ package track
 
 import "testing"
 
-// Replay volume methods (DECISIONS §8): volume is "tolerated download
-// equivalents" as a function of the estimated file size in bytes. The
-// formulas follow flux FILE-RATIO-BUCKET (.reference/flux/pkg/engine/
-// bucket.go) with DECISIONS' bandage units: clamped-linear's slope is
-// per decimal GB, and inverse-square's pivot and step's threshold are
-// byte sizes. Table-driven with size-parametric cases (DECISIONS §2).
+// Replay volume methods: volume is "tolerated download equivalents" as a
+// function of the estimated file size.
 
 func TestConstantVolume(t *testing.T) {
 	m := ConstantVolume(5)
@@ -19,18 +15,18 @@ func TestConstantVolume(t *testing.T) {
 }
 
 func TestClampedLinearVolume(t *testing.T) {
-	// PLAN §1's example: intercept 5, slope -1 per decimal GB, clamp [2, 5].
+	// intercept 5, slope -1 per decimal GB, clamp [2, 5].
 	m := ClampedLinearVolume{Intercept: 5, Slope: -1, Min: 2, Max: 5}
 	tests := []struct {
 		size float64
 		want float64
 	}{
 		{0, 5},       // intercept clamped to max
-		{0.5e9, 4.5}, // 5 − 0.5
-		{1e9, 4},     // 5 − 1
+		{0.5e9, 4.5}, // 5 - 0.5
+		{1e9, 4},     // 5 - 1
 		{2.5e9, 2.5}, // linear region
-		{3e9, 2},     // 5 − 3
-		{10e9, 2},    // 5 − 10 = −5 clamped to min
+		{3e9, 2},     // 5 - 3
+		{10e9, 2},    // 5 - 10 = -5 clamped to min
 		{123e12, 2},  // huge files clamp to min
 	}
 	for _, tt := range tests {
@@ -41,7 +37,7 @@ func TestClampedLinearVolume(t *testing.T) {
 }
 
 func TestInverseSquareVolume(t *testing.T) {
-	// base 1, pivot 1GB: base + pivot²/size².
+	// base 1, pivot 1GB: base + pivot^2/size^2.
 	m := InverseSquareVolume{Base: 1, Pivot: 1e9}
 	tests := []struct {
 		size float64

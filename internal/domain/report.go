@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// TrackerReading is the evidence snapshot a Trigger records: the tracker
-// values at trigger time (spec: tracker reading in report evidence).
+// TrackerReading is the tracker values at trigger time, recorded as
+// report evidence.
 type TrackerReading struct {
 	// Track is the tracker kind: "rate", "bandwidth", or "replay".
 	Track  string  `json:"track"`
@@ -25,9 +25,8 @@ type Sample struct {
 	Size   int64
 }
 
-// Report is the record that a rule matched for a target, carrying its
-// tracker reading and sample, alive until expiry or deletion. Identity is
-// (rule, target).
+// Report is the record that a rule matched for a target, alive until
+// expiry or deletion. Identity is (rule, target).
 type Report struct {
 	Rule      string
 	Chain     string

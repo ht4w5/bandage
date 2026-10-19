@@ -17,11 +17,8 @@ import (
 	"github.com/HT4w5/bandage/internal/infra/persistence/sqlite"
 )
 
-// The worker pool and daemon-lifetime context at the assembled daemon
-// seam (spec: Testing Decisions — several workers under -race with
-// every line accounted for, a workers:1 determinism case, and bounded
-// shutdown where in-flight reports survive). Concurrency is proven by
-// the race detector and exact accounting, never by timing.
+// Worker pool and daemon-lifetime context at the daemon seam: exact line
+// accounting under -race, workers:1 determinism, bounded shutdown drain.
 
 const poolRules = `
 version: 0
@@ -33,8 +30,8 @@ chains:
         actions: [{report: {reason: egress-overflow, ttl: 1h}}]
 `
 
-// New rejects a worker count below 1 before opening any resource: a
-// broken config never reaches the running daemon (spec story 16).
+// TestNewRejectsNonPositiveWorkerCount: New rejects a worker count below 1
+// before opening any resource.
 func TestNewRejectsNonPositiveWorkerCount(t *testing.T) {
 	chains, err := ParseRules([]byte(poolRules))
 	if err != nil {
@@ -58,9 +55,8 @@ func TestNewRejectsNonPositiveWorkerCount(t *testing.T) {
 	}
 }
 
-// With several workers every received line is counted exactly once:
-// received equals parsed plus dropped, with no loss or duplication
-// under -race (spec story 17).
+// TestWorkerPoolCountsEveryLineOnce: received equals parsed plus dropped,
+// with no loss or duplication under -race.
 func TestWorkerPoolCountsEveryLineOnce(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	d := startTestDaemonCfg(t, clock, "unixgram", ":memory:", poolRules, func(c *Config) {
@@ -87,21 +83,16 @@ func TestWorkerPoolCountsEveryLineOnce(t *testing.T) {
 	}
 }
 
-// Concurrent Events for one Target never corrupt tracker state: the
-// per-key update is atomic (no update lost or double-applied),
-// concurrent Triggers converge on at most one (rule, Target) report
-// write while it is alive (spec story 14, ADR 0007/0008), and each
-// Trigger empties the bucket (ticket 02).
+// TestWorkerPoolConcurrentEventsOneTarget: concurrent events for one Target
+// never corrupt tracker state.
 func TestWorkerPoolConcurrentEventsOneTarget(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	d := startTestDaemonCfg(t, clock, "unixgram", ":memory:", poolRules, func(c *Config) {
 		c.Pipeline = Pipeline{Workers: 4}
 	})
 
-	// Every event overflows on its own (2000 > 1000), so concurrent
-	// triggers race for the same (rule, Target) report — at most one
-	// write lands while the report is alive (ticket 03) — and each
-	// empties the bucket. Timestamps alternate out of order on purpose.
+	// Each event overflows on its own (2000 > 1000), so triggers race for
+	// the same (rule, Target) report; timestamps alternate out of order.
 	const events = 24
 	times := []string{eventTime1, "1734346934.123"}
 	for i := range events {
@@ -114,11 +105,8 @@ func TestWorkerPoolConcurrentEventsOneTarget(t *testing.T) {
 		t.Fatalf("reports = %+v, want exactly one (one live report per (rule, Target))", doc.Reports)
 	}
 
-	// Delete re-arms the write so the probe's reading is observable —
-	// and every concurrent update landed exactly once: the next events
-	// accumulate on the emptied bucket — 5×100 + 600 = 1100 > 1000
-	// overflows on the last and reads back the exact total (leak 0, so
-	// the total is order-independent).
+	// After Delete the next events accumulate on the emptied bucket:
+	// 5x100 + 600 = 1100 overflows on the last and reads the exact total.
 	if _, n := d.del(t, url.Values{"rule": {"egress"}}); n != 1 {
 		t.Fatalf("delete count = %d, want 1", n)
 	}
@@ -137,9 +125,8 @@ func TestWorkerPoolConcurrentEventsOneTarget(t *testing.T) {
 	}
 }
 
-// pipeline.workers: 1 processes Events strictly in arrival order (spec
-// story 19): the Trigger reading and its sample pin the processing
-// order exactly — every other order changes one of them.
+// TestWorkersOneProcessesInArrivalOrder: workers:1 processes events strictly
+// in arrival order; the reading and sample pin that order exactly.
 func TestWorkersOneProcessesInArrivalOrder(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	rules := `
@@ -155,11 +142,8 @@ chains:
 		c.Pipeline = Pipeline{Workers: 1}
 	})
 
-	// Arrival order t1 < t2 < t3. Strict arrival accumulates
-	// 1000 → 2000−100 = 1900, which overflows 1500 and empties the
-	// bucket (the trigger reading, pre-reset); t3 accumulates 1000 alone
-	// and stays quiet. Every other processing order changes the reading
-	// (decay vs out-of-order increments) or the sample.
+	// Arrival order t1 < t2 < t3 accumulates 1000 -> 2000-100 = 1900,
+	// which overflows 1500 and empties the bucket; t3 stays quiet.
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 1000))
 	d.send(nginxLine("1734346034.123", "203.0.113.7", "GET", "/big", 200, 1000))
 	d.send(nginxLine("1734346134.123", "203.0.113.7", "GET", "/big", 200, 1000))
@@ -179,12 +163,8 @@ chains:
 	}
 }
 
-// storeGate wedges store calls on demand: every gated call signals
-// enter() and then blocks until release(), however long that takes. It
-// stands both for in-flight report calls observed mid-write and for a
-// store call that never returns (spec stories 31–32); the write-side
-// user is blockingStore, the read-side user gatedListStore
-// (readpath_test.go).
+// storeGate wedges store calls on demand: every gated call signals enter()
+// and blocks until release(), however long that takes.
 type storeGate struct {
 	entered chan struct{}
 	gate    chan struct{}
@@ -202,14 +182,14 @@ func (g *storeGate) enter() {
 	<-g.gate
 }
 
-// release opens the gate once: every wedged call resumes and later
-// calls pass straight through.
+// release opens the gate once: every wedged call resumes and later calls pass
+// straight through.
 func (g *storeGate) release() {
 	g.once.Do(func() { close(g.gate) })
 }
 
-// waitEntered blocks until n gated store calls are in flight inside
-// the wedge (guard timeout only — never a sleep).
+// waitEntered blocks until n gated store calls are in flight (guard timeout
+// only, never a sleep).
 func waitEntered(t *testing.T, g *storeGate, n int) {
 	t.Helper()
 	for i := range n {
@@ -222,10 +202,7 @@ func waitEntered(t *testing.T, g *storeGate, n int) {
 }
 
 // blockingStore wedges the report write path on demand (storeGate).
-// failErr, when set, fails exactly the first write that passes the
-// gate instead of landing it: the wedged write errors after release,
-// standing in for a report write that fails while a concurrent Trigger
-// watches (spec stories 4, 5, 14).
+// failErr, when set, fails exactly the first write that passes the gate.
 type blockingStore struct {
 	*sqlite.ReportRepository
 	storeGate
@@ -251,8 +228,8 @@ func (b *blockingStore) release() {
 	b.once.Do(func() { close(b.gate) })
 }
 
-// wedgeDaemon is the assembled daemon with a wedged report store: raw
-// lines in at a real ingest listener, reports out through the store.
+// wedgeDaemon is the daemon with a wedged report store and a real ingest
+// listener.
 type wedgeDaemon struct {
 	*Daemon
 	send   func(line string)
@@ -309,8 +286,8 @@ func startWedgeDaemon(t *testing.T, clock *testClock, workers int) *wedgeDaemon 
 	}
 }
 
-// waitDone returns the error from a shutdown goroutine (guard timeout
-// only — never a sleep).
+// waitDone returns the error from a shutdown goroutine (guard timeout only,
+// never a sleep).
 func waitDone(t *testing.T, ch <-chan error) error {
 	t.Helper()
 	select {
@@ -322,9 +299,8 @@ func waitDone(t *testing.T, ch <-chan error) error {
 	}
 }
 
-// Shutdown cancels the daemon-lifetime context once the drain is done,
-// so no live context outlives a clean stop (context hygiene — the
-// context threading contract of the daemon seam).
+// TestShutdownCancelsLifetimeContext: Shutdown cancels the daemon-lifetime
+// context once the drain is done, so no live context outlives a clean stop.
 func TestShutdownCancelsLifetimeContext(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", poolRules)
@@ -341,15 +317,13 @@ func TestShutdownCancelsLifetimeContext(t *testing.T) {
 	}
 }
 
-// Shutdown drains the pipeline first: report upserts already in flight
-// when shutdown begins complete before the resources close, and the
-// reports survive (spec story 32).
+// TestShutdownDrainsInFlightReportUpserts: the shutdown drain contract --
+// in-flight upserts complete before resources close and their reports survive.
 func TestShutdownDrainsInFlightReportUpserts(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	w := startWedgeDaemon(t, clock, 2)
 
-	// Two report-triggering events (distinct Targets) whose upserts are
-	// in flight inside the store when shutdown begins.
+	// Two report-triggering events whose upserts wedge in the store.
 	w.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 2000))
 	w.send(nginxLine(eventTime1, "203.0.113.8", "GET", "/big", 200, 2000))
 	waitEntered(t, &w.store.storeGate, 2)
@@ -379,9 +353,8 @@ func TestShutdownDrainsInFlightReportUpserts(t *testing.T) {
 	}
 }
 
-// Shutdown is bounded by the caller's deadline even when a store call
-// never returns: it completes without waiting for the hung call (spec
-// story 31).
+// TestShutdownIsBoundedWhenStoreCallHangs: Shutdown is bounded by the
+// caller's deadline even when a store call never returns.
 func TestShutdownIsBoundedWhenStoreCallHangs(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	w := startWedgeDaemon(t, clock, 2)
@@ -397,6 +370,5 @@ func TestShutdownIsBoundedWhenStoreCallHangs(t *testing.T) {
 	if err := waitDone(t, shutdownErr); !errors.Is(err, context.Canceled) {
 		t.Errorf("Shutdown error = %v, want the caller's deadline error", err)
 	}
-	// Shutdown returned while the store call was still in flight: the
-	// gate is released only after this point, by the test cleanup.
+	// The gate is released only by the test cleanup, after Shutdown returned.
 }

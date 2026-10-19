@@ -13,14 +13,10 @@ import (
 	bandage "github.com/HT4w5/bandage/internal/domain"
 )
 
-// BenchmarkReportUpsert measures the report write path (H4): inserting
-// a fresh (rule, target) row vs updating over an existing one, on a
-// :memory: database vs a file database (the file case pays real durable
-// storage cost on every transaction). One op is one report.Trigger-style
-// Upsert of one report.
+// BenchmarkReportUpsert measures the report write path: inserting a fresh
+// (rule, target) row vs updating over an existing one, :memory: vs file.
 
-// benchUpsertReport is the report every op upserts; insert ops vary
-// only its Target.
+// benchUpsertReport is the report every op upserts; insert ops vary only its Target.
 func benchUpsertReport() bandage.Report {
 	now := bench.Epoch
 	return bandage.Report{
@@ -36,9 +32,8 @@ func benchUpsertReport() bandage.Report {
 	}
 }
 
-// targetPool hands out fresh distinct target strings, growing in
-// batches with the timer stopped so fixture generation never counts
-// toward B/op and allocs/op.
+// targetPool hands out fresh distinct targets, growing in batches with the
+// timer stopped so fixture generation never counts toward B/op.
 type targetPool struct{ targets []string }
 
 func (p *targetPool) at(b *testing.B, i int) string {
@@ -98,11 +93,8 @@ func BenchmarkReportUpsert(b *testing.B) {
 	}
 }
 
-// insertReportsSQL renders a fixture multi-row INSERT seeding n report
-// rows at expiresAt. Seeding is fixture setup, not the write path under
-// test (that is BenchmarkReportUpsert), so it bypasses Upsert with one
-// direct statement — cheap enough to re-run with the timer stopped in
-// the expiring case below.
+// insertReportsSQL renders a fixture multi-row INSERT seeding n rows at
+// expiresAt; fixture setup, not the write path under test, so it bypasses Upsert.
 func insertReportsSQL(n int, expiresAt time.Time) string {
 	var sb strings.Builder
 	sb.WriteString("INSERT INTO reports (rule, target, created_at, updated_at, expires_at, body) VALUES ")
@@ -117,11 +109,7 @@ func insertReportsSQL(n int, expiresAt time.Time) string {
 }
 
 // BenchmarkReportDeleteExpired measures one expired-report sweeper pass
-// (the daemon's minute cadence, spec hot-path inventory stage 7):
-// DeleteExpired's indexed delete over the report table. The live case
-// is the steady-state tick over unexpired rows (the common tick); the
-// expiring case re-seeds already-expired rows with the timer stopped
-// and measures their deletion. One op is one DeleteExpired call.
+// (DeleteExpired's indexed delete); the expiring case re-seeds with the timer stopped.
 func BenchmarkReportDeleteExpired(b *testing.B) {
 	const rows = 64
 	for _, tc := range []struct {
@@ -144,8 +132,7 @@ func BenchmarkReportDeleteExpired(b *testing.B) {
 			seed := insertReportsSQL(rows, expiresAt)
 			if !tc.expiring {
 				// The expiring case re-seeds every op (its rows are gone
-				// after each sweep), so pre-seeding would collide on the
-				// (rule, target) primary key.
+				// after each sweep), so pre-seeding would collide on the PK.
 				if _, err := repo.write.Exec(seed); err != nil {
 					b.Fatalf("seed: %v", err)
 				}

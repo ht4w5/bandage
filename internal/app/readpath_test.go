@@ -15,21 +15,11 @@ import (
 	"github.com/HT4w5/bandage/internal/infra/persistence/sqlite"
 )
 
-// Reads and writes never wait on each other at the assembled daemon
-// seam (ADR 0009): a report query served during an in-flight report
-// write does not wait for it, and the write does not wait for the
-// query — observable end to end through GET /reports and the pipeline,
-// never inside the store. The wedges follow workerpool_test.go's
-// blockingStore prior art (a real sqlite repository behind a gated
-// seam); the connection-level split they rely on is pinned by the
-// report repository's own contract tests in the sqlite package.
+// Read/write independence at the daemon seam: a query served during an
+// in-flight write does not wait for it, and vice versa.
 
-// gatedListStore wedges every List it is armed for on entry so a
-// served query stays in flight while the write path runs; upserts pass
-// straight through to the real repository. The daemon's startup
-// live-report rebuild is a List of its own and passes through before
-// the test arms the wedge. (The write-side wedge is
-// workerpool_test.go's blockingStore; both share its storeGate.)
+// gatedListStore wedges every List it is armed for on entry so a served query
+// stays in flight while the write path runs; upserts pass straight through.
 type gatedListStore struct {
 	*sqlite.ReportRepository
 	storeGate
@@ -55,9 +45,8 @@ func (g *gatedListStore) List(ctx context.Context, q report.Query) ([]bandage.Re
 	return g.ReportRepository.List(ctx, q)
 }
 
-// fetchReports issues GET /reports off the test goroutine and hands
-// back the outcome: the in-test helpers fail inline and must not run
-// from a goroutine.
+// fetchReports issues GET /reports off the test goroutine (t helpers must not
+// run from a goroutine).
 func fetchReports(addr string) (int, reportDoc, error) {
 	resp, err := apiClient.Get("http://" + addr + "/reports")
 	if err != nil {
@@ -77,16 +66,14 @@ func fetchReports(addr string) (int, reportDoc, error) {
 	return resp.StatusCode, doc, nil
 }
 
-// queryResult is the async GET outcome handed back to the test
-// goroutine.
+// queryResult is the async GET outcome handed back to the test goroutine.
 type queryResult struct {
 	status int
 	doc    reportDoc
 	err    error
 }
 
-// waitQuery returns the async GET outcome (guard timeout only — never a
-// sleep).
+// waitQuery returns the async GET outcome (guard timeout only, never a sleep).
 func waitQuery(t *testing.T, res <-chan queryResult) (int, reportDoc) {
 	t.Helper()
 	select {
@@ -101,9 +88,8 @@ func waitQuery(t *testing.T, res <-chan queryResult) (int, reportDoc) {
 	return 0, reportDoc{}
 }
 
-// A report query served during an in-flight report write does not wait
-// for it: GET /reports answers while the write is still in flight and
-// before it has landed (spec: API reads run on separate connections).
+// TestQueryDuringInflightWriteDoesNotWait: GET /reports answers while the
+// report write is still in flight and has not landed.
 func TestQueryDuringInflightWriteDoesNotWait(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	dbPath := filepath.Join(t.TempDir(), "reports.db")
@@ -143,9 +129,8 @@ func TestQueryDuringInflightWriteDoesNotWait(t *testing.T) {
 	}
 }
 
-// A report write does not wait for an in-flight query: the Trigger's
-// upsert lands while a GET /reports is still being served (spec: API
-// reads run on separate connections).
+// TestWriteDuringInflightQueryDoesNotWait: the Trigger's upsert lands while a
+// GET /reports is still being served.
 func TestWriteDuringInflightQueryDoesNotWait(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	dbPath := filepath.Join(t.TempDir(), "reports.db")
@@ -169,8 +154,7 @@ func TestWriteDuringInflightQueryDoesNotWait(t *testing.T) {
 	}()
 	waitEntered(t, &store.storeGate, 1)
 
-	// The write path runs to completion regardless: two events overflow
-	// and the report lands while the query is still in flight.
+	// The write lands while the query is still in flight.
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/releases/24.04.iso", 200, 6000))
 	d.waitProcessed(t, 1)
 	d.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/releases/24.04.iso", 200, 6000))

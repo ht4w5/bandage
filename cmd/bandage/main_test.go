@@ -12,10 +12,9 @@ import (
 	"github.com/HT4w5/bandage/internal/identity"
 )
 
-// Flag parsing, shorthands, exit behavior and flag > config > default
-// precedence live behind the run(args) seam (spec Testing Decisions:
-// the one new seam — nothing else may be tested through it; the plan
-// text itself is asserted at the app seam, the --test plan tests).
+// Flag parsing, shorthands, exit behavior and flag > config
+// precedence are tested through the run(args) seam. The plan text
+// itself is asserted at the app seam, never through run().
 
 const testConfig = `
 ingest:
@@ -53,8 +52,7 @@ chains:
               ttl: 24h
 `
 
-// writeConfig writes valid config and rules files and returns their
-// paths.
+// writeConfig writes valid config and rules files and returns their paths.
 func writeConfig(t *testing.T) (cfgPath, rulesPath string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -76,8 +74,7 @@ func TestVersionFlagPrintsIdentity(t *testing.T) {
 		if code != 0 {
 			t.Errorf("run(%v) code = %d, want 0 (stderr %q)", args, code, stderr.String())
 		}
-		// The identity summary carries name, version, Go version and
-		// platform; commit and build date are empty in a dev build.
+		// The summary carries name, version, Go version and platform.
 		for _, want := range []string{
 			identity.Name,
 			identity.Version(),
@@ -98,21 +95,21 @@ func TestHelpFlagPrintsUsage(t *testing.T) {
 		if code != 0 {
 			t.Errorf("run(%v) code = %d, want 0 (stderr %q)", args, code, stderr.String())
 		}
-		// Usage is headed by the short identity (name, version, commit)
-		// and lists every flag with its shorthand.
-		if !strings.HasPrefix(stdout.String(), identity.Header()) {
-			t.Errorf("run(%v) stdout = %q, want it headed by the identity header %q",
-				args, stdout.String(), identity.Header())
+		// The usage is pflag's own output (the "Usage of bandage" line
+		// plus the flag table); -h/--help is pflag's built-in and so has
+		// no table row.
+		if !strings.HasPrefix(stdout.String(), "Usage of bandage:") {
+			t.Errorf("run(%v) stdout = %q, want it headed by pflag's usage line %q",
+				args, stdout.String(), "Usage of bandage:")
 		}
 		for _, want := range []string{
-			"Usage:",
+			"Usage of bandage:",
 			"-c, --config",
 			"-r, --rules",
 			"-t, --test",
 			"-l, --log-level",
 			"-w, --workers",
 			"-v, --version",
-			"-h, --help",
 		} {
 			if !strings.Contains(stdout.String(), want) {
 				t.Errorf("run(%v) stdout = %q, want it to contain %q", args, stdout.String(), want)
@@ -138,8 +135,8 @@ func TestUnknownFlagExitsTwoWithUsage(t *testing.T) {
 		if !strings.Contains(stderr.String(), tt.wantErr) {
 			t.Errorf("run(%v) stderr = %q, want it to contain %q", tt.args, stderr.String(), tt.wantErr)
 		}
-		if !strings.Contains(stderr.String(), "Usage:") {
-			t.Errorf("run(%v) stderr = %q, want it to contain the usage", tt.args, stderr.String())
+		if !strings.Contains(stderr.String(), "Usage of bandage:") {
+			t.Errorf("run(%v) stderr = %q, want it to contain pflag's usage line", tt.args, stderr.String())
 		}
 	}
 }
@@ -160,9 +157,8 @@ func TestTestModeShorthandsMatchLongForms(t *testing.T) {
 	if longOut.String() != shortOut.String() {
 		t.Errorf("short plan output\n%q\n!= long form\n%q", shortOut.String(), longOut.String())
 	}
-	// The plan content itself — including that it opens with the build
-	// identity header (spec story 6) — is asserted at the app seam (the
-	// --test plan tests), never through run().
+	// The plan content is asserted at the app seam (the --test plan
+	// tests), never through run().
 }
 
 func TestTestModeFailsNonZeroOnInvalidInput(t *testing.T) {
@@ -206,8 +202,8 @@ func TestTestModeFailsNonZeroOnInvalidInput(t *testing.T) {
 func TestLogLevelPrecedence(t *testing.T) {
 	cfgPath, rulesPath := writeConfig(t)
 
-	// Flag > config: the explicit -l wins over log.level; validateConfig
-	// owns the info default (spec story 9).
+	// The explicit -l wins over log.level; validateConfig owns the info
+	// default.
 	tests := []struct {
 		name   string
 		config string // empty: the default valid fixture
@@ -241,8 +237,8 @@ func TestLogLevelPrecedence(t *testing.T) {
 
 func TestWorkersPrecedence(t *testing.T) {
 	cfgPath, rulesPath := writeConfig(t)
-	// A config value exercises the middle precedence tier (flag >
-	// config, spec story 9; config.go owns the CPU-count default).
+	// The config value exercises the middle tier: flag over config over
+	// the CPU-count default.
 	cfg4Path := writeTemp(t, strings.Replace(testConfig, "cache:", "pipeline:\n  workers: 4\n\ncache:", 1))
 
 	tests := []struct {
@@ -272,11 +268,8 @@ func TestWorkersPrecedence(t *testing.T) {
 	}
 }
 
-// An invalid -w flag value fails loudly instead of reaching the daemon,
-// even in --test mode: the resolved worker count is never below 1 (spec
-// story 16). Config values are rejected at load (the strict-config table
-// tests) and app.New guards the invariant (flag parsing and exit
-// behavior at the run seam).
+// An invalid -w value fails loudly instead of reaching the daemon,
+// even in --test mode: the resolved worker count is never below 1.
 func TestInvalidWorkersFails(t *testing.T) {
 	cfgPath, rulesPath := writeConfig(t)
 	for _, w := range []string{"0", "-1"} {
@@ -291,8 +284,7 @@ func TestInvalidWorkersFails(t *testing.T) {
 	}
 }
 
-// An invalid -l flag value fails loudly instead of reaching the daemon
-// (flag parsing at the run seam).
+// An invalid -l value fails loudly instead of reaching the daemon.
 func TestInvalidLogLevelFails(t *testing.T) {
 	cfgPath, rulesPath := writeConfig(t)
 	var stdout, stderr bytes.Buffer

@@ -10,21 +10,12 @@ import (
 	bandage "github.com/HT4w5/bandage/internal/domain"
 )
 
-// Replay tracker semantics at the evaluation seam (PLAN §1, DECISIONS
-// §8): unknown sizes are skipped entirely, increments are transferred
-// fractions capped at 1, state is keyed per (Target, path), decay and
-// overflow follow the generic leaky-bucket math, and the cache-entry TTL
-// is derived per event from the volume-method output. Stubs stand in at
-// the consumer-side ports (DECISIONS §2); no sleeps, event timestamps
-// only.
-
 // matchAll accepts every event.
 type matchAll struct{}
 
 func (matchAll) Match(*bandage.Event) bool { return true }
 
-// stubCache is a TrackerCache test double recording every update and
-// every clear.
+// stubCache is a TrackerCache test double recording updates and clears.
 type stubCache struct {
 	records map[string]bandage.Record
 	updates []stubUpdate
@@ -52,17 +43,15 @@ func (c *stubCache) Update(_ context.Context, ns, key string, ttl time.Duration,
 	return r, nil
 }
 
-// Clear empties the record for (ns, key) and records the call — the
-// Trigger reset cadence is observable at this seam (spec Testing
-// Decisions: "reset cadence and action runs").
+// Clear empties the record for (ns, key) and records the call.
 func (c *stubCache) Clear(_ context.Context, ns, key string) error {
 	c.clears = append(c.clears, stubClear{ns: ns, key: key})
 	delete(c.records, ns+"\x00"+key)
 	return nil
 }
 
-// stubSink is a ReportSink test double capturing the reports a Trigger
-// writes; the next failures writes fail (the failed-write retry seam).
+// stubSink is a ReportSink double capturing reports; the next failures
+// writes fail (the failed-write retry seam).
 type stubSink struct {
 	upserts  []bandage.Report
 	attempts int
@@ -79,24 +68,22 @@ func (s *stubSink) Trigger(_ context.Context, rec bandage.Report) error {
 	return nil
 }
 
-// captureLogger is a Logger test double recording every record's fields
-// (what actions see is the contract — the Trigger-time reading seam).
+// captureLogger is a Logger double recording every record's fields.
 type captureLogger struct{ records []map[string]any }
 
 func (l *captureLogger) Log(_ bandage.Level, _ string, fields map[string]any) {
 	l.records = append(l.records, fields)
 }
 
-// constVolume is a bandage.VolumeMethod test double: one tolerated
-// volume regardless of size.
+// constVolume is a VolumeMethod double: one tolerated volume regardless of
+// size.
 type constVolume float64
 
 func (v constVolume) Volume(float64) float64 { return float64(v) }
 func (v constVolume) String() string         { return "constant" }
 
-// stepVolume is a bandage.VolumeMethod test double: low below
-// threshold bytes, high from it. The real volume methods have their own
-// tests in the track module.
+// stepVolume is a VolumeMethod double: low below threshold bytes, high
+// from it. The real volume methods have their own tests in track.
 type stepVolume struct {
 	threshold, low, high float64
 }
@@ -148,8 +135,8 @@ func (h *harness) evaluate(t *testing.T, ev *bandage.Event) {
 	}
 }
 
-// evaluateErr evaluates one event expecting the report write to fail
-// and propagate (a failed write aborts the action list).
+// evaluateErr evaluates one event expecting the failed report write to
+// propagate (a failed write aborts the action list).
 func (h *harness) evaluateErr(t *testing.T, ev *bandage.Event) {
 	t.Helper()
 	if err := h.svc.Evaluate(context.Background(), ev); err == nil {
@@ -157,9 +144,8 @@ func (h *harness) evaluateErr(t *testing.T, ev *bandage.Event) {
 	}
 }
 
-// newRuleHarness assembles the service around one rule with the given
-// tracker and actions (the Trigger-semantics seam: reset cadence, retry
-// and action runs over the stub ports).
+// newRuleHarness assembles the service around one rule with the given tracker
+// and actions (the Trigger-semantics seam).
 func newRuleHarness(t *testing.T, cfg *bandage.TrackerConfig, actions ...bandage.Action) *harness {
 	t.Helper()
 	if cfg != nil && cfg.TargetPrefix == (bandage.TargetPrefix{}) {
@@ -194,10 +180,8 @@ func event(at int64, path string, sent, size int64) *bandage.Event {
 	}
 }
 
-// Events whose size estimate is unknown are skipped entirely: no
-// increment, no decay, no cache touch — no Match is possible during
-// enrichment warm-up, even with a volume a single transfer would burst
-// through.
+// Unknown size estimates are skipped entirely: no increment, no decay, no
+// cache touch - no Match is possible during enrichment warm-up.
 func TestReplaySkipsUnknownSize(t *testing.T) {
 	h := newHarness(t, &bandage.TrackerConfig{
 		Kind: bandage.TrackReplay, Leak: 0, Volume: 0.5,
@@ -212,8 +196,8 @@ func TestReplaySkipsUnknownSize(t *testing.T) {
 	}
 }
 
-// The increment is the transferred fraction of the estimated size,
-// capped at 1 per event (DECISIONS §8).
+// The increment is the transferred fraction of the estimated size, capped
+// at 1 per event.
 func TestReplayFractionIncrement(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -242,9 +226,8 @@ func TestReplayFractionIncrement(t *testing.T) {
 	}
 }
 
-// Replay state is keyed by (Target, path): the aggregated target prefix
-// string and the path joined with "\x00" (DECISIONS §9), namespaced by
-// the rule ID.
+// Replay state is keyed by (Target, path): the target prefix string and the
+// path joined with "\x00", namespaced by the rule ID.
 func TestReplayKeysByTargetAndPath(t *testing.T) {
 	h := newHarness(t, &bandage.TrackerConfig{
 		Kind: bandage.TrackReplay, Leak: 0, Volume: 100,
@@ -267,15 +250,14 @@ func TestReplayKeysByTargetAndPath(t *testing.T) {
 	}
 }
 
-// The generic leaky-bucket math applies to fractions too: value decays
-// by leak×Δt between events and Overflows strictly above volume. The
-// reading at trigger time carries kind, value, leak and volume.
+// Fractions decay like any leaky bucket (leak*dt) and overflow strictly
+// above volume; the reading carries kind, value, leak and volume.
 func TestReplayDecayAndOverflow(t *testing.T) {
 	cfg := &bandage.TrackerConfig{Kind: bandage.TrackReplay, Leak: 0.5, Volume: 2}
 	h := newHarness(t, cfg)
 
-	// Full-file downloads (fraction 1 each): 1 at t=100; 2−1=1 at t=102;
-	// 2 at t=102; 3−1=2 at t=104; 3 at t=104 overflows (3 > 2).
+	// Full-file downloads (fraction 1 each): 1 at t=100; 2-1=1 at t=102;
+	// 2 at t=102; 3-1=2 at t=104; 3 at t=104 overflows (3 > 2).
 	at := []int64{100, 102, 102, 104, 104}
 	for i, ts := range at {
 		h.evaluate(t, event(ts, "/a", 100, 100))
@@ -295,8 +277,8 @@ func TestReplayDecayAndOverflow(t *testing.T) {
 	}
 }
 
-// The volume at trigger time is the volume method's output for that
-// event's estimated file size (DECISIONS §8).
+// The volume at trigger time is the volume method's output for that event's
+// estimated file size.
 func TestReplayReadingCarriesVolumeMethodOutput(t *testing.T) {
 	cfg := &bandage.TrackerConfig{
 		Kind:         bandage.TrackReplay,
@@ -305,8 +287,7 @@ func TestReplayReadingCarriesVolumeMethodOutput(t *testing.T) {
 	}
 	h := newHarness(t, cfg)
 
-	// A big file tolerates 5 equivalents; the sixth full download (value
-	// 6) overflows and reports volume 5.
+	// A big file tolerates 5 equivalents; the sixth full download overflows.
 	for i := 0; i < 6; i++ {
 		h.evaluate(t, event(int64(100+i), "/big.iso", 2000, 2000))
 	}
@@ -319,9 +300,8 @@ func TestReplayReadingCarriesVolumeMethodOutput(t *testing.T) {
 	}
 }
 
-// The cache-entry TTL is derived per event as volume/leak from the
-// current volume-method output (DECISIONS §8), so it moves when the
-// method's output moves; leak 0 falls back to the default TTL.
+// The cache-entry TTL is volume/leak of the current volume-method output,
+// re-derived per event; leak 0 falls back to the default TTL.
 func TestReplayTTLDerivedPerEvent(t *testing.T) {
 	cfg := &bandage.TrackerConfig{
 		Kind:         bandage.TrackReplay,
@@ -330,8 +310,8 @@ func TestReplayTTLDerivedPerEvent(t *testing.T) {
 	}
 	h := newHarness(t, cfg)
 
-	h.evaluate(t, event(100, "/a", 100, 100))   // small: volume 2 → TTL 2/0.5 = 4s
-	h.evaluate(t, event(101, "/a", 2000, 2000)) // estimate moved big: volume 5 → TTL 10s
+	h.evaluate(t, event(100, "/a", 100, 100))   // small: volume 2 -> TTL 2/0.5 = 4s
+	h.evaluate(t, event(101, "/a", 2000, 2000)) // estimate moved big: volume 5 -> TTL 10s
 
 	if len(h.cch.updates) != 2 {
 		t.Fatalf("updates = %+v, want 2", h.cch.updates)
@@ -355,19 +335,8 @@ func TestReplayTTLDerivedPerEvent(t *testing.T) {
 	}
 }
 
-// --- Trigger semantics (GLOSSARY Trigger, ADR 0008, ticket 02) ---
-//
-// A Trigger is a match that ran the rule's report action; it empties
-// the matched rule's tracker record for the match's key (the Target,
-// per (Target, path) for replay trackers), so a flagged Target must
-// accumulate a full volume of abuse again before it can Trigger again.
-// A failed write is not a Trigger outcome: the record stays intact and
-// the next matching event retries the report. These tests observe the
-// reset cadence at the stub ports and through subsequent Triggers —
-// never the tracker record's internal state.
-
-// A Trigger empties the matched rule's tracker record for the match's
-// key: one Trigger per accumulation episode, not per event.
+// A Trigger empties the matched rule's tracker record for the match's key:
+// one Trigger per accumulation episode, not per event.
 func TestTriggerEmptiesTrackerRecord(t *testing.T) {
 	h := newRuleHarness(t, &bandage.TrackerConfig{Kind: bandage.TrackRate, Leak: 0, Volume: 2},
 		bandage.Action{Report: &bandage.ReportAction{Reason: "overflow", TTL: time.Hour}})
@@ -386,8 +355,8 @@ func TestTriggerEmptiesTrackerRecord(t *testing.T) {
 		t.Errorf("tracker clears = %+v, want the match's Target key emptied once", got)
 	}
 
-	// The bucket re-armed: two more events accumulate 2 — no Trigger,
-	// because a full volume must recur — and the third Triggers again.
+	// Re-armed: two more events accumulate 2 and the third Triggers again
+	// (a full volume must recur).
 	for i := 0; i < 2; i++ {
 		h.evaluate(t, event(int64(200+i), "/a", 100, 0))
 	}
@@ -400,9 +369,8 @@ func TestTriggerEmptiesTrackerRecord(t *testing.T) {
 	}
 }
 
-// A replay rule's Trigger empties the (Target, path) record the match
-// keyed on: per-path accumulation re-arms while other paths keep their
-// state (spec story 16).
+// A replay Trigger empties the (Target, path) record the match keyed on:
+// per-path accumulation re-arms while other paths keep their state.
 func TestTriggerEmptiesReplayTrackerPerPath(t *testing.T) {
 	h := newHarness(t, &bandage.TrackerConfig{Kind: bandage.TrackReplay, Leak: 0, Volume: 2})
 
@@ -419,12 +387,12 @@ func TestTriggerEmptiesReplayTrackerPerPath(t *testing.T) {
 		t.Fatalf("tracker clears = %+v, want only (%q, %q) emptied", got, "iso-replay", want)
 	}
 
-	// /b kept its accumulation: its next download overflows (3 > 2)…
+	// /b kept its accumulation: its next download overflows (3 > 2).
 	h.evaluate(t, event(105, "/b", 100, 100))
 	if h.sink.attempts != 2 {
 		t.Fatalf("report writes = %d, want 2 (/b kept its state)", h.sink.attempts)
 	}
-	// …while /a re-armed and needs a full volume again.
+	// while /a re-armed and needs a full volume again.
 	h.evaluate(t, event(106, "/a", 100, 100))
 	if h.sink.attempts != 2 {
 		t.Fatalf("report writes = %d, want still 2 (/a re-arms from empty)", h.sink.attempts)
@@ -432,8 +400,7 @@ func TestTriggerEmptiesReplayTrackerPerPath(t *testing.T) {
 }
 
 // A failed report write leaves the tracker record intact and the next
-// matching event retries the report (spec story 5): the detection is
-// never lost to a store outage.
+// matching event retries the report.
 func TestFailedReportWriteLeavesTrackerRecordIntact(t *testing.T) {
 	h := newRuleHarness(t, &bandage.TrackerConfig{Kind: bandage.TrackRate, Leak: 0, Volume: 2},
 		bandage.Action{Report: &bandage.ReportAction{Reason: "overflow", TTL: time.Hour}})
@@ -449,22 +416,19 @@ func TestFailedReportWriteLeavesTrackerRecordIntact(t *testing.T) {
 		t.Fatalf("tracker clears = %+v, want none (a failed write is not a Trigger outcome)", got)
 	}
 
-	// The episode was kept: the next matching event overflows again
-	// (4 > 2) and retries the write — which lands.
+	// The kept episode overflows again (4 > 2) and the retry lands.
 	h.evaluate(t, event(200, "/a", 100, 0))
 	if h.sink.attempts != 2 || len(h.sink.upserts) != 1 {
 		t.Fatalf("attempts = %d, upserts = %d, want the retry to land", h.sink.attempts, len(h.sink.upserts))
 	}
-	// The landed Trigger emptied the record: a lone event no longer
-	// overflows.
+	// The landed Trigger emptied the record: a lone event no longer overflows.
 	h.evaluate(t, event(300, "/a", 100, 0))
 	if h.sink.attempts != 2 {
 		t.Fatalf("attempts = %d, want still 2 (the landed Trigger emptied the record)", h.sink.attempts)
 	}
 }
 
-// A match whose actions contain no report action never empties the
-// tracker: log/goto/stop-only rules accumulate as before.
+// A match whose actions contain no report action never empties the tracker.
 func TestMatchWithoutReportActionKeepsTracker(t *testing.T) {
 	h := newRuleHarness(t, &bandage.TrackerConfig{Kind: bandage.TrackRate, Leak: 0, Volume: 100},
 		bandage.Action{Log: &bandage.LogAction{Level: bandage.LevelDebug, Message: "SEEN:"}})
@@ -484,8 +448,8 @@ func TestMatchWithoutReportActionKeepsTracker(t *testing.T) {
 	}
 }
 
-// Tracker-less rules have nothing to empty: every match Triggers on
-// filter alone and no record is ever cleared.
+// Tracker-less rules have nothing to empty: every match Triggers on filter
+// alone and no record is ever cleared.
 func TestTrackerlessRuleClearsNothing(t *testing.T) {
 	h := newRuleHarness(t, nil,
 		bandage.Action{Report: &bandage.ReportAction{Reason: "tripwire", TTL: time.Hour}})
@@ -500,9 +464,8 @@ func TestTrackerlessRuleClearsNothing(t *testing.T) {
 	}
 }
 
-// Actions see the Trigger-time tracker reading (pre-reset): the log
-// action after the report action logs the reading that overflowed,
-// never the emptied bucket.
+// Actions see the Trigger-time tracker reading (pre-reset), never the
+// emptied bucket.
 func TestActionsSeeTriggerTimeReading(t *testing.T) {
 	log := &captureLogger{}
 	sink, cache := &stubSink{}, &stubCache{}
