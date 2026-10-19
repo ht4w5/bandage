@@ -55,22 +55,9 @@ func TestNewFilesizeEnricherValidation(t *testing.T) {
 	}
 }
 
-// The first observation seeds the estimate exactly (no blend with an implied zero).
-func TestEnrichSeedsFirstObservation(t *testing.T) {
-	fe, err := NewFilesizeEnricher(&stubCache{}, 5, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := enrichOnce(t, fe, "/a", 1000); got != 1000 {
-		t.Errorf("first size = %d, want 1000 (exact seed)", got)
-	}
-	// 1000 + (100-1000)/5 = 820.
-	if got := enrichOnce(t, fe, "/a", 100); got != 820 {
-		t.Errorf("second size = %d, want 820 (blended from the seed)", got)
-	}
-}
-
 // EWMA: prev + (observed-prev)/period with int64 truncating division.
+// The first row pins the seed: the first observation lands exactly,
+// with no blend against an implied zero.
 func TestEnrichEWMAIntegerMath(t *testing.T) {
 	tests := []struct {
 		observed int64

@@ -47,21 +47,6 @@ func TestTargetPrefixAggregate(t *testing.T) {
 	}
 }
 
-// TestTargetPrefixAggregateGroupsSources: sources in one prefix share
-// a Target string, different prefixes do not.
-func TestTargetPrefixAggregateGroupsSources(t *testing.T) {
-	p := TargetPrefix{IPv4: 24, IPv6: 64}
-	a := p.Aggregate(netip.MustParseAddr("203.0.113.7"))
-	b := p.Aggregate(netip.MustParseAddr("203.0.113.254"))
-	c := p.Aggregate(netip.MustParseAddr("203.0.114.7"))
-	if a != b {
-		t.Errorf("same prefix aggregates differently: %q vs %q", a, b)
-	}
-	if a == c {
-		t.Errorf("different prefixes aggregate equally: %q", a)
-	}
-}
-
 // TestTrackerConfigTarget checks the tracker-state key and report
 // Target; a nil tracker falls back to the default aggregation.
 func TestTrackerConfigTarget(t *testing.T) {

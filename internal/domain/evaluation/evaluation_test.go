@@ -217,6 +217,11 @@ func TestReplayFractionIncrement(t *testing.T) {
 			for i, s := range tt.steps {
 				h.evaluate(t, event(int64(100+i), "/a", s.sent, s.size))
 			}
+			// A vacuous pass is possible here: an empty map makes the
+			// loop below assert nothing at all.
+			if len(h.cch.records) == 0 {
+				t.Fatal("no replay records in the cache, want one")
+			}
 			for _, r := range h.cch.records {
 				if r.Value != tt.want {
 					t.Errorf("value = %v, want %v", r.Value, tt.want)

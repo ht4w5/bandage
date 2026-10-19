@@ -833,9 +833,19 @@ func TestE2EStatisticsLogAgreesWithStats(t *testing.T) {
 	clock := newTestClock(mustTime(t, wallBase))
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", bandwidthRules)
 
+	// Three parses on one path and one dropped line give every counter a
+	// distinct value (cache_gets == cache_sets is structural: every
+	// Update counts one of each). Distinct absolutes pin each counter to
+	// its key; agreement with /stats alone would let equal-valued
+	// counters swap places unnoticed.
+	//
+	// The third event alone exceeds volume (3000+3000+12000 > 10000),
+	// so its Trigger clears the tracker entry and leaves cache_size at 1.
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 3000))
+	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 3000))
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 12000))
 	d.send("this is not json")
-	d.waitProcessed(t, 2)
+	d.waitProcessed(t, 4)
 	d.logStatistics()
 
 	_, doc := d.getStats(t)
@@ -845,18 +855,24 @@ func TestE2EStatisticsLogAgreesWithStats(t *testing.T) {
 	}
 	// attrInto fails on a missing field, so asserting every value also
 	// asserts that the line keeps its long-standing fields.
-	for _, f := range []struct{ key, block, field string }{
-		{"received", "pipeline", "received"},
-		{"parsed", "pipeline", "parsed"},
-		{"dropped", "pipeline", "dropped"},
-		{"cache_gets", "tracker_cache", "gets"},
-		{"cache_sets", "tracker_cache", "sets"},
-		{"cache_misses", "tracker_cache", "misses"},
-		{"cache_evictions", "tracker_cache", "evictions"},
-		{"cache_size", "tracker_cache", "size"},
+	for _, f := range []struct {
+		key, block, field string
+		abs               int64
+	}{
+		{"received", "pipeline", "received", 4},
+		{"parsed", "pipeline", "parsed", 3},
+		{"dropped", "pipeline", "dropped", 1},
+		{"cache_gets", "tracker_cache", "gets", 6},
+		{"cache_sets", "tracker_cache", "sets", 6},
+		{"cache_misses", "tracker_cache", "misses", 2},
+		{"cache_evictions", "tracker_cache", "evictions", 0},
+		{"cache_size", "tracker_cache", "size", 1},
 	} {
 		var v int64
 		attrInto(t, recs[0], f.key, &v)
+		if v != f.abs {
+			t.Errorf("statistics log %s = %d, want %d", f.key, v, f.abs)
+		}
 		if want := statsNum(t, doc, f.block, f.field); float64(v) != want {
 			t.Errorf("statistics log %s = %d, /stats %s.%s = %v, want the same counter", f.key, v, f.block, f.field, want)
 		}
