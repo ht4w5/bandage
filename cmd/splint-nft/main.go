@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"os/signal"
 	"syscall"
@@ -39,15 +40,19 @@ const progName = "splint-nft"
 
 // options is the resolved command line.
 type options struct {
-	url          string
-	hook         string
-	caFile       string
-	certFile     string
-	keyFile      string
-	fetchTimeout time.Duration
-	interval     time.Duration
-	dryRun       bool
-	logLevel     string
+	url            string
+	hook           string
+	caFile         string
+	certFile       string
+	keyFile        string
+	fetchTimeout   time.Duration
+	interval       time.Duration
+	excludePrefix  []string
+	excludePrivate bool
+	servicePort    []uint16
+	serviceAddress []string
+	dryRun         bool
+	logLevel       string
 }
 
 func main() {
@@ -72,6 +77,14 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	keyFile := fs.String("key", "", "client key file")
 	fetchTimeout := fs.DurationP("fetch-timeout", "t", splint.DefaultFetchTimeout, "set fetch HTTP timeout")
 	interval := fs.DurationP("update-interval", "i", splint.DefaultInterval, "report document update interval (clamped to a 1m floor)")
+	// The exclusion surface is one repeatable flag: it subsumes
+	// bandaid's whitelist and fluxc's exclude-prefix surfaces.
+	excludePrefix := fs.StringSliceP("exclude-prefix", "x", nil, "prefix excluded from every ban set (repeatable)")
+	excludePrivate := fs.BoolP("exclude-private", "p", true, "exclude RFC1918 and ULA targets")
+	// The service prefilter: the protected destinations every ban rule
+	// matches first. Empty sets mean all.
+	servicePort := fs.UintSlice("service-port", nil, "service destination port the ban prefilter matches (repeatable)")
+	serviceAddress := fs.StringSlice("service-address", nil, "service destination address or prefix the ban prefilter matches (repeatable)")
 	dryRun := fs.BoolP("dry-run", "d", false, "fetch and print the compiled ban rules once without installing")
 	logLevel := fs.StringP("log-level", "l", "info", "log level: debug, info, warn or error")
 	showVersion := fs.BoolP("version", "v", false, "print version and exit")
@@ -89,20 +102,42 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 		return exitOK, options{}
 	}
 	opts := options{
-		url:          *url,
-		hook:         *hookFlag,
-		caFile:       *caFile,
-		certFile:     *certFile,
-		keyFile:      *keyFile,
-		fetchTimeout: *fetchTimeout,
-		interval:     *interval,
-		dryRun:       *dryRun,
-		logLevel:     *logLevel,
+		url:            *url,
+		hook:           *hookFlag,
+		caFile:         *caFile,
+		certFile:       *certFile,
+		keyFile:        *keyFile,
+		fetchTimeout:   *fetchTimeout,
+		interval:       *interval,
+		excludePrefix:  *excludePrefix,
+		excludePrivate: *excludePrivate,
+		serviceAddress: *serviceAddress,
+		dryRun:         *dryRun,
+		logLevel:       *logLevel,
 	}
 	logger, err := newLogger(stderr, opts.logLevel)
 	if err != nil {
 		return fail(stderr, err), opts
 	}
+	exclude, err := parsePrefixes("exclude prefix", opts.excludePrefix)
+	if err != nil {
+		return fail(stderr, err), opts
+	}
+	ports, err := parsePorts(*servicePort)
+	if err != nil {
+		return fail(stderr, err), opts
+	}
+	opts.servicePort = ports
+	dstAddrs, err := parsePrefixes("service address", opts.serviceAddress)
+	if err != nil {
+		return fail(stderr, err), opts
+	}
+	// Exclusions are subtracted compiler-side: the driver installs
+	// Targets verbatim. Every ban rule leads with the service prefilter.
+	policy := splint.NewPolicy(exclude, opts.excludePrivate, splint.Prefilter{
+		DstPorts: opts.servicePort,
+		DstAddrs: dstAddrs,
+	})
 	fetcher, err := splint.NewFetcher(opts.url,
 		splint.WithTLS(opts.caFile, opts.certFile, opts.keyFile),
 		splint.WithFetchTimeout(opts.fetchTimeout),
@@ -118,7 +153,7 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	if err != nil {
 		return fail(stderr, err), opts
 	}
-	u := splint.New(fetcher, driver, opts.interval, logger)
+	u := splint.New(fetcher, driver, policy, opts.interval, logger)
 
 	// SIGINT/SIGTERM end the update loop, which resets the installed
 	// ruleset before returning.
@@ -135,6 +170,33 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 		return fail(stderr, err), opts
 	}
 	return exitOK, opts
+}
+
+// parsePorts validates the --service-port values: ports live in
+// 1-65535, and out-of-range values are refused at startup.
+func parsePorts(values []uint) ([]uint16, error) {
+	ports := make([]uint16, 0, len(values))
+	for _, v := range values {
+		if v < 1 || v > 65535 {
+			return nil, fmt.Errorf("service port: must be between 1 and 65535 (got %d)", v)
+		}
+		ports = append(ports, uint16(v))
+	}
+	return ports, nil
+}
+
+// parsePrefixes parses one flag's prefix values (--exclude-prefix,
+// --service-address), labeling parse failures with the flag's surface.
+func parsePrefixes(what string, values []string) ([]netip.Prefix, error) {
+	prefixes := make([]netip.Prefix, 0, len(values))
+	for _, v := range values {
+		p, err := splint.ParsePrefixOrAddr(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", what, err)
+		}
+		prefixes = append(prefixes, p)
+	}
+	return prefixes, nil
 }
 
 // newLogger builds the program logger: fixed console-style text on w

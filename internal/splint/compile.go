@@ -6,10 +6,13 @@ import (
 )
 
 // BanRule is one compiled ban rule (the GLOSSARY's Ban rule): a stance
-// over Target prefixes, the unit the firewall driver installs.
+// over Target prefixes, the unit the firewall driver installs. Every
+// rule leads with the service prefilter, so the ban only ever reaches
+// service traffic.
 type BanRule struct {
-	Targets []netip.Prefix `json:"targets"`
-	Stance  Stance         `json:"stance"`
+	Targets   []netip.Prefix `json:"targets"`
+	Prefilter Prefilter      `json:"prefilter"`
+	Stance    Stance         `json:"stance"`
 }
 
 // Stance is the enforcement stance a ban rule applies to its Targets,
@@ -28,7 +31,8 @@ type Skip struct {
 	Reason string
 }
 
-// Compile maps a version-0 report document's live reports to ban rules.
+// Compile maps a version-0 report document's live reports to ban
+// rules under policy p.
 //
 // PLACEHOLDER MAPPING — explicitly superseded by ticket 04 (penalty
 // mapping and direction split) and ticket 05 (merge policy): every
@@ -38,21 +42,33 @@ type Skip struct {
 // skips limit-req-rate, ADR 0011); ticket 05 merges overlapping
 // Targets and orders the result by specificity and strictness.
 //
-// Records with a missing or unknown Penalty or an unparseable Target
-// are skipped and reported in the returned skips; the remaining records
-// still compile.
-func Compile(doc Document) ([]BanRule, []Skip) {
+// Exclusions are subtracted compiler-side, overriding every report:
+// the driver installs Targets verbatim, and a record whose Target is
+// fully excluded compiles to no ban rule at all.
+//
+// Records with a missing or unknown Penalty, an unparseable Target or
+// a fully excluded Target are skipped and reported in the returned
+// skips; the remaining records still compile.
+func Compile(doc Document, p Policy) ([]BanRule, []Skip) {
 	rules := []BanRule{}
 	var skips []Skip
 	for _, r := range doc.Reports {
 		target, reason := parseRecord(r)
+		var residuals []netip.Prefix
+		if reason == "" {
+			residuals = p.Subtract(target)
+			if len(residuals) == 0 {
+				reason = fmt.Sprintf("target: fully excluded (got %q)", r.Target)
+			}
+		}
 		if reason != "" {
 			skips = append(skips, Skip{Rule: r.Rule, Target: r.Target, Reason: reason})
 			continue
 		}
 		rules = append(rules, BanRule{
-			Targets: []netip.Prefix{target},
-			Stance:  StanceDrop,
+			Targets:   residuals,
+			Prefilter: p.Prefilter.normalized(),
+			Stance:    StanceDrop,
 		})
 	}
 	return rules, skips

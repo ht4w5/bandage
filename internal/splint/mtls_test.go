@@ -170,7 +170,7 @@ func newTransportUpdater(t *testing.T, rawURL string, opts ...Option) (*Updater,
 		t.Fatalf("NewFetcher: %v", err)
 	}
 	stub := &Stub{}
-	return New(fetcher, stub, DefaultInterval, zerolog.New(&logCapture{})), stub
+	return New(fetcher, stub, defaultPolicy(), DefaultInterval, zerolog.New(&logCapture{})), stub
 }
 
 // TestUpdateCycleMutualTLS: the mutual-TLS success — an HTTPS endpoint
@@ -213,7 +213,7 @@ func TestUpdateCycleRefusesTheWrongCA(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewFetcher: %v", err)
 			}
-			return New(fetcher, stub, DefaultInterval, zerolog.New(logs))
+			return New(fetcher, stub, defaultPolicy(), DefaultInterval, zerolog.New(logs))
 		}
 		if _, err := newUpdater(WithTLS(pki.caFile, pki.certFile, pki.keyFile)).Update(context.Background()); err != nil {
 			t.Fatalf("first Update: %v", err)
