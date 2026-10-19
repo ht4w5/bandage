@@ -37,6 +37,10 @@ type Report struct {
 	ExpiresAt time.Time
 	Tracker   TrackerReading
 	Sample    Sample
+	// Penalty is the advisory enforcement stance the report recommends
+	// for the target (ADR 0010); nil only for rows written before the
+	// penalty existed (outside the canonical contract).
+	Penalty *Penalty
 }
 
 // formatTime renders report timestamps: RFC 3339 UTC at second precision.
@@ -107,6 +111,7 @@ func (r Report) MarshalJSON() ([]byte, error) {
 		ExpiresAt string         `json:"expires_at"`
 		Tracker   TrackerReading `json:"tracker"`
 		Sample    Sample         `json:"sample"`
+		Penalty   *Penalty       `json:"penalty,omitempty"`
 	}{
 		Rule:      r.Rule,
 		Chain:     r.Chain,
@@ -117,5 +122,6 @@ func (r Report) MarshalJSON() ([]byte, error) {
 		ExpiresAt: formatTime(r.ExpiresAt),
 		Tracker:   r.Tracker,
 		Sample:    r.Sample,
+		Penalty:   r.Penalty,
 	})
 }

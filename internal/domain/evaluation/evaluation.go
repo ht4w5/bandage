@@ -211,6 +211,7 @@ func matchKey(cfg *bandage.TrackerConfig, event *bandage.Event) string {
 // trigger runs the rule's report action and, on success, empties the matched rule's tracker record; a failed write is not a Trigger outcome (ADR 0008).
 func (s *Service) trigger(ctx context.Context, m matchContext, action *bandage.ReportAction) error {
 	now := s.now()
+	penalty := action.Penalty // the stance of the rules loaded at write time
 	rec := bandage.Report{
 		Rule:      m.rule.ID,
 		Chain:     m.chain.Name,
@@ -228,6 +229,7 @@ func (s *Service) trigger(ctx context.Context, m matchContext, action *bandage.R
 			Sent:   m.event.SentBytes,
 			Size:   m.event.SizeBytes,
 		},
+		Penalty: &penalty,
 	}
 	if err := s.reports.Trigger(ctx, rec); err != nil {
 		return err

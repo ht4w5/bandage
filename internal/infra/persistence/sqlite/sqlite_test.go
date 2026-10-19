@@ -253,14 +253,17 @@ func TestFileDatabaseRunsInWALSynchronousNormal(t *testing.T) {
 }
 
 // TestWrittenReportSurvivesReopen: a written report survives reopening the
-// database (WAL + synchronous=NORMAL), keeping its original created_at.
+// database (WAL + synchronous=NORMAL), keeping its original created_at and
+// its penalty.
 func TestWrittenReportSurvivesReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "reports.db")
 	ctx := context.Background()
 	base := time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)
+	rate := int64(1000000)
 	rec := bandage.Report{
 		Rule: "r", Chain: "c", Reason: "why", Target: "203.0.113.7/32",
 		CreatedAt: base, UpdatedAt: base, ExpiresAt: base.Add(time.Hour),
+		Penalty: &bandage.Penalty{Action: bandage.PenaltyLimitBandwidth, Rate: &rate},
 	}
 
 	repo, err := Open(path)
@@ -285,6 +288,10 @@ func TestWrittenReportSurvivesReopen(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].CreatedAt != rec.CreatedAt {
 		t.Errorf("rows after reopen = %+v, want the written report with created_at %v", got, rec.CreatedAt)
+	}
+	if p := got[0].Penalty; p == nil || p.Action != bandage.PenaltyLimitBandwidth ||
+		p.Rate == nil || *p.Rate != rate {
+		t.Errorf("penalty after reopen = %+v, want limit-bandwidth at %d", got[0].Penalty, rate)
 	}
 }
 
@@ -403,7 +410,8 @@ func TestMemoryDatabaseWorksAcrossSplitPaths(t *testing.T) {
 }
 
 // TestUpsertPreservesCreatedAtOnUpdate: a later Trigger overwrites updated_at,
-// expiry, tracker and sample but never the first-trigger created_at (no pre-read).
+// expiry, tracker, sample and penalty but never the first-trigger created_at
+// (no pre-read).
 func TestUpsertPreservesCreatedAtOnUpdate(t *testing.T) {
 	repo := openTestRepo(t)
 	ctx := context.Background()
@@ -412,16 +420,18 @@ func TestUpsertPreservesCreatedAtOnUpdate(t *testing.T) {
 	rec := bandage.Report{
 		Rule: "r", Chain: "c", Reason: "why", Target: "203.0.113.7/32",
 		CreatedAt: first, UpdatedAt: first, ExpiresAt: first.Add(24 * time.Hour),
+		Penalty: &bandage.Penalty{Action: bandage.PenaltyReject},
 	}
 	if err := repo.Upsert(ctx, rec); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 
-	// The update arrives with a different CreatedAt; the row's
-	// first-trigger timestamp wins.
+	// The update arrives with a different CreatedAt and penalty; the row's
+	// first-trigger timestamp wins, the body is replaced.
 	rec.CreatedAt = second
 	rec.UpdatedAt = second
 	rec.ExpiresAt = second.Add(24 * time.Hour)
+	rec.Penalty = &bandage.Penalty{Action: bandage.PenaltyDrop}
 	if err := repo.Upsert(ctx, rec); err != nil {
 		t.Fatalf("Upsert update: %v", err)
 	}
@@ -438,5 +448,8 @@ func TestUpsertPreservesCreatedAtOnUpdate(t *testing.T) {
 	}
 	if got[0].UpdatedAt != second {
 		t.Errorf("updated_at = %v, want the update %v", got[0].UpdatedAt, second)
+	}
+	if p := got[0].Penalty; p == nil || p.Action != bandage.PenaltyDrop {
+		t.Errorf("penalty = %+v, want the update's drop", got[0].Penalty)
 	}
 }

@@ -1,13 +1,16 @@
 package bandage
 
 import (
+	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
 
 // TestReportMarshalJSON checks the document shape: RFC 3339 UTC
-// timestamps at second precision.
+// timestamps at second precision, keys in document order with the
+// nested penalty last.
 func TestReportMarshalJSON(t *testing.T) {
 	rec := Report{
 		Rule:      "sustained-iso-egress",
@@ -31,6 +34,7 @@ func TestReportMarshalJSON(t *testing.T) {
 			Sent:   123456,
 			Size:   1234567890,
 		},
+		Penalty: &Penalty{Action: PenaltyLimitBandwidth, Rate: int64Ptr(1000000)},
 	}
 	got, err := json.Marshal(rec)
 	if err != nil {
@@ -45,7 +49,8 @@ func TestReportMarshalJSON(t *testing.T) {
 		"updated_at": "2025-10-17T18:29:40Z",
 		"expires_at": "2025-10-24T18:29:40Z",
 		"tracker": {"track": "bandwidth", "value": 102400000, "leak": 1000000, "volume": 100000000},
-		"sample": {"time": "2025-10-17T18:29:40Z", "path": "/releases/24.04.iso", "agent": "Wget/1.21", "status": 200, "sent": 123456, "size": 1234567890}
+		"sample": {"time": "2025-10-17T18:29:40Z", "path": "/releases/24.04.iso", "agent": "Wget/1.21", "status": 200, "sent": 123456, "size": 1234567890},
+		"penalty": {"action": "limit-bandwidth", "rate": 1000000}
 	}`
 	if compact(string(got)) != compact(want) {
 		t.Errorf("Marshal = %s\nwant %s", got, compact(want))
@@ -77,10 +82,45 @@ func TestSampleRoundTrip(t *testing.T) {
 }
 
 func compact(s string) string {
-	var v any
-	if err := json.Unmarshal([]byte(s), &v); err != nil {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, []byte(s)); err != nil {
 		return s
 	}
-	b, _ := json.Marshal(v)
-	return string(b)
+	return buf.String()
+}
+
+// int64Ptr returns a pointer to v (a limit penalty's rate).
+func int64Ptr(v int64) *int64 { return &v }
+
+// TestPenaltyWireShape pins the nested penalty object: action always,
+// rate exactly for a limit action (integer, never 0), and the penalty
+// key itself omitted only when the report carries none.
+func TestPenaltyWireShape(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		penalty *Penalty
+		want    string // expected "penalty" fragment, "" when the key is omitted
+	}{
+		{"a limit carries its rate", &Penalty{Action: PenaltyLimitPktRate, Rate: int64Ptr(200)}, `"penalty":{"action":"limit-pkt-rate","rate":200}`},
+		{"drop carries no rate", &Penalty{Action: PenaltyDrop}, `"penalty":{"action":"drop"}`},
+		{"reject carries no rate even when one is set", &Penalty{Action: PenaltyReject, Rate: int64Ptr(200)}, `"penalty":{"action":"reject"}`},
+		{"no penalty is omitted", nil, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := Report{Rule: "r", Penalty: tt.penalty}
+			got, err := json.Marshal(rec)
+			if err != nil {
+				t.Fatalf("Marshal error: %v", err)
+			}
+			if tt.want == "" {
+				if strings.Contains(string(got), `"penalty"`) {
+					t.Errorf("Marshal = %s, want no penalty key", got)
+				}
+				return
+			}
+			if !strings.Contains(string(got), tt.want) {
+				t.Errorf("Marshal = %s, want it to contain %s", got, tt.want)
+			}
+		})
+	}
 }

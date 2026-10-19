@@ -116,6 +116,7 @@ type body struct {
 	Reason  string                 `json:"reason"`
 	Tracker bandage.TrackerReading `json:"tracker"`
 	Sample  bandage.Sample         `json:"sample"`
+	Penalty *bandage.Penalty       `json:"penalty,omitempty"`
 }
 
 func (r *ReportRepository) Close() error {
@@ -136,6 +137,7 @@ func (r *ReportRepository) Upsert(ctx context.Context, rec bandage.Report) error
 		Reason:  rec.Reason,
 		Tracker: rec.Tracker,
 		Sample:  rec.Sample,
+		Penalty: rec.Penalty,
 	})
 	if err != nil {
 		return fmt.Errorf("sqlite: upsert: %w", err)
@@ -191,6 +193,7 @@ func (r *ReportRepository) List(ctx context.Context, q report.Query) ([]bandage.
 		rec.Reason = b.Reason
 		rec.Tracker = b.Tracker
 		rec.Sample = b.Sample
+		rec.Penalty = b.Penalty
 		rec.CreatedAt = time.Unix(0, createdNS).UTC()
 		rec.UpdatedAt = time.Unix(0, updatedNS).UTC()
 		rec.ExpiresAt = time.Unix(0, expiresNS).UTC()
