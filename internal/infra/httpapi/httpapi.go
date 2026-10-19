@@ -106,7 +106,11 @@ func (s *Server) handleReports(w http.ResponseWriter, r *http.Request) {
 		reports = []bandage.Report{}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(document{
+	// Canonical v0 serialization (docs/reports.md): two-space indent,
+	// Encode's trailing newline, default HTML escaping.
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(document{
 		Version:     0,
 		GeneratedAt: now.UTC().Format(time.RFC3339),
 		Reports:     reports,
