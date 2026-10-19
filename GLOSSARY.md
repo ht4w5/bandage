@@ -103,6 +103,7 @@ The most recent event that created a report.
 _Avoid_: example, evidence
 
 **Ban rule**:
-An enforcement rule that downstream tooling derives from reports; bandage
-produces reports and never ban rules.
+An enforcement rule derived from reports by downstream tooling. The
+bandage daemon produces reports and never enforces; `splint-nft` is the
+tool that derives ban rules from reports and installs them.
 _Avoid_: ban

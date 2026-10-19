@@ -9,3 +9,8 @@ provenance, not part of that contract.
 
 bandage itself only produces reports; ban-rule generation and enforcement
 are deliberately out of scope for v0.
+
+Superseded in part by ADR 0011: the repo now ships **splint-nft**, the
+downstream tooling that generates and installs ban rules from reports —
+as a separate consumer binary, outside bandage the daemon, which still
+only produces reports and never enforces.
