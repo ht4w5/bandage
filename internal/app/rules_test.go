@@ -493,10 +493,10 @@ chains:
 		{name: "report without reason", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2}\n        actions: [{report: {ttl: 1h, penalty: limit-req-rate, rate: 200}}]\n", wantErr: "reason"},
 		{name: "report with unknown key", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2}\n        actions: [{report: {reason: x, ttl: 1h, ban: 15m, penalty: limit-req-rate, rate: 200}}]\n", wantErr: "ban"},
 
-		// Penalty (required, closed vocabulary): failing and passing cases.
+		// Penalty (required, closed vocabulary): failing and passing
+		// cases; the per-value passing cases are generated below from
+		// the domain's single vocabulary source.
 		{name: "report without penalty", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h}}]\n", wantErr: "penalty"},
-		{name: "penalty drop accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: drop}}]\n"},
-		{name: "penalty reject accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: reject}}]\n"},
 		{name: "unknown penalty", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: ban}}]\n", wantErr: "unknown penalty"},
 
 		// Rate on a penalty: limits only (failing and passing cases).
@@ -510,7 +510,6 @@ chains:
 		{name: "rate with bad unit", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-bandwidth, rate: 1q}}]\n", wantErr: "invalid quantity"},
 		{name: "rate out of int64 range", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-bandwidth, rate: 9999P}}]\n", wantErr: "out of range"},
 		{name: "plain count rate accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-req-rate, rate: 200}}]\n"},
-		{name: "penalty limit-pkt-rate accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-pkt-rate, rate: 200}}]\n"},
 		{name: "decimal human size rate accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]\n"},
 		{name: "fractional human size rate accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-bandwidth, rate: 1.5MB}}]\n"},
 		{name: "per-second rate suffix accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-bandwidth, rate: 1MB/s}}]\n"},
@@ -533,6 +532,25 @@ chains:
         actions: [{report: {reason: shared, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
 `,
 		},
+	}
+
+	// One accepted case per closed vocabulary value (the passing side
+	// of "penalty must be one of the five"), generated from the domain's
+	// single source (bandage.PenaltyActions) so the list cannot drift
+	// from the enum. A limit penalty carries a rate.
+	for _, action := range bandage.PenaltyActions {
+		rate := ""
+		if action.IsLimit() {
+			rate = ", rate: 200"
+		}
+		tests = append(tests, struct {
+			name    string
+			yaml    string
+			wantErr string
+		}{
+			name: "penalty " + string(action) + " accepted",
+			yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: " + string(action) + rate + "}}]\n",
+		})
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

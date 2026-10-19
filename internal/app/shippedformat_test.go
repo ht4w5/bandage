@@ -13,7 +13,13 @@ import (
 // snippet lives in internal/infra/parse/nginx/nginx_test.go.
 
 // shippedLogLine renders one access-log line the way nginx renders the
-// shipped log_format template for a curl client hitting /.
+// shipped log_format template for a curl client hitting /. The snippet
+// extraction regex and the render-and-check flow below are intentionally
+// duplicated in internal/infra/parse/nginx/nginx_test.go (shippedLogFormat
+// and TestParseShippedLogFormatLine): the two sides sit in different test
+// packages, and a shared helper would need an exported package that exists
+// purely for tests. Keep both copies in sync with the shipped snippet's
+// contract (configs/nginx/bandage_log.conf).
 func shippedLogLine(t *testing.T) string {
 	t.Helper()
 	data, err := os.ReadFile("../../configs/nginx/bandage_log.conf")

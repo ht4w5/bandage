@@ -51,7 +51,12 @@ const shippedFormat = `{"time":"$msec","client":"$remote_addr","method":"$reques
 
 // shippedLogFormat returns the template from the shipped nginx snippet; the
 // anchored match also pins the file to exactly one directive, no comments
-// and no vhost.
+// and no vhost. The extraction regex and the render-and-check flow in
+// TestParseShippedLogFormatLine are intentionally duplicated in
+// internal/app/shippedformat_test.go (shippedLogLine): the two sides sit in
+// different test packages, and a shared helper would need an exported
+// package that exists purely for tests. Keep both copies in sync with the
+// shipped snippet's contract (configs/nginx/bandage_log.conf).
 func shippedLogFormat(t *testing.T) string {
 	t.Helper()
 	data, err := os.ReadFile("../../../../configs/nginx/bandage_log.conf")
