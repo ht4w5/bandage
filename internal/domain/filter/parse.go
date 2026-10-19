@@ -7,8 +7,7 @@ import (
 	"net/netip"
 )
 
-// ParseError reports a filter expression syntax error at a 1-based line and
-// column within the expression.
+// ParseError reports a filter expression syntax error at a 1-based line and column within the expression.
 type ParseError struct {
 	Line int
 	Col  int
@@ -23,40 +22,8 @@ func (pe *ParseError) Error() string {
 // Unwrap returns the wrapped validation error, if any.
 func (pe *ParseError) Unwrap() error { return pe.err }
 
-// Parse parses a filter expression into a Filter, the predicate a rule uses
-// to decide whether it considers an event.
-//
-// Grammar (EBNF). Whitespace and newlines separate tokens; there is no comment
-// syntax:
-//
-//	expr      = orExpr ;
-//	orExpr    = andExpr { ("or"  | "||") andExpr } ;
-//	andExpr   = notExpr { ("and" | "&&") notExpr } ;
-//	notExpr   = ("not" | "!") notExpr | primary ;
-//	primary   = "(" expr ")" | primitive ;
-//	primitive =
-//	      "any" | "none"
-//	    | "src"    ( addr | prefix )
-//	    | "method" word
-//	    | "path"   [ "prefix" | "suffix" | "keyword" ] string
-//	    | "agent"  [ "keyword" ] string
-//	    | "status" ( number | "class" number )
-//	    | "sent"   ( ">=" | "<=" ) size ;
-//	size      = number [ "k" | "m" | "g" ] ;  (* binary units *)
-//
-// Text values are double-quoted (escapes: \" \\ \n \t); identifiers and numbers
-// are bare words. Keywords "and", "or" and "not" are reserved and must be
-// quoted when used as values. Values match event fields exactly and
-// case-sensitively, without normalization. "not" binds tighter than "and",
-// which binds tighter than "or".
-//
-// Examples:
-//
-//	src 10.0.0.0/8 and (method GET or method HEAD) and path prefix "/api"
-//	not agent keyword "curl" and sent >= 10m
-//	status class 5 or none
-//
-// Parsing fails on the first error; the returned error is a *ParseError.
+// Parse parses a filter expression into a Filter, the predicate a rule uses.
+// "not" binds tighter than "and", which binds tighter than "or".
 func Parse(src string) (Filter, error) {
 	p := &parser{lex: newLexer(src)}
 	if err := p.advance(); err != nil {
@@ -117,8 +84,7 @@ func (p *parser) parseAnd() (Filter, error) {
 	})
 }
 
-// parseBinary parses a left-associative chain of the operator kind, flattening
-// its operands into a single n-ary filter.
+// parseBinary parses a left-associative chain of the operator kind, flattening its operands into a single n-ary filter.
 func (p *parser) parseBinary(op tokKind, sub func() (Filter, error), combine func(...Filter) (Filter, error)) (Filter, error) {
 	first, err := sub()
 	if err != nil {
@@ -401,8 +367,7 @@ func (p *parser) parseSent(kw token) (Filter, error) {
 	return f, nil
 }
 
-// takeMod consumes an optional bare modifier word from the given set and
-// returns it, or "" if the next token is not one of them.
+// takeMod consumes an optional bare modifier word from the given set, or "" if the next token is none of them.
 func (p *parser) takeMod(mods ...string) (string, error) {
 	if p.tok.kind != tokWord {
 		return "", nil

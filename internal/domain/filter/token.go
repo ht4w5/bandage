@@ -89,8 +89,7 @@ func (l *lexer) skipSpace() {
 	}
 }
 
-// isWordRune reports whether r can appear in a bare word. Whitespace and
-// operator characters terminate a word.
+// isWordRune reports whether r can appear in a bare word; whitespace and operator characters terminate a word.
 func isWordRune(r rune) bool {
 	if unicode.IsSpace(r) {
 		return false

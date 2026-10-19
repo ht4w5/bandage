@@ -1,12 +1,5 @@
-// Package filter holds the filter language: a predicate over an Event
-// deciding whether a rule considers the event (webjail's v0 expression
-// language, ported essentially as-is).
-//
-// Filters are built by Parse from expressions like
-//
-//	src 10.0.0.0/8 and (method GET or method HEAD) and path prefix "/api"
-//
-// and match events exactly and case-sensitively, without normalization.
+// Package filter holds the filter language: a predicate over an Event deciding
+// whether a rule considers the event. Matches are exact and case-sensitive.
 package filter
 
 import (
@@ -114,8 +107,7 @@ type FilterRemoteAddr struct {
 	prefix netip.Prefix
 }
 
-// NewFilterRemoteAddr returns a filter matching events whose remote
-// address is contained in prefix.
+// NewFilterRemoteAddr returns a filter matching events whose remote address is contained in prefix.
 func NewFilterRemoteAddr(prefix netip.Prefix) (*FilterRemoteAddr, error) {
 	if !prefix.IsValid() {
 		return nil, errors.New("prefix must be a valid IP prefix")
@@ -166,8 +158,7 @@ type FilterPathPrefix struct {
 	prefix string
 }
 
-// NewFilterPathPrefix returns a filter matching events whose path starts
-// with prefix.
+// NewFilterPathPrefix returns a filter matching events whose path starts with prefix.
 func NewFilterPathPrefix(prefix string) (*FilterPathPrefix, error) {
 	if prefix == "" {
 		return nil, errors.New("prefix must not be empty")
@@ -184,8 +175,7 @@ type FilterPathSuffix struct {
 	suffix string
 }
 
-// NewFilterPathSuffix returns a filter matching events whose path ends
-// with suffix.
+// NewFilterPathSuffix returns a filter matching events whose path ends with suffix.
 func NewFilterPathSuffix(suffix string) (*FilterPathSuffix, error) {
 	if suffix == "" {
 		return nil, errors.New("suffix must not be empty")
@@ -202,8 +192,7 @@ type FilterPathKeyword struct {
 	keyword string
 }
 
-// NewFilterPathKeyword returns a filter matching events whose path
-// contains keyword.
+// NewFilterPathKeyword returns a filter matching events whose path contains keyword.
 func NewFilterPathKeyword(keyword string) (*FilterPathKeyword, error) {
 	if keyword == "" {
 		return nil, errors.New("keyword must not be empty")
@@ -238,8 +227,7 @@ type FilterAgentKeyword struct {
 	keyword string
 }
 
-// NewFilterAgentKeyword returns a filter matching events whose user agent
-// contains keyword.
+// NewFilterAgentKeyword returns a filter matching events whose user agent contains keyword.
 func NewFilterAgentKeyword(keyword string) (*FilterAgentKeyword, error) {
 	if keyword == "" {
 		return nil, errors.New("keyword must not be empty")
@@ -256,8 +244,7 @@ type FilterStatus struct {
 	status int
 }
 
-// NewFilterStatus returns a filter matching events with exactly status
-// (within [100, 599]).
+// NewFilterStatus returns a filter matching events with exactly status (within [100, 599]).
 func NewFilterStatus(status int) (*FilterStatus, error) {
 	if status < 100 || status > 599 {
 		return nil, errors.New("status must be within [100, 599]")
@@ -274,8 +261,7 @@ type FilterStatusClass struct {
 	class int
 }
 
-// NewFilterStatusClass returns a filter matching events whose status code
-// class (within [1, 5]) is exactly class.
+// NewFilterStatusClass returns a filter matching events whose status code class (within [1, 5]) is exactly class.
 func NewFilterStatusClass(class int) (*FilterStatusClass, error) {
 	if class < 1 || class > 5 {
 		return nil, errors.New("class must be within [1, 5]")
@@ -293,8 +279,7 @@ type FilterSentAtLeast struct {
 	limit int64
 }
 
-// NewFilterSentAtLeast returns a filter matching events that sent at
-// least limit bytes (inclusive).
+// NewFilterSentAtLeast returns a filter matching events that sent at least limit bytes (inclusive).
 func NewFilterSentAtLeast(limit int64) (*FilterSentAtLeast, error) {
 	if limit < 0 {
 		return nil, errors.New("limit must be greater or equal to 0")
@@ -312,8 +297,7 @@ type FilterSentAtMost struct {
 	limit int64
 }
 
-// NewFilterSentAtMost returns a filter matching events that sent at most
-// limit bytes (inclusive).
+// NewFilterSentAtMost returns a filter matching events that sent at most limit bytes (inclusive).
 func NewFilterSentAtMost(limit int64) (*FilterSentAtMost, error) {
 	if limit < 0 {
 		return nil, errors.New("limit must be greater or equal to 0")

@@ -1,5 +1,5 @@
 // Package evaluation runs the rule model over events: prefilter, tracker
-// update, match (filter ∧ overflow) and action dispatch.
+// update, match (filter and overflow) and action dispatch.
 package evaluation
 
 import (
@@ -11,49 +11,30 @@ import (
 	bandage "github.com/HT4w5/bandage/internal/domain"
 )
 
-// TrackerCache is the tracker-state port beside its consumer: records
-// keyed by (ns, key) with sliding TTL and atomic per-key update
-// callbacks. fn runs under the store's per-key lock, so it must not
-// perform I/O or use ctx; ttl is the sliding expiry, zero means no
-// expiry (the reserved filesize namespace). Clear empties the record
-// for (ns, key) — the Trigger reset (GLOSSARY Trigger, ADR 0008): the
-// bucket re-arms and abuse must accumulate again from zero — and is a
-// no-op for an absent record. The in-memory store satisfies this
-// structurally.
+// TrackerCache is the tracker-state port: records keyed by (ns, key) with sliding TTL and atomic per-key updates.
 type TrackerCache interface {
+	// Update applies fn to the record for (ns, key) under the store's per-key lock; fn must not do I/O or use ctx. ttl 0 means no expiry.
 	Update(ctx context.Context, ns, key string, ttl time.Duration, fn func(*bandage.Record)) (bandage.Record, error)
+	// Clear empties the record for (ns, key) - the Trigger reset: the bucket re-arms (ADR 0008).
 	Clear(ctx context.Context, ns, key string) error
 }
 
-// ReportSink is the report write path beside its consumer: a Trigger
-// upserts one report per (rule, target). report.Service satisfies this
-// structurally.
+// ReportSink is the report write path: a Trigger upserts one report per (rule, target).
 type ReportSink interface {
 	Trigger(ctx context.Context, rec bandage.Report) error
 }
 
-// Logger is the log action's logging port, declared beside its one
-// consumer (ADR 0005). It carries the domain's four levels only — a
-// rule can never reach zerolog's fatal/panic or exit the process. The
-// zerolog implementation lives in the app wiring.
+// Logger is the log action's logging port (ADR 0005); it carries only the domain's four levels, so a rule can never exit the process.
 type Logger interface {
 	Log(level bandage.Level, msg string, fields map[string]any)
 }
 
-// nopLogger discards every record — the Service's default when no
-// Logger is wired.
+// nopLogger discards every record (the Service default).
 type nopLogger struct{}
 
 func (nopLogger) Log(bandage.Level, string, map[string]any) {}
 
 // Service evaluates events against the loaded chains.
-//
-// A rule matches when its filter accepts the event and its tracker (if
-// any) overflows; a match runs the rule's full action list in order.
-// Terminality is per-rule: a rule containing report, goto or stop then
-// ends traversal of its chain, while other chains are still evaluated
-// for the event. Tracker decay uses event time; report timestamps use
-// the injected wall clock.
 type Service struct {
 	chains  []bandage.Chain
 	byName  map[string]int
@@ -74,8 +55,7 @@ func NewService(chains []bandage.Chain, cache TrackerCache, reports ReportSink, 
 	return &Service{chains: chains, byName: byName, cache: cache, reports: reports, now: now, logger: logger}
 }
 
-// Evaluate runs every chain over the event: chains in file order, rules
-// within a chain in order.
+// Evaluate runs every chain over the event: chains in file order, rules within a chain in order.
 func (s *Service) Evaluate(ctx context.Context, event *bandage.Event) error {
 	for i := range s.chains {
 		if err := s.runChain(ctx, i, event); err != nil {
@@ -85,9 +65,7 @@ func (s *Service) Evaluate(ctx context.Context, event *bandage.Event) error {
 	return nil
 }
 
-// matchContext is one rule match in progress: the matched rule and its
-// chain with the trigger-time tracker reading and the event — the data
-// clump every action needs.
+// matchContext is one rule match in progress: rule, chain, trigger-time tracker reading and event.
 type matchContext struct {
 	chain   *bandage.Chain
 	rule    *bandage.Rule
@@ -95,15 +73,12 @@ type matchContext struct {
 	event   *bandage.Event
 }
 
-// target is the report Target and the tracker cache key base: the
-// event's source aggregated to the rule tracker's prefix (the one
-// derivation, TrackerConfig.TargetString).
+// target is the report Target and tracker key base: the event's source aggregated to the rule tracker's prefix.
 func (m matchContext) target() string {
 	return m.rule.Tracker.TargetString(m.event.RemoteAddr)
 }
 
-// runChain traverses one chain's rules in order. It is also entered by
-// name from goto/jump actions.
+// runChain traverses one chain's rules in order; also entered by name from goto/jump actions.
 func (s *Service) runChain(ctx context.Context, ci int, event *bandage.Event) error {
 	chain := &s.chains[ci]
 	for ri := range chain.Rules {
@@ -128,10 +103,7 @@ func (s *Service) runChain(ctx context.Context, ci int, event *bandage.Event) er
 	return nil
 }
 
-// runActions runs a matching rule's full action list in order: the
-// actions always all run, and terminality applies only after the list.
-// Every action walks through Action.Accept — the single dispatch point
-// shared with the --test describer.
+// runActions runs a matching rule's full action list in order; terminality applies only after the list.
 func (s *Service) runActions(ctx context.Context, m matchContext) error {
 	dispatch := actionDispatch{svc: s, ctx: ctx, m: m}
 	for _, action := range m.rule.Actions {
@@ -142,8 +114,7 @@ func (s *Service) runActions(ctx context.Context, m matchContext) error {
 	return nil
 }
 
-// actionDispatch is the evaluation side of Action.Accept: it executes
-// one action variant for a match.
+// actionDispatch is the evaluation side of Action.Accept: it executes one action variant for a match.
 type actionDispatch struct {
 	svc *Service
 	ctx context.Context
@@ -155,10 +126,7 @@ func (d *actionDispatch) VisitReport(a *bandage.ReportAction) error {
 }
 
 func (d *actionDispatch) VisitLog(a *bandage.LogAction) error {
-	// flux's log action: the level and message name the record; the
-	// rule, its Target, the event and the rule's tracker reading are
-	// logged with it (PLAN §1). The level is one of the domain's four —
-	// fatal/panic are unreachable (ADR 0005).
+	// The record carries the rule, its Target, the event and the reading.
 	d.svc.logger.Log(a.Level, a.Message, map[string]any{
 		"rule":    d.m.rule.ID,
 		"target":  d.m.target(),
@@ -178,8 +146,7 @@ func (d *actionDispatch) VisitJump(target string) error {
 
 func (d *actionDispatch) VisitStop() error { return nil }
 
-// runNamedChain runs a goto/jump target chain by name. The loader has
-// validated that the target exists (validateChainGraph).
+// runNamedChain runs a goto/jump target chain by name (the loader has validated that the target exists).
 func (s *Service) runNamedChain(ctx context.Context, rule *bandage.Rule, name string, event *bandage.Event) error {
 	ci, ok := s.byName[name]
 	if !ok {
@@ -188,8 +155,7 @@ func (s *Service) runNamedChain(ctx context.Context, rule *bandage.Rule, name st
 	return s.runChain(ctx, ci, event)
 }
 
-// updateTracker feeds the rule's tracker (when it has one) and reports
-// the trigger-time reading plus whether the rule matched.
+// updateTracker feeds the rule's tracker (when it has one) and reports the trigger-time reading plus whether the rule matched.
 func (s *Service) updateTracker(ctx context.Context, rule *bandage.Rule, event *bandage.Event) (bandage.TrackerReading, bool, error) {
 	if rule.Tracker == nil {
 		// Tracker-less rules match on filter alone.
@@ -199,27 +165,22 @@ func (s *Service) updateTracker(ctx context.Context, rule *bandage.Rule, event *
 	increment := 1.0
 	volume := cfg.Volume
 	ttl := cfg.TTL
-	// The key is the match's key: the Target (the source address
-	// aggregated to the tracker's prefix) or, for replay trackers, the
-	// (Target, path) pair — the one derivation (DECISIONS §9).
 	key := matchKey(cfg, event)
 	switch cfg.Kind {
 	case bandage.TrackBandwidth:
 		increment = float64(event.SentBytes)
 	case bandage.TrackReplay:
 		if event.SizeBytes == bandage.FilesizeUnknown {
-			// Warm-up blindness (DECISIONS §8): skip the event entirely —
-			// no increment, no decay, no cache touch. No Match is possible
-			// until the path's Filesize estimate is warm.
+			// Warm-up blindness: skip unknown sizes entirely - no increment,
+			// no decay, no cache touch.
 			return bandage.TrackerReading{}, false, nil
 		}
-		// Increment by the transferred fraction of the estimated size,
-		// capped at 1 per event (DECISIONS §8; no flux byte-domain hack).
+		// Increment is the transferred fraction of the estimated size, capped
+		// at 1 per event.
 		size := float64(event.SizeBytes)
 		increment = math.Min(float64(event.SentBytes)/size, 1)
-		// Volume is the volume method's output for this event's estimate
-		// ("tolerated download equivalents") and the cache-entry TTL is
-		// re-derived from it per event.
+		// Volume is the volume method's output for this event's estimate;
+		// the cache-entry TTL is re-derived from it per event.
 		volume = cfg.VolumeFor(size)
 		ttl = bandage.TTL(cfg.Leak, volume)
 	}
@@ -238,11 +199,7 @@ func (s *Service) updateTracker(ctx context.Context, rule *bandage.Rule, event *
 	return reading, rec.Overflow(volume), nil
 }
 
-// matchKey derives the tracker cache key for a rule match: the Target
-// (the source address aggregated to the tracker's prefix, so sources in
-// one prefix share tracker state), or for per-(Target, path) trackers
-// (replay) the Target and the path joined with KeySep (DECISIONS §9).
-// It is the match's key — the one a Trigger empties.
+// matchKey derives the tracker cache key: the Target, or for replay the Target and path joined with KeySep; the key a Trigger empties.
 func matchKey(cfg *bandage.TrackerConfig, event *bandage.Event) string {
 	target := cfg.TargetString(event.RemoteAddr)
 	if cfg.Kind == bandage.TrackReplay {
@@ -251,13 +208,7 @@ func matchKey(cfg *bandage.TrackerConfig, event *bandage.Event) string {
 	return bandage.TrackerKey(target)
 }
 
-// trigger runs the rule's report action: it writes the report for a
-// matching rule — the only write path to the report table — and, the
-// write completing without error, empties the matched rule's tracker
-// record for the match's key (GLOSSARY Trigger, ADR 0008): abuse must
-// accumulate a full volume again before the next Trigger. A failed
-// write is not a Trigger outcome: the record stays intact and the next
-// matching event retries the report.
+// trigger runs the rule's report action and, on success, empties the matched rule's tracker record; a failed write is not a Trigger outcome (ADR 0008).
 func (s *Service) trigger(ctx context.Context, m matchContext, action *bandage.ReportAction) error {
 	now := s.now()
 	rec := bandage.Report{

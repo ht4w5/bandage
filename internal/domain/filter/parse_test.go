@@ -7,13 +7,8 @@ import (
 	"testing"
 )
 
-// Parse trees, error positions and validation wrapping for the filter
-// language (webjail's v0 grammar). Authored fresh from the grammar and
-// position rules: webjail ships no filter tests (DECISIONS §2).
-
-// treeString renders a parsed filter as a canonical s-expression so parse
-// trees (precedence, n-ary flattening) are assertable. It lives in the
-// test file: the AST shape is internal, the language contract is not.
+// treeString renders a parsed filter as a canonical s-expression so parse trees
+// (precedence, n-ary flattening) are assertable.
 func treeString(f Filter) string {
 	switch v := f.(type) {
 	case *FilterAny:
@@ -178,7 +173,7 @@ func TestParseErrorPositions(t *testing.T) {
 
 		// Positions are 1-based rune counts; newlines reset the column.
 		{"newline resets column", "any and\nfoo", `filter: 2:1: unknown keyword "foo"`},
-		{"columns count runes", `path keyword "ä" and foo`, `filter: 1:22: unknown keyword "foo"`},
+		{"columns count runes", "path keyword \"\u00e4\" and foo", `filter: 1:22: unknown keyword "foo"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -200,8 +195,7 @@ func TestParseErrorPositions(t *testing.T) {
 	}
 }
 
-// Validation errors wrap their cause and stay unwrappable at the value
-// token's position.
+// Validation errors wrap their cause and stay unwrappable.
 func TestParseErrorUnwrapsValidation(t *testing.T) {
 	_, err := Parse("status 20")
 	if err == nil {
@@ -219,7 +213,7 @@ func TestParseErrorUnwrapsValidation(t *testing.T) {
 	}
 }
 
-// The grammar doc examples parse.
+// Example expressions parse.
 func TestParseExamples(t *testing.T) {
 	for _, src := range []string{
 		`src 10.0.0.0/8 and (method GET or method HEAD) and path prefix "/api"`,

@@ -8,17 +8,10 @@ import (
 	bandage "github.com/HT4w5/bandage/internal/domain"
 )
 
-// BenchmarkEnrich measures FilesizeEnricher.Enrich per event (spec
-// hot-path inventory, stage 3): the EWMA update, the warm-up gate and
-// the SizeBytes write. The domain lint (internal/domain/deps_test.go)
-// keeps the real memory store out of this package, so this variant
-// runs over a stub FilesizeCache and the production variant over the
-// real store lives in internal/app/enrich_bench_test.go; the store's
-// own per-call cost is BenchmarkStoreUpdate in
-// internal/infra/cache/memory. One op is one event, i.e. one log line.
+// BenchmarkEnrich measures FilesizeEnricher.Enrich per event over a stub
+// FilesizeCache (the domain lint keeps the real store out of this package).
 
-// benchCache is a map-backed FilesizeCache double: per-path update
-// without locking and LRU.
+// benchCache is a map-backed FilesizeCache double (no locking).
 type benchCache struct{ records map[string]FilesizeRecord }
 
 func newBenchCache() *benchCache {
@@ -32,9 +25,7 @@ func (c *benchCache) Update(_ context.Context, path string, fn func(*FilesizeRec
 	return r, nil
 }
 
-// benchEvents builds the pre-parsed event pool: n events cycling 256
-// paths — the domain-lint-safe stand-in for the internal/bench corpus
-// (sibling domain modules cannot share fixtures; see deps_test.go).
+// benchEvents builds n events cycling 256 paths.
 func benchEvents(n int) []bandage.Event {
 	events := make([]bandage.Event, n)
 	for i := range events {
@@ -61,9 +52,7 @@ func BenchmarkEnrich(b *testing.B) {
 		}
 		lines++
 	}
-	// One op is one log line (the shared bench helper is unreachable
-	// under the domain lint; this mirrors bench.ReportLinesPerSec's
-	// zero-elapsed guard).
+	// One op is one event, i.e. one log line.
 	var rate float64
 	if elapsed := b.Elapsed(); elapsed > 0 {
 		rate = float64(lines) / elapsed.Seconds()

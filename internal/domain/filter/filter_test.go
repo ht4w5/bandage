@@ -8,11 +8,6 @@ import (
 	bandage "github.com/HT4w5/bandage/internal/domain"
 )
 
-// Matching semantics of the filter language: every v0 primitive,
-// combinators and boundaries, exact and case-sensitive as specified.
-// Table-driven over Parse — the seam rules use (DECISIONS §2: authored
-// fresh; webjail ships no filter tests).
-
 // baseEvent is the event the table cases vary; zero fields never match.
 func baseEvent() bandage.Event {
 	return bandage.Event{
@@ -150,7 +145,7 @@ func TestFilterMatch(t *testing.T) {
 	}
 }
 
-// The constructors validate their arguments (webjail's rules).
+// The constructors validate their arguments.
 func TestConstructorValidation(t *testing.T) {
 	any, none := &FilterAny{}, &FilterNone{}
 	validPrefix := mustPrefix("10.0.0.0/8")
@@ -200,8 +195,7 @@ func TestConstructorValidation(t *testing.T) {
 	}
 }
 
-// ParseError stays a *ParseError through the public API (the --test
-// surface relies on errors.As).
+// ParseError stays a *ParseError through the public API (errors.As).
 func TestParseErrorType(t *testing.T) {
 	_, err := Parse("bogus")
 	if err == nil {

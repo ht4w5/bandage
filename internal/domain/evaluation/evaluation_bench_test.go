@@ -11,25 +11,10 @@ import (
 	bandage "github.com/HT4w5/bandage/internal/domain"
 )
 
-// BenchmarkEvaluate measures full chain evaluation over pre-parsed
-// events (H4, H6) with stub ports: the domain lint keeps the real
-// memory store and sqlite sink out of this package, so the integration
-// variants live in internal/app/evaluate_bench_test.go. The stubs stand
-// in at the consumer-side ports (DECISIONS §2): a map-backed
-// TrackerCache (store map access without locking and LRU) and a
-// counting ReportSink. The split isolates the Trigger-path cost (the
-// action dispatch, the report write call and the tracker reset): it is
-// the v0-hot-path rename of the retired overflow-every-event trick —
-// under the Trigger semantics (a Trigger empties the tracker, a live
-// report suppresses its write) volume 0.5 no longer models a write per
-// event, so trigger-every names what it now measures: the Trigger path
-// at one-event accumulation episodes, every event running the report
-// action against a stub sink. The write suppression itself lives at
-// the report service and is measured in internal/app (the episode
-// scenarios first-trigger / rearm-delete / rearm-expiry).
+// BenchmarkEvaluate measures full chain evaluation over pre-parsed events
+// with stub ports (the domain lint keeps the real store and sink out).
 
-// benchCache is a map-backed TrackerCache double: per-key accumulate
-// without recording (the recording double lives in evaluation_test.go).
+// benchCache is a map-backed TrackerCache double (no locking).
 type benchCache struct{ records map[string]bandage.Record }
 
 func newBenchCache() *benchCache {
@@ -44,7 +29,7 @@ func (c *benchCache) Update(_ context.Context, ns, key string, _ time.Duration, 
 	return r, nil
 }
 
-// Clear empties the record for (ns, key) — the Trigger reset.
+// Clear empties the record for (ns, key) - the Trigger reset.
 func (c *benchCache) Clear(_ context.Context, ns, key string) error {
 	delete(c.records, ns+bandage.KeySep+key)
 	return nil
@@ -64,10 +49,7 @@ type benchMatcher struct{ prefix string }
 
 func (m benchMatcher) Match(ev *bandage.Event) bool { return strings.HasPrefix(ev.Path, m.prefix) }
 
-// benchEvents builds the pre-parsed event pool: n events cycling 256
-// target keys, the domain-lint-safe stand-in for the internal/bench
-// corpus. Timestamps come from benchEvent, which places event i at the
-// i-th second of the fixture epoch.
+// benchEvents builds n events cycling 256 target keys.
 func benchEvents(n int) []bandage.Event {
 	events := make([]bandage.Event, n)
 	for i := range events {
@@ -83,30 +65,16 @@ func benchEvents(n int) []bandage.Event {
 	return events
 }
 
-// benchEvent returns pool event i with its timestamp at the i-th second
-// of the fixture epoch. Evaluation time must march forward per op:
-// cycling timestamps would freeze the leaky bucket's LastUpdate and
-// let the match-never chains' value creep past their volume. The same
-// step drives the benchmark loop and its fixture test.
+// benchEvent returns pool event i with its timestamp at the i-th second of
+// the fixture epoch; time must march forward per op or the leaky bucket freezes.
 func benchEvent(events []bandage.Event, i int) bandage.Event {
 	ev := events[i%len(events)]
 	ev.Time = benchEpoch.Add(time.Duration(i) * time.Second)
 	return ev
 }
 
-// benchChains mirrors configs/rules.yml's tracker rules with report
-// actions, one rule per chain: a report rule is terminal, so a
-// single-rule chain keeps the trigger-every/match-never paths doing
-// identical filter and tracker work and differing only in the report
-// action. The trigger-every variant uses rate trackers with volume 0.5
-// — one request per event always overflows, so every event Matches,
-// Triggers and empties the tracker again (the degenerate one-event
-// episode the retired overflow-every-event trick pinned; renamed to
-// what it measures now — see the header comment above). The
-// match-never variant (leak 10, volume 200) decays at 10/s against the
-// +1 increment and, at benchEvent's one-second event spacing, never
-// overflows.
-// TestBenchChainsMatchTheirNames pins both behaviors.
+// benchChains mirrors configs/rules.yml tracker rules with report actions, one
+// per chain: trigger-every (volume 0.5, every event Triggers) and match-never.
 func benchChains(triggerEvery bool) []bandage.Chain {
 	leak, volume := 10.0, 200.0
 	if triggerEvery {
@@ -133,24 +101,14 @@ func benchChains(triggerEvery bool) []bandage.Chain {
 	}
 }
 
-// benchEpoch is the fixture event-time origin; benchNow is the fixed
-// wall clock report timestamps run on. It duplicates
-// internal/bench.Epoch: the domain lint (internal/domain/deps_test.go)
-// keeps internal/bench out of this package, so the value is split here
-// — keep it identical to bench.Epoch.
+// benchEpoch is the fixture event-time origin (benchNow the fixed wall clock);
+// it duplicates internal/bench.Epoch, which the domain lint keeps out - keep it identical.
 var benchEpoch = time.Unix(1734345934, 0).UTC()
 
 func benchNow() time.Time { return benchEpoch }
 
-// TestBenchChainsMatchTheirNames verifies the benchmark fixture's
-// scenario split (the H4 measurements rest on it): the trigger-every
-// chains run the report action on every event and the match-never
-// chains trigger none, over repeated passes of the event pool. The
-// Trigger count is the episode count here — the stub sink counts
-// report actions run, and under the Trigger semantics that is one per
-// accumulation episode (one event each for trigger-every); the write
-// suppression this count used to stand for lives at the report service
-// (internal/app's episode scenarios).
+// TestBenchChainsMatchTheirNames verifies the fixture's scenario split:
+// trigger-every Triggers per event and match-never triggers none.
 func TestBenchChainsMatchTheirNames(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -197,9 +155,7 @@ func BenchmarkEvaluate(b *testing.B) {
 				}
 				lines++
 			}
-			// One op is one event, i.e. one log line (the shared
-			// bench helper is unreachable under the domain lint; this
-			// mirrors bench.ReportLinesPerSec's zero-elapsed guard).
+			// One op is one event, i.e. one log line.
 			var rate float64
 			if elapsed := b.Elapsed(); elapsed > 0 {
 				rate = float64(lines) / elapsed.Seconds()

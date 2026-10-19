@@ -5,21 +5,11 @@ import (
 	"testing"
 )
 
-// BenchmarkFilterMatch measures Filter.Match — the per-rule cost of
-// chain evaluation (H6): every leaf type on a matching and a
-// non-matching case, then realistic rule chains of 1/10/100 filters on
-// the match and no-match paths. The chain loop mirrors
-// evaluation.runChain: a matching rule ends traversal the way a
-// terminal rule does, so the match case has the last rule match (full
-// traversal, worst case) and the no-match case walks every rule. The
-// events are the filter table's baseEvent; the domain lint keeps the
-// shared bench corpus out of this package.
-
 // benchMatch sinks Match results so the calls cannot be elided.
 var benchMatch bool
 
-// leafCases pairs each leaf filter type with sources that do and do not
-// match baseEvent.
+// leafCases pairs each leaf filter type with sources that do and do not match
+// baseEvent.
 var leafCases = []struct{ name, match, miss string }{
 	{"remote-addr", `src 203.0.113.0/24`, `src 198.51.100.0/24`},
 	{"method", `method GET`, `method POST`},
@@ -35,8 +25,8 @@ var leafCases = []struct{ name, match, miss string }{
 	{"sent-at-most", `sent <= 10k`, `sent <= 100`},
 }
 
-// benchFilter parses src or fails the benchmark: fixture construction
-// is setup, never a silent zero filter.
+// benchFilter parses src or fails the benchmark: fixture construction is
+// setup, never a silent zero filter.
 func benchFilter(b *testing.B, src string) Filter {
 	b.Helper()
 	f, err := Parse(src)
@@ -46,10 +36,8 @@ func benchFilter(b *testing.B, src string) Filter {
 	return f
 }
 
-// benchChain builds n realistic rule filters: an abuse-rule shape (site
-// CIDR, method, path prefix, minimum size) with per-rule literals. The
-// last rule matches baseEvent exactly when matchLast is set; the other
-// rules never match.
+// benchChain builds n realistic rule filters (site CIDR, method, path prefix,
+// minimum size); the last matches baseEvent exactly when matchLast is set.
 func benchChain(b *testing.B, n int, matchLast bool) []Filter {
 	b.Helper()
 	filters := make([]Filter, n)
