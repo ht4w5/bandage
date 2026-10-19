@@ -19,7 +19,7 @@ chains:
     rules:
       - id: egress
         tracker: {track: bandwidth, leak: 0, volume: 10000}
-        actions: [{report: {reason: egress-overflow, ttl: 1h}}, {log: "debug,MARK:EPISODE"}]
+        actions: [{report: {reason: egress-overflow, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}, {log: "debug,MARK:EPISODE"}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
@@ -83,7 +83,7 @@ chains:
     rules:
       - id: egress
         tracker: {track: bandwidth, leak: 0, volume: 1000}
-        actions: [{report: {reason: egress-overflow, ttl: 1h}}, {log: "debug,MARK:STORM"}]
+        actions: [{report: {reason: egress-overflow, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}, {log: "debug,MARK:STORM"}]
 `
 	d := startTestDaemonCfg(t, clock, "unixgram", ":memory:", rules, func(c *Config) {
 		c.Pipeline = Pipeline{Workers: 4}

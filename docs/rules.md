@@ -37,6 +37,98 @@ Trigger semantics hold for every rule (ADR 0008):
 Validate config and rules before deploying: `bandage -t -c bandage.yml
 -r rules.yml` prints the validated plan and exits without ingesting.
 
+## `penalty` and `rate`
+
+Every report action declares a **Penalty** — the enforcement stance the
+report recommends for the Target — with a `penalty` key beside `reason`
+and `ttl` ([GLOSSARY.md](../GLOSSARY.md),
+[ADR 0010](adr/0010-reports-carry-an-advisory-penalty.md)). The
+vocabulary is closed to five values; the limit penalties carry a `rate`:
+
+| `penalty` | recommends | `rate` |
+| --- | --- | --- |
+| `drop` | discard the target's traffic silently | none |
+| `reject` | refuse the target's traffic with an error signal | none |
+| `limit-pkt-rate` | throttle to `rate` packets per second | required |
+| `limit-bandwidth` | throttle to `rate` response-payload bytes per second | required |
+| `limit-req-rate` | throttle to `rate` requests per second | required |
+
+`rate` is a plain count (`200`) or a decimal human size (`1MB` =
+1000000), optionally suffixed `/s` — the same quantity language as the
+tracker's `leak` and `volume`. The penalty name states the unit: the
+rate of `limit-bandwidth` counts response-payload bytes, the bytes the
+report's Sample records as `sent`. Every limit is aggregate over the
+report's Target — the whole prefix, not each host inside it.
+
+`bandage -t` prints the penalty and rate of every report action, so
+every recommendation can be audited before deploying:
+
+```
+    action report reason=iso-egress-overflow ttl=168h0m0s penalty=limit-bandwidth rate=1000000
+```
+
+Load refuses a rules file where:
+
+- `penalty` is missing or is not one of the five values;
+- `rate` accompanies `drop` or `reject`;
+- a `limit-*` penalty has a missing, zero, fractional or unparseable
+  `rate`.
+
+The penalty is advice and nothing more: bandage validates it for
+well-formedness only — never against the rule's tracker or reason
+(ADR 0010). Rules sharing one reason may recommend different penalties,
+a tripwire may recommend a limit and a tracked rule `drop`, and whether
+— or how restrictively — a consumer applies the penalty is the
+consumer's decision. bandage produces reports and never ban rules
+(ADR 0004).
+
+Worked examples — the three idiomatic shapes:
+
+The tracker-less tripwire flags immediately and recommends matching
+immediate action: `drop`, no rate (full pattern below):
+
+```yaml
+      - id: ua-trip
+        filter: 'agent keyword "curl"'
+        actions:
+          - report:
+              reason: ua-trip
+              ttl: 24h
+              penalty: drop
+```
+
+A bandwidth-tracked rule recommends `limit-bandwidth`, its rate in
+response-payload bytes per second:
+
+```yaml
+      - id: sustained-iso-egress
+        tracker: {track: bandwidth, leak: 1MB, volume: 100GB}
+        actions:
+          - report:
+              reason: iso-egress-overflow
+              ttl: 7d
+              penalty: limit-bandwidth
+              rate: 1MB
+```
+
+A rate-tracked rule recommends `limit-req-rate`, its rate in requests
+per second:
+
+```yaml
+      - id: bursty-api
+        tracker: {track: rate, leak: 10, volume: 200}
+        actions:
+          - report:
+              reason: api-rate-overflow
+              ttl: 12h
+              penalty: limit-req-rate
+              rate: 200
+```
+
+These pairings are idiomatic, not enforced: `limit-pkt-rate` (packets
+per second) and `reject` round out the vocabulary for rules whose
+traffic calls for them.
+
 ## Pattern: the tracker-less tripwire
 
 The tripwire flags every request carrying a known-bad signal (classically
@@ -55,12 +147,16 @@ chains:
           - report:
               reason: ua-trip
               ttl: 24h
+              penalty: drop
 ```
 
 How it behaves:
 
 - Every matching event is a Match and therefore a Trigger — there is no
   tracker to overflow and none to empty.
+- Its `penalty: drop` recommends discarding the offending source's
+  traffic — the stance a flag this serious warrants. `drop` carries no
+  `rate` (see [penalty and rate](#penalty-and-rate) above).
 - The first Trigger writes one Report per (rule, Target). Further
   Triggers while that report is alive write nothing (the Sample and the
   update time freeze at the first write): the flag is written once per

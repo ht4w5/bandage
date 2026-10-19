@@ -25,7 +25,7 @@ chains:
     rules:
       - id: egress
         tracker: {track: bandwidth, leak: 0, volume: 1000}
-        actions: [{report: {reason: egress-overflow, ttl: 1h}}, {log: "debug,MARK:CONTEND"}]
+        actions: [{report: {reason: egress-overflow, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}, {log: "debug,MARK:CONTEND"}]
 `
 
 // mustStayPending asserts no line finishes within the settle window: a Trigger

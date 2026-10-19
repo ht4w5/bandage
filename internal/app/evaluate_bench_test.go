@@ -41,25 +41,25 @@ chains:
       - id: egress-flood
         filter: 'src 198.51.100.0/24 or src 203.0.113.0/24'
         tracker: {track: rate, leak: 0, volume: 3}
-        actions: [{report: {reason: egress-overflow, ttl: 30m}}]
+        actions: [{report: {reason: egress-overflow, ttl: 30m, penalty: limit-req-rate, rate: 200}}]
   - name: request-flood
     rules:
       - id: request-flood
         filter: 'method GET or method HEAD or method POST'
         tracker: {track: rate, leak: 0, volume: 3}
-        actions: [{report: {reason: request-flood, ttl: 30m}}]
+        actions: [{report: {reason: request-flood, ttl: 30m, penalty: limit-req-rate, rate: 200}}]
   - name: scanning
     rules:
       - id: probe-flood
         filter: 'path prefix "/files/" or path prefix "/releases/"'
         tracker: {track: rate, leak: 0, volume: 3}
-        actions: [{report: {reason: probe-scan, ttl: 30m}}]
+        actions: [{report: {reason: probe-scan, ttl: 30m, penalty: limit-req-rate, rate: 200}}]
   - name: error-scanning
     rules:
       - id: error-flood
         filter: 'status class 2 or status class 3 or status class 4 or status class 5'
         tracker: {track: rate, leak: 0, volume: 3}
-        actions: [{report: {reason: error-probe, ttl: 30m}}]
+        actions: [{report: {reason: error-probe, ttl: 30m, penalty: limit-req-rate, rate: 200}}]
 `
 
 // benchMatchNeverChains decays fast enough that no event ever overflows:
@@ -72,25 +72,25 @@ chains:
       - id: sustained-egress
         filter: 'src 198.51.100.0/24 or src 203.0.113.0/24'
         tracker: {track: bandwidth, leak: 1GB, volume: 100GB}
-        actions: [{report: {reason: egress-overflow, ttl: 1h}}]
+        actions: [{report: {reason: egress-overflow, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
   - name: request-flood
     rules:
       - id: rapid-requests
         filter: 'method GET or method HEAD or method POST'
         tracker: {track: rate, leak: 10, volume: 200}
-        actions: [{report: {reason: request-flood, ttl: 1h}}]
+        actions: [{report: {reason: request-flood, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
   - name: scanning
     rules:
       - id: probe-paths
         filter: 'path prefix "/files/" or path prefix "/releases/"'
         tracker: {track: rate, leak: 10, volume: 200}
-        actions: [{report: {reason: probe-scan, ttl: 1h}}]
+        actions: [{report: {reason: probe-scan, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
   - name: error-scanning
     rules:
       - id: error-scan
         filter: 'status class 2 or status class 3 or status class 4 or status class 5'
         tracker: {track: rate, leak: 10, volume: 200}
-        actions: [{report: {reason: error-probe, ttl: 1h}}]
+        actions: [{report: {reason: error-probe, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
 `
 
 // benchClock is the fixture event-time origin the corpus timestamps march

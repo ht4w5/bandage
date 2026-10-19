@@ -27,7 +27,7 @@ chains:
     rules:
       - id: egress
         tracker: {track: bandwidth, leak: 0, volume: 1000}
-        actions: [{report: {reason: egress-overflow, ttl: 1h}}]
+        actions: [{report: {reason: egress-overflow, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
 `
 
 // TestNewRejectsNonPositiveWorkerCount: New rejects a worker count below 1
@@ -136,7 +136,7 @@ chains:
     rules:
       - id: egress
         tracker: {track: bandwidth, leak: 1, volume: 1500}
-        actions: [{report: {reason: egress-overflow, ttl: 1h}}]
+        actions: [{report: {reason: egress-overflow, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
 `
 	d := startTestDaemonCfg(t, clock, "unixgram", ":memory:", rules, func(c *Config) {
 		c.Pipeline = Pipeline{Workers: 1}

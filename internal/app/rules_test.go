@@ -31,6 +31,8 @@ chains:
           - report:
               reason: iso-egress-overflow
               ttl: 7d
+              penalty: limit-bandwidth
+              rate: 1MB
 
   - name: api
     rules:
@@ -43,6 +45,8 @@ chains:
           - report:
               reason: api-rate-overflow
               ttl: 24h
+              penalty: limit-req-rate
+              rate: 200
 `
 
 func TestParseRulesValid(t *testing.T) {
@@ -81,6 +85,9 @@ func TestParseRulesValid(t *testing.T) {
 	}
 	if iso.Actions[0].Report.Reason != "iso-egress-overflow" || iso.Actions[0].Report.TTL != 168*time.Hour {
 		t.Errorf("report action = %+v", iso.Actions[0].Report)
+	}
+	if p := iso.Actions[0].Report.Penalty; p.Action != bandage.PenaltyLimitBandwidth || p.Rate == nil || *p.Rate != 1000000 {
+		t.Errorf("report penalty = %+v, want limit-bandwidth rate 1000000", p)
 	}
 
 	api := chains[1].Rules[0]
@@ -140,12 +147,12 @@ chains:
     rules:
       - id: dupe
         tracker: {track: rate, leak: 1, volume: 2}
-        actions: [{report: {reason: x, ttl: 1h}}]
+        actions: [{report: {reason: x, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
   - name: b
     rules:
       - id: dupe
         tracker: {track: rate, leak: 1, volume: 2}
-        actions: [{report: {reason: x, ttl: 1h}}]
+        actions: [{report: {reason: x, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
 `,
 			wantErr: "duplicate rule id",
 		},
@@ -158,10 +165,10 @@ chains:
     rules:
       - id: one
         tracker: {track: rate, leak: 1, volume: 2}
-        actions: [{report: {reason: x, ttl: 1h}}]
+        actions: [{report: {reason: x, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
       - id: two
         tracker: {track: rate, leak: 1, volume: 2}
-        actions: [{report: {reason: x, ttl: 1h}}]
+        actions: [{report: {reason: x, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
 `,
 		},
 		{
@@ -172,7 +179,7 @@ chains:
   - name: a
     rules:
       - id: r
-        actions: [{report: {reason: x, ttl: 1h}}]
+        actions: [{report: {reason: x, ttl: 1h, penalty: drop}}]
 `,
 		},
 		{
@@ -184,7 +191,7 @@ chains:
     rules:
       - id: r
         tracker: {track: rate, leak: 1, volume: 2}
-        actions: [{report: {reason: x, ttl: 1h}}]
+        actions: [{report: {reason: x, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
 `,
 		},
 		{
@@ -196,7 +203,7 @@ chains:
     rules:
       - id: r
         tracker: {track: rate, leak: 1, volume: 2}
-        actions: [{report: {reason: Not A Slug, ttl: 1h}}]
+        actions: [{report: {reason: Not A Slug, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
 `,
 			wantErr: "reason",
 		},
@@ -209,7 +216,7 @@ chains:
     rules:
       - id: r
         tracker: {track: rate, leak: 1, volume: 2}
-        actions: [{report: {reason: -x, ttl: 1h}}]
+        actions: [{report: {reason: -x, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
 `,
 			wantErr: "reason",
 		},
@@ -222,7 +229,7 @@ chains:
     rules:
       - id: r
         tracker: {track: rate, leak: 1, volume: 2}
-        actions: [{report: {reason: iso-egress_overflow9, ttl: 1h}}]
+        actions: [{report: {reason: iso-egress_overflow9, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
 `,
 		},
 		{
@@ -234,7 +241,7 @@ chains:
     rules:
       - id: r
         tracker: {track: rate, leak: 1, volume: 2}
-        actions: [{report: {reason: x, ttl: 0s}}]
+        actions: [{report: {reason: x, ttl: 0s, penalty: limit-req-rate, rate: 200}}]
 `,
 			wantErr: "ttl",
 		},
@@ -247,7 +254,7 @@ chains:
     rules:
       - id: r
         tracker: {track: rate, leak: 1, volume: 2}
-        actions: [{report: {reason: x, ttl: -1h}}]
+        actions: [{report: {reason: x, ttl: -1h, penalty: limit-req-rate, rate: 200}}]
 `,
 			wantErr: "ttl",
 		},
@@ -260,7 +267,7 @@ chains:
     rules:
       - id: r
         tracker: {track: rate, leak: 1, volume: 2}
-        actions: [{report: {reason: x}}]
+        actions: [{report: {reason: x, penalty: limit-req-rate, rate: 200}}]
 `,
 			wantErr: "ttl",
 		},
@@ -273,7 +280,7 @@ chains:
     rules:
       - id: r
         tracker: {track: rate, leak: 1, volume: 2}
-        actions: [{report: {reason: x, ttl: banana}}]
+        actions: [{report: {reason: x, ttl: banana, penalty: limit-req-rate, rate: 200}}]
 `,
 			wantErr: "ttl",
 		},
@@ -286,7 +293,7 @@ chains:
     rules:
       - id: r
         tracker: {track: rate, leak: 1, volume: 2}
-        actions: [{report: {reason: x, ttl: 30m}}]
+        actions: [{report: {reason: x, ttl: 30m, penalty: limit-req-rate, rate: 200}}]
 `,
 		},
 
@@ -319,7 +326,7 @@ chains:
 		{name: "negative leak", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: -1, volume: 2}\n", wantErr: "tracker.leak"},
 		{name: "rate leak with byte unit", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1MB, volume: 2}\n", wantErr: "tracker.leak"},
 		{name: "rate volume with byte unit", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 1MB}\n", wantErr: "tracker.volume"},
-		{name: "bandwidth quantities accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: bandwidth, leak: 1MB/s, volume: 100GB}\n        actions: [{report: {reason: x, ttl: 7d}}]\n"},
+		{name: "bandwidth quantities accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: bandwidth, leak: 1MB/s, volume: 100GB}\n        actions: [{report: {reason: x, ttl: 7d, penalty: limit-bandwidth, rate: 1MB}}]\n"},
 		{name: "bandwidth zero leak accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: bandwidth, leak: 0, volume: 1KB}\n"},
 		{name: "bad quantity names rule and field", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: my-rule\n        tracker: {track: bandwidth, leak: 1, volume: 1q}\n", wantErr: `rule "my-rule": tracker.volume`},
 		{name: "volume method on bandwidth rejected", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker:\n          track: bandwidth\n          leak: 1\n          volume: {method: constant, value: 5}\n", wantErr: "volume methods are replay-only"},
@@ -483,8 +490,49 @@ chains:
 `,
 		},
 
-		{name: "report without reason", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2}\n        actions: [{report: {ttl: 1h}}]\n", wantErr: "reason"},
-		{name: "report with unknown key", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2}\n        actions: [{report: {reason: x, ttl: 1h, ban: 15m}}]\n", wantErr: "ban"},
+		{name: "report without reason", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2}\n        actions: [{report: {ttl: 1h, penalty: limit-req-rate, rate: 200}}]\n", wantErr: "reason"},
+		{name: "report with unknown key", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2}\n        actions: [{report: {reason: x, ttl: 1h, ban: 15m, penalty: limit-req-rate, rate: 200}}]\n", wantErr: "ban"},
+
+		// Penalty (required, closed vocabulary): failing and passing cases.
+		{name: "report without penalty", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h}}]\n", wantErr: "penalty"},
+		{name: "penalty drop accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: drop}}]\n"},
+		{name: "penalty reject accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: reject}}]\n"},
+		{name: "unknown penalty", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: ban}}]\n", wantErr: "unknown penalty"},
+
+		// Rate on a penalty: limits only (failing and passing cases).
+		{name: "rate with drop", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: drop, rate: 200}}]\n", wantErr: "not allowed"},
+		{name: "rate with reject", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: reject, rate: 200}}]\n", wantErr: "not allowed"},
+		{name: "limit-pkt-rate without rate", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-pkt-rate}}]\n", wantErr: "rate: required"},
+		{name: "limit-bandwidth without rate", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-bandwidth}}]\n", wantErr: "rate: required"},
+		{name: "limit-req-rate without rate", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-req-rate}}]\n", wantErr: "rate: required"},
+		{name: "zero rate", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-req-rate, rate: 0}}]\n", wantErr: "must be positive"},
+		{name: "fractional rate", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-req-rate, rate: 1.5}}]\n", wantErr: "whole number"},
+		{name: "rate with bad unit", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-bandwidth, rate: 1q}}]\n", wantErr: "invalid quantity"},
+		{name: "rate out of int64 range", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-bandwidth, rate: 9999P}}]\n", wantErr: "out of range"},
+		{name: "plain count rate accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-req-rate, rate: 200}}]\n"},
+		{name: "penalty limit-pkt-rate accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-pkt-rate, rate: 200}}]\n"},
+		{name: "decimal human size rate accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]\n"},
+		{name: "fractional human size rate accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-bandwidth, rate: 1.5MB}}]\n"},
+		{name: "per-second rate suffix accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-bandwidth, rate: 1MB/s}}]\n"},
+
+		// Well-formedness only (ADR 0010): no tracker/penalty or
+		// reason/penalty coherence checks.
+		{name: "penalty not checked against tracker kind", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2}\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]\n"},
+		{name: "penalty not checked against tracker presence", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{report: {reason: x, ttl: 1h, penalty: limit-req-rate, rate: 200}}]\n"},
+		{
+			name: "shared reason with different penalties accepted",
+			yaml: `
+version: 0
+chains:
+  - name: a
+    rules:
+      - id: tripwire
+        actions: [{report: {reason: shared, ttl: 1h, penalty: drop}}]
+      - id: flood
+        tracker: {track: rate, leak: 1, volume: 2}
+        actions: [{report: {reason: shared, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
+`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -533,11 +581,11 @@ func TestPrintsValidatedPlan(t *testing.T) {
 		"rule sustained-iso-egress",
 		"filter: any",
 		"tracker: bandwidth leak=1000000 volume=100000000000 ttl=27h46m40s",
-		"action report reason=iso-egress-overflow ttl=168h0m0s",
+		"action report reason=iso-egress-overflow ttl=168h0m0s penalty=limit-bandwidth rate=1000000",
 		"chain api",
 		"rule bursty-api",
 		"tracker: rate leak=10 volume=100 ttl=10s",
-		"action report reason=api-rate-overflow ttl=24h0m0s",
+		"action report reason=api-rate-overflow ttl=24h0m0s penalty=limit-req-rate rate=200",
 	} {
 		if !strings.Contains(plan, want) {
 			t.Errorf("plan does not contain %q:\n%s", want, plan)
@@ -581,11 +629,12 @@ func TestShowsActionsInPlan(t *testing.T) {
 		"rule route-downloads",
 		"action log level=debug message=\"ROUTE:\"",
 		"action jump target=download-abuse",
+		"action report reason=ua-trip ttl=24h0m0s penalty=drop",
 		"action stop",
 		"chain download-abuse",
 		"rule sustained-iso-egress",
 		"action goto target=sink",
-		"action report reason=iso-egress-overflow ttl=168h0m0s",
+		"action report reason=iso-egress-overflow ttl=168h0m0s penalty=limit-bandwidth rate=1000000",
 		"action stop",
 	} {
 		if !strings.Contains(plan, want) {
@@ -690,6 +739,8 @@ chains:
         actions:
           - log: "debug,ROUTE:"
           - jump: download-abuse
+      - id: ua-trip
+        actions: [{report: {reason: ua-trip, ttl: 24h, penalty: drop}}]
       - id: skip-health
         actions: [stop]
   - name: download-abuse
@@ -698,7 +749,7 @@ chains:
         tracker: {track: bandwidth, leak: 1MB, volume: 100GB}
         actions:
           - goto: sink
-          - report: {reason: iso-egress-overflow, ttl: 7d}
+          - report: {reason: iso-egress-overflow, ttl: 7d, penalty: limit-bandwidth, rate: 1MB}
   - name: sink
     rules:
       - id: terminal
@@ -1073,7 +1124,7 @@ func TestParseRulesVolumeValidation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			yaml := "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker:\n          " + tt.tracker + "\n        actions: [{report: {reason: x, ttl: 1h}}]"
+			yaml := "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker:\n          " + tt.tracker + "\n        actions: [{report: {reason: x, ttl: 1h, penalty: drop}}]"
 			_, err := ParseRules([]byte(yaml))
 			if tt.wantErr == "" {
 				if err != nil {
@@ -1118,10 +1169,10 @@ chains:
             slope: -1
             min: 2
             max: 5
-        actions: [{report: {reason: iso-replay, ttl: 24h}}]
+        actions: [{report: {reason: iso-replay, ttl: 24h, penalty: limit-bandwidth, rate: 1MB}}]
       - id: small-replay
         tracker: {track: replay, leak: 0, volume: 5}
-        actions: [{report: {reason: small-replay, ttl: 24h}}]
+        actions: [{report: {reason: small-replay, ttl: 24h, penalty: limit-bandwidth, rate: 1MB}}]
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}

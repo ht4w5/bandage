@@ -20,6 +20,8 @@ chains:
           - report:
               reason: iso-egress-overflow
               ttl: 7d
+              penalty: limit-bandwidth
+              rate: 1MB
 
       - id: iso-download-flood
         filter: any
@@ -32,6 +34,8 @@ chains:
           - report:
               reason: iso-download-overflow
               ttl: 24h
+              penalty: limit-req-rate
+              rate: 100
 
   - name: api
     rules:
@@ -44,3 +48,5 @@ chains:
           - report:
               reason: api-rate-overflow
               ttl: 12h
+              penalty: limit-req-rate
+              rate: 200

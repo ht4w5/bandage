@@ -68,6 +68,9 @@ type ReportAction struct {
 	Reason string
 	// TTL is the report's expiry since the trigger wall-clock time.
 	TTL time.Duration
+	// Penalty is the advisory enforcement stance the report recommends
+	// for the target (ADR 0010).
+	Penalty Penalty
 }
 
 // LogAction emits debug output for a match (flux's "level,message"

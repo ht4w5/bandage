@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"regexp"
 	"strconv"
@@ -57,8 +58,10 @@ type rawTargetPrefix struct {
 }
 
 type rawReportAction struct {
-	Reason string `yaml:"reason"`
-	TTL    string `yaml:"ttl"`
+	Reason  string    `yaml:"reason"`
+	TTL     string    `yaml:"ttl"`
+	Penalty string    `yaml:"penalty"`
+	Rate    yaml.Node `yaml:"rate"`
 }
 
 // LoadRules reads and validates the rules file at path.
@@ -485,15 +488,18 @@ func parseStopAction(id, name string, val *yaml.Node) (bandage.Action, error) {
 	return bandage.Action{Stop: true}, nil
 }
 
-// parseReportAction parses `- report: {reason, ttl}`.
+// parseReportAction parses `- report: {reason, ttl, penalty, rate}`.
 func parseReportAction(id, name string, val *yaml.Node) (bandage.Action, error) {
 	if val == nil {
 		return bandage.Action{}, wantsOptions(id, name)
 	}
 	var raw rawReportAction
+	hasRate := false
 	for i := 0; i < len(val.Content); i += 2 {
 		switch key := val.Content[i].Value; key {
-		case "reason", "ttl":
+		case "reason", "ttl", "penalty":
+		case "rate":
+			hasRate = true
 		default:
 			return bandage.Action{}, fmt.Errorf("rules: rule %q: action report: unknown key %q", id, key)
 		}
@@ -509,7 +515,68 @@ func parseReportAction(id, name string, val *yaml.Node) (bandage.Action, error) 
 	if err != nil {
 		return bandage.Action{}, fmt.Errorf("rules: rule %q: action report: report.ttl: %w", id, err)
 	}
-	return bandage.Action{Report: &bandage.ReportAction{Reason: raw.Reason, TTL: ttl}}, nil
+	penalty, err := parsePenalty(id, &raw, hasRate)
+	if err != nil {
+		return bandage.Action{}, err
+	}
+	return bandage.Action{Report: &bandage.ReportAction{Reason: raw.Reason, TTL: ttl, Penalty: penalty}}, nil
+}
+
+// penaltyWant names the closed penalty vocabulary for error messages.
+const penaltyWant = `(want "drop", "reject", "limit-pkt-rate", "limit-bandwidth" or "limit-req-rate")`
+
+// parsePenalty builds the report action's penalty: one of the five
+// closed values of ADR 0010, with a rate exactly on the limit
+// penalties. Well-formedness only; never checked against the rule's
+// tracker or reason.
+func parsePenalty(id string, raw *rawReportAction, hasRate bool) (bandage.Penalty, error) {
+	switch action := bandage.PenaltyAction(raw.Penalty); action {
+	case bandage.PenaltyDrop, bandage.PenaltyReject,
+		bandage.PenaltyLimitPktRate, bandage.PenaltyLimitBandwidth, bandage.PenaltyLimitReqRate:
+		penalty := bandage.Penalty{Action: action}
+		if !penalty.IsLimit() {
+			if hasRate {
+				return bandage.Penalty{}, fmt.Errorf("rules: rule %q: action report: rate: not allowed with penalty %q", id, action)
+			}
+			return penalty, nil
+		}
+		if !hasRate {
+			return bandage.Penalty{}, fmt.Errorf("rules: rule %q: action report: rate: required with penalty %q", id, action)
+		}
+		rate, err := parseRate(id, raw.Rate)
+		if err != nil {
+			return bandage.Penalty{}, err
+		}
+		penalty.Rate = &rate
+		return penalty, nil
+	case "":
+		return bandage.Penalty{}, fmt.Errorf("rules: rule %q: action report: penalty: required %s", id, penaltyWant)
+	default:
+		return bandage.Penalty{}, fmt.Errorf("rules: rule %q: action report: penalty: unknown penalty %q %s", id, raw.Penalty, penaltyWant)
+	}
+}
+
+// parseRate parses a limit penalty's per-second threshold: a plain
+// count or a decimal human size (1MB = 1e6) in the unit the penalty
+// name states, integral and at least 1.
+func parseRate(id string, node yaml.Node) (int64, error) {
+	if node.Kind != yaml.ScalarNode {
+		return 0, fmt.Errorf("rules: rule %q: action report: rate: must be a quantity", id)
+	}
+	v, err := track.ParseBytes(node.Value)
+	if err != nil {
+		return 0, fmt.Errorf("rules: rule %q: action report: rate: %w", id, err)
+	}
+	if v != math.Trunc(v) {
+		return 0, fmt.Errorf("rules: rule %q: action report: rate: must be a whole number, got %q", id, node.Value)
+	}
+	if v < 1 {
+		return 0, fmt.Errorf("rules: rule %q: action report: rate: must be positive, got %q", id, node.Value)
+	}
+	if v >= float64(math.MaxInt64) {
+		return 0, fmt.Errorf("rules: rule %q: action report: rate: out of range, got %q", id, node.Value)
+	}
+	return int64(v), nil
 }
 
 // parseChainAction parses `goto: <chain>` and `jump: <chain>`; targets
