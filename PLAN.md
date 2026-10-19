@@ -141,7 +141,8 @@ docs/rules.md).
 
 ## 2. Ingress event fields (v0)
 
-Log format: one nginx JSON object per syslog message, using flux's log format
+Log format: one nginx JSON object per syslog message, using the bandage
+nginx log format (flux-compatible)
 (`escape=json`, `$msec`/`$remote_addr`/`$request_method`/`$uri`/`$status`/
 `$body_bytes_sent`/`$http_user_agent`…). The parser maps it onto webjail's
 `Event` field names.
@@ -210,7 +211,7 @@ ingest:
   syslog:
     network: unixgram          # tcp | udp | unixgram
     listen: /run/bandage/log.sock
-  parser: nginx                # nginx JSON (flux log format)
+  parser: nginx                # nginx JSON (the bandage nginx log format; flux-compatible)
 
 db:
   driver: sqlite               # driver-keyed; more stores later

@@ -160,7 +160,7 @@ client that downloaded two 6000-byte files within one leak second:
         "volume": 10000
       },
       "sample": {
-        "time": "2024-12-16T10:45:35Z",
+        "time": "2025-10-17T17:59:35Z",
         "path": "/releases/24.04.iso",
         "agent": "Wget/1.21",
         "status": 200,

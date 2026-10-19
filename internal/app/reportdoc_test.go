@@ -93,6 +93,15 @@ func docsExample(t *testing.T, path string) string {
 	return string(rest[:j])
 }
 
+// docEventTime1/2 are the byte-pin scenario's nginx line timestamps:
+// on the injected wall clock's date (wallBase), a short realistic gap
+// before the report write, so the published example's sample.time sits
+// near its created_at.
+const (
+	docEventTime1 = "1760723974.123" // 2025-10-17T17:59:34Z
+	docEventTime2 = "1760723975.123" // 2025-10-17T17:59:35Z
+)
+
 // TestE2EReportsDocumentMatchesDocsExample: the document GET /reports
 // serves for the canonical scenario equals the example fenced in
 // docs/reports.md byte for byte, so the published contract and the
@@ -104,8 +113,8 @@ func TestE2EReportsDocumentMatchesDocsExample(t *testing.T) {
 
 	// 6000 + 6000 - 1000 = 11000 > 10000: the second event overflows and
 	// its sample ends up in the report.
-	d.send(nginxLineAgent(eventTime1, "203.0.113.7", "GET", "/releases/24.04.iso", 200, 6000, "Wget/1.21"))
-	d.send(nginxLineAgent(eventTime2, "203.0.113.7", "GET", "/releases/24.04.iso", 200, 6000, "Wget/1.21"))
+	d.send(nginxLineAgent(docEventTime1, "203.0.113.7", "GET", "/releases/24.04.iso", 200, 6000, "Wget/1.21"))
+	d.send(nginxLineAgent(docEventTime2, "203.0.113.7", "GET", "/releases/24.04.iso", 200, 6000, "Wget/1.21"))
 	d.waitProcessed(t, 2)
 
 	body := d.getReportsRaw(t)

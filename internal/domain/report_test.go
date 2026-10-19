@@ -92,6 +92,39 @@ func compact(s string) string {
 // int64Ptr returns a pointer to v (a limit penalty's rate).
 func int64Ptr(v int64) *int64 { return &v }
 
+// TestPenaltyMarshalIncompleteLimits pins the strict side of the wire
+// contract: a limit penalty without a valid rate must never serialize
+// (an incomplete recommendation can never reach a consumer), while the
+// minimum valid rate does.
+func TestPenaltyMarshalIncompleteLimits(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		penalty Penalty
+		want    string // expected fragment, "" when marshaling must fail
+	}{
+		{"a limit without a rate fails", Penalty{Action: PenaltyLimitPktRate}, ""},
+		{"a limit with a zero rate fails", Penalty{Action: PenaltyLimitBandwidth, Rate: int64Ptr(0)}, ""},
+		{"a limit with a negative rate fails", Penalty{Action: PenaltyLimitReqRate, Rate: int64Ptr(-1)}, ""},
+		{"a limit with the minimum rate marshals", Penalty{Action: PenaltyLimitPktRate, Rate: int64Ptr(1)}, `"action":"limit-pkt-rate","rate":1`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := json.Marshal(tt.penalty)
+			if tt.want == "" {
+				if err == nil {
+					t.Fatalf("Marshal = %s, want an encoding error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Marshal error: %v", err)
+			}
+			if !strings.Contains(string(got), tt.want) {
+				t.Errorf("Marshal = %s, want it to contain %s", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestPenaltyWireShape pins the nested penalty object: action always,
 // rate exactly for a limit action (integer, never 0), and the penalty
 // key itself omitted only when the report carries none.

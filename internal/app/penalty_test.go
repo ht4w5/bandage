@@ -47,6 +47,12 @@ func wantPenalty(t *testing.T, r reportEntry, want penaltyEntry) {
 	}
 }
 
+// limitPenalty builds the expected penalty entry for a limit action:
+// its action and rate together.
+func limitPenalty(action string, rate int64) penaltyEntry {
+	return penaltyEntry{Action: action, Rate: &rate}
+}
+
 // TestE2EReportsCarryPenalty: every report entry carries its nested
 // penalty; rate is present exactly for a limit action.
 func TestE2EReportsCarryPenalty(t *testing.T) {
@@ -62,8 +68,7 @@ func TestE2EReportsCarryPenalty(t *testing.T) {
 		if len(doc.Reports) != 1 {
 			t.Fatalf("reports = %+v, want 1", doc.Reports)
 		}
-		rate := int64(1000000) // 1MB, in response-payload bytes per second
-		wantPenalty(t, doc.Reports[0], penaltyEntry{Action: "limit-bandwidth", Rate: &rate})
+		wantPenalty(t, doc.Reports[0], limitPenalty("limit-bandwidth", 1000000)) // 1MB, in response-payload bytes per second
 	})
 
 	t.Run("drop carries no rate", func(t *testing.T) {
@@ -109,8 +114,7 @@ func TestE2EPenaltySurvivesRestart(t *testing.T) {
 	if len(doc.Reports) != 1 {
 		t.Fatalf("reports = %+v, want the persisted report", doc.Reports)
 	}
-	rate := int64(1000000)
-	wantPenalty(t, doc.Reports[0], penaltyEntry{Action: "limit-bandwidth", Rate: &rate})
+	wantPenalty(t, doc.Reports[0], limitPenalty("limit-bandwidth", 1000000))
 }
 
 // TestE2EAliveReportFreezesPenaltyWithItsSample: while a report is alive
@@ -138,8 +142,7 @@ func TestE2EAliveReportFreezesPenaltyWithItsSample(t *testing.T) {
 		t.Fatalf("reports = %+v, want 1", doc.Reports)
 	}
 	r := doc.Reports[0]
-	rate := int64(1000000)
-	wantPenalty(t, r, penaltyEntry{Action: "limit-bandwidth", Rate: &rate})
+	wantPenalty(t, r, limitPenalty("limit-bandwidth", 1000000))
 	if r.Sample.Time != eventTime1At || r.Sample.Path != "/big" {
 		t.Errorf("sample = %+v, want the first Trigger's event frozen (the penalty always matches its Sample)", r.Sample)
 	}
@@ -148,57 +151,46 @@ func TestE2EAliveReportFreezesPenaltyWithItsSample(t *testing.T) {
 	}
 }
 
+// rearmScenario drives one re-arm scenario end to end: a report
+// written under the old rules dies (kill deletes it or lets it
+// expire), the daemon restarts on the new rules, and the next matching
+// event's replacement write must carry the then-loaded penalty at
+// wantWrite.
+func rearmScenario(t *testing.T, name string, kill func(t *testing.T, d *testDaemon), advance time.Duration, wantWrite string) {
+	t.Run(name, func(t *testing.T) {
+		clock := newTestClock(mustTime(t, wallBase))
+		dbPath := filepath.Join(t.TempDir(), "reports.db")
+
+		d1 := startTestDaemon(t, clock, "unixgram", dbPath, floodRules("penalty: limit-bandwidth, rate: 1MB"))
+		d1.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
+		d1.waitProcessed(t, 1)
+		kill(t, d1)
+		shutdownDaemon(t, d1)
+
+		clock.Advance(advance)
+		d2 := startTestDaemon(t, clock, "unixgram", dbPath, floodRules("penalty: limit-pkt-rate, rate: 200"))
+		d2.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 150))
+		d2.waitProcessed(t, 1)
+
+		doc := d2.getReports(t, nil)
+		if len(doc.Reports) != 1 || doc.Reports[0].UpdatedAt != wantWrite {
+			t.Fatalf("reports = %+v, want the %s replacement write", doc.Reports, wantWrite)
+		}
+		wantPenalty(t, doc.Reports[0], limitPenalty("limit-pkt-rate", 200))
+	})
+}
+
 // TestE2ERearmedWriteCarriesThenLoadedPenalty: a re-armed write after
 // deletion or expiry carries the penalty of the rules loaded at write
 // time, never the old report's stale advice.
 func TestE2ERearmedWriteCarriesThenLoadedPenalty(t *testing.T) {
-	oldRules := floodRules("penalty: limit-bandwidth, rate: 1MB")
-	newRules := floodRules("penalty: limit-pkt-rate, rate: 200")
-
-	t.Run("after DELETE /reports", func(t *testing.T) {
-		clock := newTestClock(mustTime(t, wallBase))
-		dbPath := filepath.Join(t.TempDir(), "reports.db")
-
-		d1 := startTestDaemon(t, clock, "unixgram", dbPath, oldRules)
-		d1.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
-		d1.waitProcessed(t, 1)
-		if _, n := d1.del(t, url.Values{"rule": {"flood"}}); n != 1 {
+	deleteReport := func(t *testing.T, d *testDaemon) {
+		if _, n := d.del(t, url.Values{"rule": {"flood"}}); n != 1 {
 			t.Fatalf("delete count = %d, want 1", n)
 		}
-		shutdownDaemon(t, d1)
+	}
+	letExpire := func(t *testing.T, d *testDaemon) {} // the 1h ttl expires at 19:00
 
-		clock.Advance(10 * time.Minute) // 18:10
-		d2 := startTestDaemon(t, clock, "unixgram", dbPath, newRules)
-		d2.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 150))
-		d2.waitProcessed(t, 1)
-
-		doc := d2.getReports(t, nil)
-		if len(doc.Reports) != 1 || doc.Reports[0].UpdatedAt != "2025-10-17T18:10:00Z" {
-			t.Fatalf("reports = %+v, want the 18:10 replacement write", doc.Reports)
-		}
-		rate := int64(200)
-		wantPenalty(t, doc.Reports[0], penaltyEntry{Action: "limit-pkt-rate", Rate: &rate})
-	})
-
-	t.Run("after expiry", func(t *testing.T) {
-		clock := newTestClock(mustTime(t, wallBase))
-		dbPath := filepath.Join(t.TempDir(), "reports.db")
-
-		d1 := startTestDaemon(t, clock, "unixgram", dbPath, oldRules)
-		d1.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
-		d1.waitProcessed(t, 1)
-		shutdownDaemon(t, d1)
-
-		clock.Advance(90 * time.Minute) // 19:30 - past the 19:00 expiry
-		d2 := startTestDaemon(t, clock, "unixgram", dbPath, newRules)
-		d2.send(nginxLine(eventTime2, "203.0.113.7", "GET", "/big", 200, 150))
-		d2.waitProcessed(t, 1)
-
-		doc := d2.getReports(t, nil)
-		if len(doc.Reports) != 1 || doc.Reports[0].UpdatedAt != "2025-10-17T19:30:00Z" {
-			t.Fatalf("reports = %+v, want the 19:30 replacement write", doc.Reports)
-		}
-		rate := int64(200)
-		wantPenalty(t, doc.Reports[0], penaltyEntry{Action: "limit-pkt-rate", Rate: &rate})
-	})
+	rearmScenario(t, "after DELETE /reports", deleteReport, 10*time.Minute, "2025-10-17T18:10:00Z")
+	rearmScenario(t, "after expiry", letExpire, 90*time.Minute, "2025-10-17T19:30:00Z") // 19:30, past the 19:00 expiry
 }

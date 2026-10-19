@@ -522,38 +522,44 @@ func parseReportAction(id, name string, val *yaml.Node) (bandage.Action, error) 
 	return bandage.Action{Report: &bandage.ReportAction{Reason: raw.Reason, TTL: ttl, Penalty: penalty}}, nil
 }
 
-// penaltyWant names the closed penalty vocabulary for error messages.
-const penaltyWant = `(want "drop", "reject", "limit-pkt-rate", "limit-bandwidth" or "limit-req-rate")`
-
-// parsePenalty builds the report action's penalty: one of the five
-// closed values of ADR 0010, with a rate exactly on the limit
-// penalties. Well-formedness only; never checked against the rule's
-// tracker or reason.
-func parsePenalty(id string, raw *rawReportAction, hasRate bool) (bandage.Penalty, error) {
-	switch action := bandage.PenaltyAction(raw.Penalty); action {
-	case bandage.PenaltyDrop, bandage.PenaltyReject,
-		bandage.PenaltyLimitPktRate, bandage.PenaltyLimitBandwidth, bandage.PenaltyLimitReqRate:
-		penalty := bandage.Penalty{Action: action}
-		if !penalty.IsLimit() {
-			if hasRate {
-				return bandage.Penalty{}, fmt.Errorf("rules: rule %q: action report: rate: not allowed with penalty %q", id, action)
-			}
-			return penalty, nil
-		}
-		if !hasRate {
-			return bandage.Penalty{}, fmt.Errorf("rules: rule %q: action report: rate: required with penalty %q", id, action)
-		}
-		rate, err := parseRate(id, raw.Rate)
-		if err != nil {
-			return bandage.Penalty{}, err
-		}
-		penalty.Rate = &rate
-		return penalty, nil
-	case "":
-		return bandage.Penalty{}, fmt.Errorf("rules: rule %q: action report: penalty: required %s", id, penaltyWant)
-	default:
-		return bandage.Penalty{}, fmt.Errorf("rules: rule %q: action report: penalty: unknown penalty %q %s", id, raw.Penalty, penaltyWant)
+// penaltyWant names the closed penalty vocabulary for error messages,
+// built from the domain's single source (bandage.PenaltyActions).
+var penaltyWant = func() string {
+	names := make([]string, len(bandage.PenaltyActions))
+	for i, action := range bandage.PenaltyActions {
+		names[i] = fmt.Sprintf("%q", action)
 	}
+	last := len(names) - 1
+	return "(want " + strings.Join(names[:last], ", ") + " or " + names[last] + ")"
+}()
+
+// parsePenalty builds the report action's penalty: one of the closed
+// values of ADR 0010 (bandage.PenaltyActions), with a rate exactly on
+// the limit penalties. Well-formedness only; never checked against the
+// rule's tracker or reason.
+func parsePenalty(id string, raw *rawReportAction, hasRate bool) (bandage.Penalty, error) {
+	action := bandage.PenaltyAction(raw.Penalty)
+	penalty := bandage.Penalty{Action: action}
+	switch {
+	case action == "":
+		return bandage.Penalty{}, fmt.Errorf("rules: rule %q: action report: penalty: required %s", id, penaltyWant)
+	case !action.IsValid():
+		return bandage.Penalty{}, fmt.Errorf("rules: rule %q: action report: penalty: unknown penalty %q %s", id, raw.Penalty, penaltyWant)
+	case !action.IsLimit():
+		if hasRate {
+			return bandage.Penalty{}, fmt.Errorf("rules: rule %q: action report: rate: not allowed with penalty %q", id, action)
+		}
+		return penalty, nil
+	}
+	if !hasRate {
+		return bandage.Penalty{}, fmt.Errorf("rules: rule %q: action report: rate: required with penalty %q", id, action)
+	}
+	rate, err := parseRate(id, raw.Rate)
+	if err != nil {
+		return bandage.Penalty{}, err
+	}
+	penalty.Rate = &rate
+	return penalty, nil
 }
 
 // parseRate parses a limit penalty's per-second threshold: a plain
