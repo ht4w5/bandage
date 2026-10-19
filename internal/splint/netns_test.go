@@ -111,8 +111,8 @@ func TestUpdateCycleSkipsAnUnreachableNamespace(t *testing.T) {
 // skip-if-unchanged state is per namespace — a quiet cycle reinstalls
 // nothing anywhere, a changed ruleset reinstalls everywhere, and a
 // namespace that comes back installs even while the unchanged ones
-// skip. (The installed-state slot holds the compiled ruleset for now;
-// ticket 06 fills it with the rolling hash.)
+// skip. (The installed-state slot holds the compiled ruleset's rolling
+// hash, probed for its table's existence every cycle.)
 func TestUpdateCycleSkipsUnchangedRulesPerNamespace(t *testing.T) {
 	t.Run("an unchanged ruleset is not reinstalled into any namespace", func(t *testing.T) {
 		srv := newDocServer(t)

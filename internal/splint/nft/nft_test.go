@@ -125,8 +125,11 @@ func TestInstallWithoutNetlinkPrivilegesFailsLoudly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if err := d.Install(nil); err == nil {
+	if _, err := d.Install(nil); err == nil {
 		t.Error("Install succeeded without netlink, want a loud failure")
+	}
+	if _, err := d.TableExists(); err == nil {
+		t.Error("TableExists succeeded without netlink, want a loud failure")
 	}
 	if err := d.Reset(); err == nil {
 		t.Error("Reset succeeded without netlink, want a loud failure")

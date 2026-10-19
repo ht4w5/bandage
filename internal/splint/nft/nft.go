@@ -12,6 +12,9 @@ import (
 	"math"
 	"net/netip"
 	"os"
+	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/expr"
@@ -121,8 +124,8 @@ func ownedTable() *nftables.Table {
 
 // tableExists probes for the owned table: a cheap existence check the
 // rebuild consults before batching its delete (a delete of a missing
-// table aborts the whole batch with ENOENT). Ticket 06's
-// skip-if-unchanged reuses the same probe.
+// table aborts the whole batch with ENOENT) and the skip-if-unchanged
+// check reaches through the port's TableExists.
 func tableExists(conn *nftables.Conn, table *nftables.Table) (bool, error) {
 	if _, err := conn.ListTableOfFamily(table.Name, table.Family); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -133,16 +136,39 @@ func tableExists(conn *nftables.Conn, table *nftables.Table) (bool, error) {
 	return true, nil
 }
 
-// Install rebuilds the owned table wholesale in one atomic batch:
-// a probe decides whether the delete joins the batch, then the table,
-// both chains and one kernel rule per ban rule and address family —
-// each leading with the service prefilter — are buffered and flushed
-// together. The table is never absent while the new one applies —
-// there is no delete-then-rebuild window.
-func (d *Driver) Install(rules []splint.BanRule) error {
+// TableExists probes for the owned table in the target namespace —
+// the port's cheap existence probe (story 21), the same probe the
+// rebuild consults before batching its delete.
+func (d *Driver) TableExists() (bool, error) {
 	conn, nsFile, err := d.connect()
 	if err != nil {
-		return fmt.Errorf("install: %w", err)
+		return false, fmt.Errorf("probe: %w", err)
+	}
+	if nsFile != nil {
+		// The handle stays open through the query (see connect).
+		defer nsFile.Close()
+	}
+	exists, err := tableExists(conn, ownedTable())
+	if err != nil {
+		return false, fmt.Errorf("probe owned table: %w", err)
+	}
+	return exists, nil
+}
+
+// Install rebuilds the owned table wholesale in one atomic batch and
+// reports the nonzero packet/byte counters of the rules it replaces —
+// the hits covering the period since the last change (the rebuild
+// resets the counters): a probe decides whether the delete joins the
+// batch, the replaced rules' counters are read back first, then the
+// table, both chains and one kernel rule per ban rule and address
+// family — each carrying its counter first and leading with the
+// service prefilter — are buffered and flushed together. The table is
+// never absent while the new one applies — there is no
+// delete-then-rebuild window.
+func (d *Driver) Install(rules []splint.BanRule) ([]splint.Hit, error) {
+	conn, nsFile, err := d.connect()
+	if err != nil {
+		return nil, fmt.Errorf("install: %w", err)
 	}
 	if nsFile != nil {
 		// The handle stays open through Flush (see connect).
@@ -151,11 +177,17 @@ func (d *Driver) Install(rules []splint.BanRule) error {
 	table := ownedTable()
 	exists, err := tableExists(conn, table)
 	if err != nil {
-		return fmt.Errorf("install: probe owned table: %w", err)
+		return nil, fmt.Errorf("install: probe owned table: %w", err)
 	}
+	var hits []splint.Hit
 	if exists {
-		// Only a present table may join the batch: deleting a missing
-		// one aborts the whole transaction with ENOENT.
+		// The replaced rules' counters are read before the batch resets
+		// them. Only a present table may join the batch: deleting a
+		// missing one aborts the whole transaction with ENOENT.
+		hits, err = ruleHits(conn, table)
+		if err != nil {
+			return nil, fmt.Errorf("install: read rule counters: %w", err)
+		}
 		conn.DelTable(table)
 	}
 	table = conn.AddTable(table)
@@ -163,13 +195,80 @@ func (d *Driver) Install(rules []splint.BanRule) error {
 	egress := conn.AddChain(d.egress(table))
 	for i, r := range rules {
 		if err := addBanRule(conn, table, ingress, egress, i, r); err != nil {
-			return fmt.Errorf("install: ban rule %d: %w", i, err)
+			return nil, fmt.Errorf("install: ban rule %d: %w", i, err)
 		}
 	}
 	if err := conn.Flush(); err != nil {
-		return fmt.Errorf("install: %w", err)
+		return nil, fmt.Errorf("install: %w", err)
 	}
-	return nil
+	return hits, nil
+}
+
+// ruleHits reads the owned table's per-rule counters back, one hit per
+// ban rule: every kernel rule leads with its counter (addBanRule) and
+// carries its ban rule's index in its set names, so every reading maps
+// onto the ban rule it counts — the index in the ruleset being
+// replaced. Only the nonzero readings come back: they are the hits
+// worth logging.
+func ruleHits(conn *nftables.Conn, table *nftables.Table) ([]splint.Hit, error) {
+	byRule := map[int]splint.Hit{}
+	for _, name := range []string{ingressName, egressName} {
+		chain, err := conn.ListChain(table, name)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue // the chain is gone with the table
+			}
+			return nil, err
+		}
+		krules, err := conn.GetRules(table, chain)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range krules {
+			c, ok := ruleCounter(r)
+			if !ok || (c.Packets == 0 && c.Bytes == 0) {
+				continue
+			}
+			i, ok := ruleIndex(r)
+			if !ok {
+				continue // not a kernel rule this driver wrote
+			}
+			h := byRule[i]
+			byRule[i] = splint.Hit{Rule: i, Packets: h.Packets + c.Packets, Bytes: h.Bytes + c.Bytes}
+		}
+	}
+	hits := make([]splint.Hit, 0, len(byRule))
+	for _, h := range byRule {
+		hits = append(hits, h)
+	}
+	slices.SortFunc(hits, func(a, b splint.Hit) int { return a.Rule - b.Rule })
+	return hits, nil
+}
+
+// ruleCounter is a kernel rule's leading packet/byte counter (every
+// ban rule carries one), or false when the rule carries none.
+func ruleCounter(r *nftables.Rule) (*expr.Counter, bool) {
+	if len(r.Exprs) == 0 {
+		return nil, false
+	}
+	c, ok := r.Exprs[0].(*expr.Counter)
+	return c, ok
+}
+
+// ruleIndex maps a kernel rule back onto its ban rule: the ban rule's
+// index is baked into its set names (v4_3, port_3, … — the names
+// addBanRule builds them with), so the mapping survives restarts.
+func ruleIndex(r *nftables.Rule) (int, bool) {
+	for _, e := range r.Exprs {
+		l, ok := e.(*expr.Lookup)
+		if !ok {
+			continue
+		}
+		if i, err := strconv.Atoi(l.SetName[strings.LastIndex(l.SetName, "_")+1:]); err == nil {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 // Reset removes the owned table with everything in it, tolerating the
@@ -370,6 +469,10 @@ func addBanRule(conn *nftables.Conn, table *nftables.Table, ingress, egress *nft
 			return err
 		}
 		exprs := []expr.Any{
+			// Every ban rule carries its packet/byte counter first — the
+			// fixed index ruleHits reads it back at — then the family
+			// gate.
+			&expr.Counter{},
 			&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
 			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{fam.proto}},
 		}
