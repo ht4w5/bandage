@@ -16,91 +16,33 @@ import (
 	"github.com/HT4w5/bandage/internal/infra/persistence/sqlite"
 )
 
-// Pipeline throughput and worker-scaling benchmarks (spec v0-benchmarks
-// Phase 2, ticket 03): the assembled runPipeline chain — parse →
-// enrich → evaluate → report write → per-line bookkeeping — driven with
-// a pre-generated corpus at pipeline.workers = 1/2/4/8, plus an
-// ingest-inclusive variant over real loopback syslog sockets (tcp and
-// unixgram) that adds go-syslog parsing and the channel handoff (H5).
-//
-// Method: one op is one raw log line. The corpus is built once before
-// b.Loop() (fixed bench.Seed, ShapeFull/DistZipf), the wall clock is
-// frozen at benchWall (WithClock — nothing expires or time-stamps
-// differently between runs), and the pipeline-only variant hands lines
-// straight to the daemon's line channel: no socket anywhere in that
-// path. The timed region covers the processing of every counted line:
-// the feed is back-pressured by the unbuffered line channel, the
-// harness drains every drainEvery lines, and the final drain runs
-// inside the timed region (runPipelineBench), so lines/s never counts
-// a line whose processing finished after the timer stopped. Throughput
-// is reported as lines/s via bench.ReportLinesPerSec; run with -benchmem
-// for ns/op, B/op and allocs/op; gc-cpu-frac and evictions/op and the
-// /stats snapshot are recorded beside them (reportBenchStats).
-//
-// The scenarios vary the match path (GLOSSARY: Match, Trigger) and the
-// tracker-cache cap. The write side is the v0-hot-path episode
-// re-modeling (spec stories 30–31): the retired overflow-every-event
-// trick — a report write per event — is gone, and the scenarios model
-// report episodes instead (one write per (rule, Target) per report
-// lifetime, visible in the baseline as writes/op):
-//
-//   - first-trigger / rearm-delete run the episode fixture: every
-//     accumulation episode Triggers the rule's report action, but one
-//     write lands per (rule, Target) per report lifetime.
-//     first-trigger's lifetime is the whole run (the write falls
-//     silent after every Target's first Trigger), while rearm-delete
-//     deletes the scenario's reports at every drain boundary — the
-//     operator's re-arm lever (spec story 9) — so every episode writes
-//     again. Both are read against the retired trick's per-event write
-//     ceiling (≈23k lines/s, findings.md).
-//   - match-never is the fast-path floor: the same filter and tracker
-//     work per event with a volume nothing ever reaches, so no rule
-//     Matches and neither the Trigger nor the write path runs (H4).
-//   - *-evicting runs the same rules with a cache cap below the
-//     corpus's key cardinality (~512 distinct filesize paths plus
-//     tracker Targets), so the store evicts instead of holding state.
-//
-// These benchmarks measure, they do not assert: nothing here runs
-// under make test (no -bench flag). The scenario contracts are pinned
-// by TestBenchPipelineScenariosMatchTheirNames below.
+// Pipeline throughput and worker-scaling benchmarks over the assembled
+// runPipeline chain and real syslog sockets; one op is one raw log line.
 
-// benchWorkers are the pipeline.workers values the scaling curve
-// samples (spec Phase 2).
+// benchWorkers are the pipeline.workers values the scaling curve samples.
 var benchWorkers = [...]int{1, 2, 4, 8}
 
 const (
-	// benchCorpusLines is the pre-generated corpus size; corpus.Line
-	// cycles it, so the timed region never builds fixtures.
+	// benchCorpusLines is the pre-generated corpus size (corpus.Line
+	// cycles it, so the timed region never builds fixtures).
 	benchCorpusLines = 4096
 
-	// drainEvery bounds the backlog the feed can build ahead of the
-	// pipeline: every drainEvery lines the harness waits for the
-	// pipeline to catch up inside the timed region. The wait's own
-	// stall (at most one line's processing per batch) is far below one
-	// percent.
+	// drainEvery bounds the backlog the feed can build ahead of the pipeline.
 	drainEvery = 1024
 
-	// benchCacheRoomy is the default entry cap: no evictions at the
-	// corpus's key cardinality. benchCacheEvicting sits below the ~512
-	// distinct keys (filesize paths + tracker Targets), forcing churn.
+	// benchCacheRoomy never evicts at the corpus's key cardinality;
+	// benchCacheEvicting sits below it, forcing churn.
 	benchCacheRoomy    = 65536
 	benchCacheEvicting = 256
 )
 
-// benchWall is the frozen wall clock every benchmark runs at: report
-// timestamps, cache expiry and /stats all see this instant.
+// benchWall is the frozen wall clock every benchmark runs at.
 var benchWall = time.Date(2025, 10, 17, 18, 0, 0, 0, time.UTC)
 
 func benchNow() time.Time { return benchWall }
 
-// benchEpisodeRules is the episode fixture (the retired
-// overflow-every-event trick is not the episode model): a rate tracker
-// with volume above the per-event increment, so a Target accumulates
-// one episode per benchEpisodeLen events (Overflow is strictly above
-// volume; leak 0 pins the bucket against decay). Every episode
-// Triggers (GLOSSARY) and runs the report action — the Trigger empties
-// the tracker, so episodes recur at that cadence — while its write
-// lands once per report lifetime (benchScenarios).
+// benchEpisodeRules is the episode fixture: a Target accumulates one episode
+// per benchEpisodeLen events; each episode Triggers and its write lands once.
 const benchEpisodeRules = `
 version: 0
 chains:
@@ -111,12 +53,8 @@ chains:
         actions: [{report: {reason: bench-overflow, ttl: 24h}}]
 `
 
-// benchMatchNeverRules is the same rule shape with the volume far above
-// anything the corpus accumulates: the filter and tracker-update paths
-// run per event exactly as in benchEpisodeRules, but no event
-// overflows, so no rule ever Matches and no report is ever written.
-// The delta between it and the episode scenarios is the Trigger path
-// alone.
+// benchMatchNeverRules is the same rule shape with a volume nothing reaches:
+// no event overflows, so the Trigger and write paths never run.
 const benchMatchNeverRules = `
 version: 0
 chains:
@@ -127,10 +65,8 @@ chains:
         actions: [{report: {reason: bench-overflow, ttl: 24h}}]
 `
 
-// benchScenario is one throughput scenario: rules shaping the match
-// path, the tracker-cache entry cap, the fixture's rule IDs (the
-// re-arm delete's filters) and the report-lifetime episode (nil for
-// match-never).
+// benchScenario is one throughput scenario: rules, tracker-cache cap, rule
+// IDs (the re-arm delete's filters) and the report-lifetime episode.
 type benchScenario struct {
 	name     string
 	rules    string
@@ -139,8 +75,7 @@ type benchScenario struct {
 	ep       *benchEpisode
 }
 
-// benchScenarios is the scenario matrix every worker count runs
-// against. Names are stable: they are the benchmark sub-names.
+// benchScenarios is the scenario matrix; names are the benchmark sub-names.
 var benchScenarios = []benchScenario{
 	{name: "first-trigger", rules: benchEpisodeRules, ruleIDs: []string{"bench-episode"}, cacheMax: benchCacheRoomy, ep: &benchEpisodes[0]},
 	{name: "first-trigger-evicting", rules: benchEpisodeRules, ruleIDs: []string{"bench-episode"}, cacheMax: benchCacheEvicting, ep: &benchEpisodes[0]},
@@ -149,11 +84,8 @@ var benchScenarios = []benchScenario{
 	{name: "match-never-evicting", rules: benchMatchNeverRules, ruleIDs: []string{"bench-never"}, cacheMax: benchCacheEvicting},
 }
 
-// benchParams is the run-parameter clump every bench helper threads
-// through: the scenario (rules + tracker-cache cap), the pipeline
-// worker count, and the ingest socket (network and listen address —
-// empty for the no-socket pipeline variant). name renders the stable
-// benchmark sub-name from it.
+// benchParams is the run-parameter clump every bench helper threads through;
+// name renders the stable benchmark sub-name from it.
 type benchParams struct {
 	sc      benchScenario
 	workers int
@@ -168,8 +100,8 @@ func (p benchParams) name() string {
 	return fmt.Sprintf("%s/%s/workers=%d", p.network, p.sc.name, p.workers)
 }
 
-// benchConfig is the canonical test config with the scenario's cache
-// cap and worker count (the e2e_config literal, parameterized).
+// benchConfig is the canonical test config with the scenario's cache cap and
+// worker count.
 func benchConfig(p benchParams) Config {
 	return Config{
 		Ingest:   Ingest{Driver: "syslog", Parser: "nginx", Syslog: Syslog{Network: p.network, Listen: p.listen}},
@@ -180,11 +112,8 @@ func benchConfig(p benchParams) Config {
 	}
 }
 
-// newBenchDaemon assembles the daemon for a run: real rules, parser,
-// enricher, evaluation, in-memory tracker store and sqlite :memory:
-// report repository, with the frozen clock and a nop logger (no logging
-// in the measured path, no eviction record rendering). Teardown is
-// registered on tb and runs after the timed region.
+// newBenchDaemon assembles the daemon for a run with the frozen clock and a
+// nop logger; teardown is registered on tb.
 func newBenchDaemon(tb testing.TB, p benchParams) *Daemon {
 	tb.Helper()
 	chains, err := ParseRules([]byte(p.sc.rules))
@@ -192,8 +121,7 @@ func newBenchDaemon(tb testing.TB, p benchParams) *Daemon {
 		tb.Fatalf("ParseRules: %v", err)
 	}
 	// The report store sits behind a write ledger so every run's
-	// writes/op is measurable — the episode write-rate evidence lives
-	// in the baseline itself.
+	// writes/op is measurable.
 	repo, err := sqlite.Open(":memory:")
 	if err != nil {
 		tb.Fatalf("sqlite.Open: %v", err)
@@ -207,10 +135,8 @@ func newBenchDaemon(tb testing.TB, p benchParams) *Daemon {
 	return d
 }
 
-// startBenchPipeline starts the real runPipeline chain with no socket
-// at all: the benchmark feeds the daemon's line channel directly — the
-// handoff the syslog source feeds in production (H5's second half).
-// stopBenchPipeline is registered for teardown.
+// startBenchPipeline starts the runPipeline chain with no socket: the feed
+// hands lines straight to the daemon's line channel.
 func startBenchPipeline(tb testing.TB, p benchParams) *Daemon {
 	tb.Helper()
 	p.network, p.listen = "unixgram", "unused" // no socket runs; config shape only
@@ -225,9 +151,7 @@ func startBenchPipeline(tb testing.TB, p benchParams) *Daemon {
 	return d
 }
 
-// stopBenchPipeline closes the line channel, joins the workers and the
-// report repository. The daemon never started sockets, so the full
-// Shutdown path does not apply.
+// stopBenchPipeline closes the line channel and joins the workers.
 func stopBenchPipeline(tb testing.TB, d *Daemon) {
 	tb.Helper()
 	close(d.lines)
@@ -238,10 +162,8 @@ func stopBenchPipeline(tb testing.TB, d *Daemon) {
 	}
 }
 
-// startBenchIngest starts the full daemon — syslog source, pipeline
-// workers, sweeper, HTTP API — and dials the ingest socket, like the
-// binary wires it (the e2e seam, driven by benchmarks). The caller
-// owns the returned conn; daemon teardown is registered on tb.
+// startBenchIngest starts the full daemon and dials the ingest socket, like
+// the binary wires it. The caller owns the returned conn.
 func startBenchIngest(tb testing.TB, p benchParams) (*Daemon, net.Conn) {
 	tb.Helper()
 	p.listen = bench.ListenAddr(tb, p.network)
@@ -264,10 +186,8 @@ func startBenchIngest(tb testing.TB, p benchParams) (*Daemon, net.Conn) {
 	return d, conn
 }
 
-// benchWire pre-renders the corpus as it goes on the wire: tcp frames
-// one line per write with a trailing newline (the e2e send convention),
-// unixgram sends one datagram per line. Pre-rendered before the timed
-// region so no []byte conversion happens per iteration.
+// benchWire pre-renders the corpus as it goes on the wire: tcp frames one
+// line per write, unixgram sends one datagram per line.
 func benchWire(corpus *bench.Corpus, network string) [][]byte {
 	wire := make([][]byte, corpus.Len())
 	for i := range wire {
@@ -291,12 +211,8 @@ func waitLines(tb testing.TB, d *Daemon, n int) {
 	}
 }
 
-// benchRearm returns the run's re-arm step at a drain boundary — a
-// report-lifetime boundary for the re-arm scenarios (spec stories
-// 9–10). rearm-delete deletes the scenario's reports like the API's
-// delete-by-filter — the operator's re-arm lever, so the next episode
-// writes again — and rolls the write ledger's report lifetime with it.
-// first-trigger and match-never never re-arm inside a run (nil step).
+// benchRearm returns the run's re-arm step at a drain boundary: rearm-delete
+// deletes the scenario's reports; first-trigger and match-never return nil.
 func benchRearm(tb testing.TB, sc benchScenario, d *Daemon) func() {
 	tb.Helper()
 	if sc.ep == nil || sc.ep.kind != rearmDelete {
@@ -313,17 +229,8 @@ func benchRearm(tb testing.TB, sc benchScenario, d *Daemon) func() {
 	}
 }
 
-// runPipelineBench is the timed feed: send hands line i to the daemon
-// (blocking on the unbuffered handoff, so the feed rate is the
-// pipeline's sustained rate), draining every drainEvery lines and
-// after the loop so the processed count always catches up. rearm runs
-// at every drain boundary — the episode scenario's report-lifetime
-// boundary — and is timed like everything else in the modeled
-// workload. The final drain runs inside the timed region (Loop stops
-// the timer when it returns, so it is restarted around the drain):
-// every line counted in lines/s and in ns/op, B/op, allocs/op is fully
-// processed before the timer stops. Returns the lines fed (one op
-// each).
+// runPipelineBench is the timed feed, draining every drainEvery lines and
+// after the loop inside the timed region so no counted line is left running.
 func runPipelineBench(b *testing.B, d *Daemon, send func(i int), rearm func()) int {
 	b.Helper()
 	var lines int
@@ -343,8 +250,7 @@ func runPipelineBench(b *testing.B, d *Daemon, send func(i int), rearm func()) i
 	return lines
 }
 
-// benchGC is the runtime's GC accounting over the measured region:
-// cpu-seconds and GC cycles, read through runtime/metrics.
+// benchGC is the runtime's GC accounting over the measured region.
 type benchGC struct {
 	gcSeconds  float64 // /cpu/classes/gc/total:cpu-seconds
 	cpuSeconds float64 // /cpu/classes/total:cpu-seconds
@@ -366,13 +272,8 @@ func readGC() benchGC {
 	}
 }
 
-// reportBenchStats records throughput and the bookkeeping beside it:
-// evictions/op and gc-cpu-frac as metrics (the allocs/op and B/op come
-// from -benchmem), and the full /stats snapshot in the log. gc-cpu-frac
-// is the GC's share of total CPU capacity (GOMAXPROCS × wall) over the
-// measured region: Δ /cpu/classes/gc/total over Δ /cpu/classes/total
-// (runtime/metrics) — marking, assist and scavenge work included, not
-// just stop-the-world pauses (the earlier gc-pause-frac substitution).
+// reportBenchStats records throughput plus evictions/op, gc-cpu-frac and the
+// /stats snapshot beside it.
 func reportBenchStats(b *testing.B, d *Daemon, lines int, before, after benchGC) {
 	b.Helper()
 	bench.ReportLinesPerSec(b, lines)
@@ -380,9 +281,8 @@ func reportBenchStats(b *testing.B, d *Daemon, lines int, before, after benchGC)
 	writes := d.repo.(*writeLedger).total()
 	if lines > 0 {
 		b.ReportMetric(float64(st.TrackerCache.Evictions)/float64(lines), "evictions/op")
-		// writes/op is the episode evidence in the baseline itself:
-		// one write per (rule, Target) per report lifetime, never one
-		// per overflowing event.
+		// writes/op should show one write per (rule, Target) per report
+		// lifetime, never one per overflowing event.
 		b.ReportMetric(float64(writes)/float64(lines), "writes/op")
 	}
 	if dCPU := after.cpuSeconds - before.cpuSeconds; dCPU > 0 {
@@ -396,10 +296,7 @@ func reportBenchStats(b *testing.B, d *Daemon, lines int, before, after benchGC)
 }
 
 // BenchmarkPipeline measures sustained throughput of the assembled
-// runPipeline chain per worker count and scenario, with no network in
-// the timed path: corpus lines go straight onto the daemon's line
-// channel. The worker-scaling curve and its flatten point come from
-// comparing the workers=N sub-benchmarks of one scenario.
+// runPipeline chain per worker count and scenario, with no network.
 func BenchmarkPipeline(b *testing.B) {
 	for _, sc := range benchScenarios {
 		for _, w := range benchWorkers {
@@ -417,12 +314,8 @@ func BenchmarkPipeline(b *testing.B) {
 	}
 }
 
-// BenchmarkPipelineIngest is the ingest-inclusive variant: the same
-// pipeline driven over a real loopback syslog socket (tcp or unixgram),
-// capturing go-syslog's format detection and the parts→lines channel
-// handoff on top of the pipeline (H5). Real-socket timing is not
-// perfectly deterministic — the lines/s numbers carry run-to-run
-// variance the deterministic corpus and frozen clock cannot remove.
+// BenchmarkPipelineIngest is the ingest-inclusive variant over a real loopback
+// syslog socket (tcp or unixgram); socket timing carries run-to-run variance.
 func BenchmarkPipelineIngest(b *testing.B) {
 	for _, network := range []string{"tcp", "unixgram"} {
 		for _, sc := range benchScenarios {
@@ -447,22 +340,12 @@ func BenchmarkPipelineIngest(b *testing.B) {
 	}
 }
 
-// TestBenchPipelineScenariosMatchTheirNames pins the benchmark
-// scenario contracts at the assembled seam: every line is counted
-// exactly once (received = parsed, nothing dropped), the roomy cap
-// never evicts and the evicting cap does, and the write cells follow
-// the episode contract — one write per (rule, Target) per report
-// lifetime, exactly where the fixture's episodes Trigger. Expected
-// Triggers and write cells are derived from the fixture events alone
-// (episodeOracle), so they can disagree with the pipeline. Under the
-// evicting cap cache churn resets accumulation episodes mid-flight, so
-// only the write contract and its bounds stay deterministic — the
-// exact counts live on the roomy cells.
+// TestBenchPipelineScenariosMatchTheirNames pins the scenario contracts:
+// exact line accounting and one write per (rule, Target) per report lifetime.
 func TestBenchPipelineScenariosMatchTheirNames(t *testing.T) {
 	const batches = 2
 	lines := int64(batches * drainEvery)
-	// Distinct keys exercise both cache namespaces: ~250 filesize
-	// paths plus ~250 tracker Targets — above benchCacheEvicting.
+	// Distinct keys exercise both cache namespaces, above benchCacheEvicting.
 	corpus := bench.NewCorpus(bench.Seed, bench.ShapeFull, bench.DistUniform, drainEvery)
 
 	tests := []struct {
@@ -512,10 +395,8 @@ func TestBenchPipelineScenariosMatchTheirNames(t *testing.T) {
 					t.Errorf("report writes = %d, want 0 (match-never never writes)", n)
 				}
 			case tt.wantEvicted:
-				// Cache churn resets accumulation episodes mid-flight:
-				// exact counts are gone, the write contract is not — one
-				// write per (rule, Target) per report lifetime, and never
-				// more writes than the un-evicting episodes have Triggers.
+				// Cache churn resets episodes mid-flight: only the write
+				// contract stays deterministic.
 				for cell, n := range ledger.counts() {
 					if n != 1 {
 						t.Errorf("write cell %+v = %d, want 1 (one write per (rule, Target) per report lifetime)", cell, n)
@@ -532,8 +413,8 @@ func TestBenchPipelineScenariosMatchTheirNames(t *testing.T) {
 			if err != nil {
 				t.Fatalf("List: %v", err)
 			}
-			// What GET /reports serves after the run: the final report
-			// lifetime's writes (earlier lifetimes' rows were deleted).
+			// Only the final report lifetime's writes remain (earlier
+			// lifetimes' rows were deleted).
 			wantRecs := 0
 			if oracle != nil {
 				for cell := range oracle.writes {

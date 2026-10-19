@@ -7,10 +7,8 @@ import (
 	"github.com/HT4w5/bandage/internal/bench"
 )
 
-// BenchmarkProgressBump measures the per-line bookkeeping alone (H2):
-// progress.bump is one global mutex plus close(ch)/make(chan) per
-// processed line — its serial cost, and its contention when every
-// worker bumps concurrently. One op is one processed line.
+// BenchmarkProgressBump measures progress.bump bookkeeping cost per line:
+// serial cost and contention when workers bump concurrently.
 func BenchmarkProgressBump(b *testing.B) {
 	b.Run("serial", func(b *testing.B) {
 		p := newProgress()

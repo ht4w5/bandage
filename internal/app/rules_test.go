@@ -12,9 +12,8 @@ import (
 	"github.com/HT4w5/bandage/internal/identity"
 )
 
-// The rules file (format version 0) and its load-time validation: this is
-// the --test validation surface, so every rule gets a failing and a
-// passing case.
+// Rules file (format version 0) and its load-time validation: every rule
+// gets a failing and a passing case.
 const validRules = `
 version: 0
 
@@ -99,8 +98,8 @@ func TestParseRulesValid(t *testing.T) {
 	}
 }
 
-// target_prefix defaults to {32, 64} and each family defaults
-// independently when only the other is declared (PLAN §1).
+// TestParseRulesTargetPrefixDefaults: target_prefix defaults to {32, 64} and
+// each family defaults independently when only the other is declared.
 func TestParseRulesTargetPrefixDefaults(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -326,7 +325,6 @@ chains:
 		{name: "volume method on bandwidth rejected", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker:\n          track: bandwidth\n          leak: 1\n          volume: {method: constant, value: 5}\n", wantErr: "volume methods are replay-only"},
 
 		// Target aggregation (target_prefix).
-		// Target aggregation (target_prefix).
 		{name: "target prefix boundary values accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2, target_prefix: {ipv4: 32, ipv6: 64}}\n"},
 		{name: "zero target prefix accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2, target_prefix: {ipv4: 0, ipv6: 0}}\n"},
 		{name: "target prefix ipv4 above 32 rejected", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2, target_prefix: {ipv4: 33, ipv6: 64}}\n", wantErr: "target_prefix.ipv4"},
@@ -335,8 +333,7 @@ chains:
 		{name: "target prefix ipv6 negative rejected", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2, target_prefix: {ipv6: -2}}\n", wantErr: "target_prefix.ipv6"},
 		{name: "bad target prefix names rule and field", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: my-rule\n        tracker: {track: rate, leak: 1, volume: 2, target_prefix: {ipv6: 65}}\n", wantErr: `rule "my-rule": tracker.target_prefix.ipv6`},
 
-		// Actions (report, log, goto, jump, stop) and their YAML shapes
-		// (DECISIONS §9).
+		// Actions (report, log, goto, jump, stop) and their YAML shapes.
 		{name: "unknown action rejected", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        tracker: {track: rate, leak: 1, volume: 2}\n        actions: [{ban: 15m}]\n", wantErr: "unknown action"},
 		{name: "stop accepted", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [stop]\n"},
 		{
@@ -381,7 +378,7 @@ chains:
 		{name: "log bad level rejected", yaml: "version: 0\nchains:\n  - name: a\n    rules:\n      - id: r\n        actions: [{log: \"verbose,x\"}]\n", wantErr: "level"},
 
 		// The goto/jump chain graph: unique chain names, resolvable
-		// targets, acyclic (a DAG — shared target chains are allowed).
+		// targets, acyclic (a DAG; shared target chains are allowed).
 		{
 			name: "duplicate chain names rejected",
 			yaml: `
@@ -523,9 +520,7 @@ func TestPrintsValidatedPlan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Test error: %v", err)
 	}
-	// The --test plan output opens with the build identity header
-	// (spec story 6, ticket 02): the operator knows which build
-	// produced the plan.
+	// The --test plan output opens with the build identity header.
 	if !strings.HasPrefix(plan, identity.Header()+"\n") {
 		t.Errorf("plan does not open with the identity header %q:\n%s", identity.Header(), plan)
 	}
@@ -565,7 +560,7 @@ func TestFailsOnBadRules(t *testing.T) {
 	}
 }
 
-// The --test plan shows every action of every rule (DECISIONS §9).
+// TestShowsActionsInPlan: the --test plan shows every action of every rule.
 func TestShowsActionsInPlan(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "bandage.yml")
@@ -599,8 +594,8 @@ func TestShowsActionsInPlan(t *testing.T) {
 	}
 }
 
-// The --test command rejects unsound goto/jump graphs and accepts DAGs:
-// failing and passing cases on the CLI validation surface.
+// TestValidatesChainGraph: the --test command rejects unsound goto/jump
+// graphs and accepts DAGs.
 func TestValidatesChainGraph(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -684,8 +679,8 @@ chains:
 	}
 }
 
-// routingRules is a dispatch DAG (several chains reaching one topic
-// chain) exercising the full action vocabulary.
+// routingRules is a dispatch DAG (several chains reaching one topic chain)
+// exercising the full action vocabulary.
 const routingRules = `
 version: 0
 chains:
@@ -724,9 +719,8 @@ func TestLoadRulesFromFile(t *testing.T) {
 	}
 }
 
-// Filter expressions on rules: syntax and value errors reject the rules
-// file with filter: L:C positions (the --test contract); valid filters
-// select events at the rule level.
+// TestParseRulesFilterErrors: syntax and value errors reject the rules file
+// with filter: L:C positions; valid filters select events at the rule level.
 func TestParseRulesFilterErrors(t *testing.T) {
 	const doc = `version: 0
 chains:
@@ -783,8 +777,8 @@ chains:
 	}
 }
 
-// The --test plan prints each rule's filter source expression (the
-// effective one: "any" where the rule omits it).
+// TestPrintsFilterSource: the --test plan prints each rule's effective
+// filter source expression ("any" where the rule omits it).
 func TestPrintsFilterSource(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "bandage.yml")
@@ -819,8 +813,8 @@ chains:
 	}
 }
 
-// Unparseable filters reject the rules file at load: --test reports
-// filter: L:C with the rule id and no sockets open.
+// TestReportsFilterErrorPosition: unparseable filters reject the rules file
+// at load, reporting filter: L:C with the rule id.
 func TestReportsFilterErrorPosition(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "bandage.yml")
@@ -848,11 +842,8 @@ chains:
 	}
 }
 
-// The replay tracker (track: replay): a plain scalar volume is the
-// constant method, and the volume-method block configures tolerance as a
-// function of file size (DECISIONS §8). Replay leak is a
-// fraction-per-second number; its cache TTL is derived per event, so the
-// build-time TTL stays zero.
+// TestParseRulesReplayVolumeMethods: a plain scalar volume is the constant
+// method; the volume-method block configures tolerance as a function of size.
 func TestParseRulesReplayVolumeMethods(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -876,7 +867,7 @@ func TestParseRulesReplayVolumeMethods(t *testing.T) {
 			wantVol:  5,
 		},
 		{
-			name:     "clamped-linear (PLAN §1 example)",
+			name:     "clamped-linear (PLAN \u00a71 example)",
 			volume:   "volume: {method: clamped-linear, intercept: 5, slope: -1, min: 2, max: 5}",
 			wantDesc: "clamped-linear(intercept=5 slope=-1 min=2 max=5)",
 			size:     1e9,
@@ -927,9 +918,8 @@ func TestParseRulesReplayVolumeMethods(t *testing.T) {
 	}
 }
 
-// Load-time validation of tracker volume configuration (spec: user
-// story 21): a volume method is replay-only and each method validates
-// its own parameters. Failing and passing cases.
+// TestParseRulesVolumeValidation: a volume method is replay-only and each
+// method validates its own parameters.
 func TestParseRulesVolumeValidation(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1009,7 +999,7 @@ func TestParseRulesVolumeValidation(t *testing.T) {
 			wantErr: "volume.value: must be positive",
 		},
 		{
-			name:    "clamped-linear accepted (PLAN §1 example)",
+			name:    "clamped-linear accepted (PLAN \u00a71 example)",
 			tracker: "track: replay\n          leak: 0.1\n          volume: {method: clamped-linear, intercept: 5, slope: -1, min: 2, max: 5}",
 		},
 		{
@@ -1104,8 +1094,8 @@ func TestParseRulesVolumeValidation(t *testing.T) {
 	}
 }
 
-// The --test plan shows the replay tracker's configuration: the volume
-// method (or scalar) and its per-event TTL derivation.
+// TestShowsReplayVolumeMethod: the --test plan shows the replay tracker's
+// volume method (or scalar) and its per-event TTL derivation.
 func TestShowsReplayVolumeMethod(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "bandage.yml")

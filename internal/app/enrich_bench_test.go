@@ -11,13 +11,8 @@ import (
 	"github.com/HT4w5/bandage/internal/infra/cache/memory"
 )
 
-// BenchmarkEnrichMemory is the production variant of BenchmarkEnrich
-// (spec hot-path inventory, stage 3): FilesizeEnricher.Enrich over the
-// real memory tracker store behind the FilesizeCache port
-// (memory.NewFilesize) — the stage's per-line cost as the pipeline pays
-// it. The stub-port variant lives beside the domain code in
-// domain/enrichment; the domain lint keeps this adapter out of that
-// package. One op is one pre-parsed corpus event, i.e. one log line.
+// BenchmarkEnrichMemory measures FilesizeEnricher.Enrich over the real memory
+// tracker store; one op is one pre-parsed corpus event (one log line).
 func BenchmarkEnrichMemory(b *testing.B) {
 	corpus := bench.NewCorpus(bench.Seed, bench.ShapeFull, bench.DistZipf, 1024)
 	store := memory.New(benchCacheRoomy, benchClock, zerolog.Nop())
