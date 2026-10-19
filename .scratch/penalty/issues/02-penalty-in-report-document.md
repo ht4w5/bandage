@@ -4,12 +4,19 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] `GET /reports` report entries carry the nested penalty; `rate` is present exactly for `limit-*` actions and absent otherwise
-- [ ] `rate` is serialized as an integer ≥ 1 in the unit named by the action (pkt/s, response-payload B/s, req/s)
-- [ ] The Trigger copies the penalty from the report action into the report record
-- [ ] The penalty survives a daemon restart (store reopen) with its report
-- [ ] While a report is alive, the penalty freezes with it, matching its Sample
-- [ ] After `DELETE /reports` or expiry, the replacement Trigger's report carries the then-loaded rules' penalty
-- [ ] Verified at the assembled-daemon seam: raw nginx-JSON syslog messages in, `GET /reports` JSON out, injected clock
+- [x] `GET /reports` report entries carry the nested penalty; `rate` is present exactly for `limit-*` actions and absent otherwise
+- [x] `rate` is serialized as an integer ≥ 1 in the unit named by the action (pkt/s, response-payload B/s, req/s)
+- [x] The Trigger copies the penalty from the report action into the report record
+- [x] The penalty survives a daemon restart (store reopen) with its report
+- [x] While a report is alive, the penalty freezes with it, matching its Sample
+- [x] After `DELETE /reports` or expiry, the replacement Trigger's report carries the then-loaded rules' penalty
+- [x] Verified at the assembled-daemon seam: raw nginx-JSON syslog messages in, `GET /reports` JSON out, injected clock
+
+Implemented on integration branch `feat/penalty` (merge commit
+`a8d1a58`; cross-ticket code-review fixes through `ef0e6d9`, incl.
+strict `Penalty.MarshalJSON`: a limit penalty without a rate now errors
+instead of silently omitting `rate`). Context: spec `../spec.md`, ADR
+0008/0010; wire contract `docs/reports.md`; successor
+`03-canonical-report-document.md`.

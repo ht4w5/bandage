@@ -4,10 +4,16 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Shipped snippet contains exactly one directive: `log_format bandage escape=json` with exactly the seven mapped fields, `time` as a quoted `$msec` string
-- [ ] No reserved superset fields, no vhost, no usage comments in the file
-- [ ] A parser-contract test proves a line in the shipped format parses into an Event, with `agent` reaching filters
-- [ ] Ingest docs name the format "the bandage nginx log format" and point at the shipped snippet, with a "(flux-compatible)" migration note
-- [ ] Parser comment and daemon config comment updated away from "flux log format"
+- [x] Shipped snippet contains exactly one directive: `log_format bandage escape=json` with exactly the seven mapped fields, `time` as a quoted `$msec` string
+- [x] No reserved superset fields, no vhost, no usage comments in the file
+- [x] A parser-contract test proves a line in the shipped format parses into an Event, with `agent` reaching filters
+- [x] Ingest docs name the format "the bandage nginx log format" and point at the shipped snippet, with a "(flux-compatible)" migration note
+- [x] Parser comment and daemon config comment updated away from "flux log format"
+
+Implemented on integration branch `feat/penalty` (merge commit
+`0ee47ff`; cross-ticket code-review fixes through `ef0e6d9`, incl. the
+PLAN.md log-format mentions). Context: spec `../spec.md`; artifact
+`configs/nginx/bandage_log.conf`; pins `internal/infra/parse/nginx/nginx_test.go`
+and `internal/app/shippedformat_test.go`.

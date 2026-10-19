@@ -4,11 +4,18 @@
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Report-format doc published: envelope, record fields (including penalty), timestamp rules, example document
-- [ ] Intent of each of the five penalty values defined; advisory clause ("the consumer decides whether and how to apply it") stated explicitly
-- [ ] Evolution policy recorded: additive fields don't bump `version`; breaking changes, including new enum values, do
-- [ ] The example document is authored so a driven daemon scenario reproduces it exactly (the seam's injected clock already mirrors the plan example's timestamps)
-- [ ] A test at the assembled-daemon seam asserts the `GET /reports` document matches the doc's example byte-for-byte
-- [ ] The plan's report-record and rules-validation sections updated to reference the contract doc
+- [x] Report-format doc published: envelope, record fields (including penalty), timestamp rules, example document
+- [x] Intent of each of the five penalty values defined; advisory clause ("the consumer decides whether and how to apply it") stated explicitly
+- [x] Evolution policy recorded: additive fields don't bump `version`; breaking changes, including new enum values, do
+- [x] The example document is authored so a driven daemon scenario reproduces it exactly (the seam's injected clock already mirrors the plan example's timestamps)
+- [x] A test at the assembled-daemon seam asserts the `GET /reports` document matches the doc's example byte-for-byte
+- [x] The plan's report-record and rules-validation sections updated to reference the contract doc
+
+Implemented on integration branch `feat/penalty` (merge commit
+`e011cdf`; cross-ticket code-review fixes through `ef0e6d9`, incl. the
+re-captured example timeline: the pinned scenario's sample event times
+now sit seconds before their report's wall-clock write). Context: spec
+`../spec.md`; contract `docs/reports.md` (its first json fence is the
+pinned example); byte pin `internal/app/reportdoc_test.go`.
