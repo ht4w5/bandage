@@ -366,45 +366,19 @@ column for the record body.
 ### Report record
 
 The record is deliberately small: provenance, expiry, the tracker reading
-that justified it, and the triggering sample. No history counters.
-
-```json
-{
-  "version": 0,
-  "generated_at": "2025-10-17T18:30:00Z",
-  "reports": [
-    {
-      "rule": "sustained-iso-egress",
-      "chain": "download-abuse",
-      "reason": "iso-egress-overflow",
-      "target": "203.0.113.0/24",
-      "created_at": "2025-10-17T10:02:11Z",
-      "updated_at": "2025-10-17T18:29:40Z",
-      "expires_at": "2025-10-24T18:29:40Z",
-      "tracker": {
-        "track": "bandwidth",
-        "value": 102400000,
-        "leak": 1000000,
-        "volume": 100000000
-      },
-      "sample": {
-        "time": "2025-10-17T18:29:40Z",
-        "path": "/releases/24.04.iso",
-        "agent": "Wget/1.21",
-        "status": 200,
-        "sent": 123456,
-        "size": 1234567890
-      }
-    }
-  ]
-}
-```
+that justified it, the triggering sample, and the advisory penalty. No
+history counters. The canonical shape — envelope, record fields
+(including the penalty), timestamp rules, ordering, canonical
+serialization and a byte-exact example — is the consumer contract in
+[docs/reports.md](docs/reports.md), which supersedes the example
+formerly given here.
 
 One entry per (rule, target). `tracker` and `sample` are the snapshot from
 the last trigger; timestamps RFC 3339 UTC. `created_at` is fixed at the
 trigger that created the row; `updated_at` and `expires_at` (`now + ttl`,
 recomputed regardless of any previous value) reflect the latest trigger.
-Reports are sorted by `created_at` descending.
+Reports are sorted by `created_at` descending, then `rule` and `target`
+ascending.
 
 ## 7. HTTP API
 
@@ -442,6 +416,11 @@ No `/v1` prefix, no debug endpoints. The API never writes reports; only
   `penalty` values, `rate` with `drop`/`reject`, missing or non-positive
   `rate` on `limit-*` penalties, out-of-range `target_prefix`
   (ipv4 ≤ 32, ipv6 ≤ 64).
+- The report document served by `GET /reports` is the canonical contract
+  in [docs/reports.md](docs/reports.md) — envelope, record fields
+  (including the penalty), timestamps, ordering, evolution policy —
+  pinned byte-for-byte by a test that reproduces the doc's example from
+  a driven daemon run.
 - No hot reload in v0: config and rules changes take effect on restart.
 - `bandage -t` (`--test`) prints the validated chain plan, headed by the
   build identity header, and exits without ingesting. Command-line

@@ -8,6 +8,8 @@ tooling turns into ban rules.
 
 - [docs/ingest.md](docs/ingest.md) — ingest transports: choosing
   udp/unixgram/tcp, the tcp framing cost, the UDP kernel-buffer caveat
+- [docs/reports.md](docs/reports.md) — the report document contract:
+  envelope, record fields and penalty, evolution policy
 - [docs/rules.md](docs/rules.md) — writing rules, Match/Trigger
   semantics, and the tracker-less tripwire pattern
 - [docs/storage.md](docs/storage.md) — the report store on sqlite WAL:
