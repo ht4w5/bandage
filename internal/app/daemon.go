@@ -25,29 +25,25 @@ import (
 	"github.com/HT4w5/bandage/internal/infra/persistence/sqlite"
 )
 
-// sweepInterval is the internal cadence of the tracker cache expiry
-// sweep, the expired-report sweeper and the periodic statistics log.
+// sweepInterval is the shared cadence of the cache and report expiry
+// sweeps and the periodic statistics log.
 const sweepInterval = time.Minute
 
-// File-size enrichment parameters (DECISIONS §3): the EWMA smoothing
-// window (alpha = 1/period) and the warm-up sample gate. Internal
-// constants — the spec's config surface has no enrichment knobs.
+// File-size enrichment parameters (DECISIONS section 3): EWMA window
+// and warm-up sample gate. Not configurable by design.
 const (
 	filesizePeriod     = 5
 	filesizeMinSamples = 5
 )
 
-// EventParser is the parser port beside its consumer: one raw log line in,
-// one domain Event out (or an error, which drops and counts the line).
+// EventParser turns one raw log line into a domain Event; an error
+// drops and counts the line.
 type EventParser interface {
 	Parse(line []byte) (bandage.Event, error)
 }
 
-// counters is the drop accounting behind the pipeline block: logged
-// periodically and served in /stats (DECISIONS §6, ADR 0006). It and
-// its accessor are unexported: the only readers are the Daemon's Stats
-// snapshot and in-package tests — no exported API exists solely for
-// tests.
+// counters is the drop accounting behind the statistics log and
+// /stats (DECISIONS section 6, ADR 0006).
 type counters struct {
 	Received int64 // raw lines received from the wire
 	Parsed   int64 // lines parsed into events
@@ -68,35 +64,25 @@ func WithClock(now func() time.Time) Option {
 	return func(o *options) { o.now = now }
 }
 
-// WithLogger injects the program-wide logger: the command passes the
-// one logger built from config (ADR 0005), and tests capture records
-// through the same injection point (spec: Log capture) — the daemon's
-// logging is the contract for evictions and log actions.
+// WithLogger injects the program-wide logger (ADR 0005).
 func WithLogger(l zerolog.Logger) Option {
 	return func(o *options) { o.logger = l }
 }
 
-// reportStore is the daemon's report persistence: the domain report
-// port plus Close. The sqlite adapter satisfies it. The raw store sits
-// behind the report service: every report mutation goes through the
-// service, and the daemon holds the store itself for Close (and for the
-// direct reads in tests and benchmarks).
+// reportStore is the report repository plus Close. Report mutations go
+// through the report service; the store itself is kept only for Close.
 type reportStore interface {
 	report.Repository
 	Close() error
 }
 
-// withStore substitutes the report store. It is unexported like every
-// test-only seam: the binary always wires sqlite; tests substitute a
-// store to keep a write in flight and observe shutdown with the store
-// wedged.
+// withStore substitutes the report store (test-only seam).
 func withStore(s reportStore) Option {
 	return func(o *options) { o.store = s }
 }
 
-// Daemon is the assembled analyzer: syslog ingest → nginx JSON parser →
-// file-size enrichment → evaluation → report service → sqlite, served
-// over HTTP.
+// Daemon is the assembled analyzer: syslog ingest -> parse -> enrich ->
+// evaluate -> report -> sqlite, served over HTTP.
 type Daemon struct {
 	cfg     Config
 	chains  []bandage.Chain
@@ -134,18 +120,14 @@ type Daemon struct {
 	shutdown  error
 }
 
-// New assembles the daemon. Config must already be validated (strictly
-// decoded before any socket opens); the worker count must be at least
-// 1 (spec story 16).
+// New assembles the daemon from validated config; Pipeline.Workers must
+// be at least 1.
 func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
 	if cfg.Pipeline.Workers < 1 {
 		return nil, fmt.Errorf("app: pipeline.workers must be at least 1 (got %d)", cfg.Pipeline.Workers)
 	}
 	var o options
 	WithClock(time.Now)(&o)
-	// The default logger is built from config like the program-wide one
-	// (ADR 0005); the command passes its flag-adjusted instance and
-	// tests pass their capture.
 	o.logger = NewLogger(os.Stderr, cfg.Log.Level)
 	for _, opt := range opts {
 		opt(&o)
@@ -186,31 +168,16 @@ func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
 	return d, nil
 }
 
-// Start opens the ingest and API listeners and starts the pipeline:
-// one pipeline goroutine per configured worker reading the ingest line
-// channel, plus the sweeper (flux-engine style). lifetime spans the
-// daemon's run — the pipeline and sweeper thread it through every call
-// in place of ad-hoc background contexts. Its cancellation is the
-// daemon's bounded-shutdown backstop, so the work context is detached
-// from the caller's: a SIGINT/SIGTERM starts the graceful drain in
-// Shutdown, never an abort of in-flight work (spec: Daemon context).
+// Start opens the listeners and starts the pipeline and sweeper.
+// lifetime is detached from the caller's context; only Shutdown cancels it.
 func (d *Daemon) Start(lifetime context.Context) error {
 	d.ctx, d.cancel = context.WithCancel(context.WithoutCancel(lifetime))
 	d.startedAt = d.now()
-	// Suppression state is re-derived from the report table at startup
-	// (spec story 13, ADR 0008): alive reports suppress the next
-	// Trigger's write, deleted or expired ones do not. Startup ordering:
-	// this runs before the workers start, so suppression is complete
-	// before the first event evaluates — startup traffic must not write
-	// over reports that are still alive. The service is race-free
-	// against Triggers regardless (Rebuild holds the report service's
-	// lock across the derivation and keeps in-flight writes), but only
-	// this ordering makes the derivation complete before ingest.
+	// Rebuild must run before the workers start: suppression state
+	// (ADR 0008) has to be complete before the first event evaluates.
 	if err := d.reports.Rebuild(d.ctx, d.now()); err != nil {
 		return fmt.Errorf("reports: rebuild live-report set: %w", err)
 	}
-	// The startup record names the running build: the log stream itself
-	// identifies what is deployed (spec story 14).
 	d.logger.Info().
 		Str("name", identity.Name).
 		Str("version", identity.Version()).
@@ -243,8 +210,8 @@ func (d *Daemon) Start(lifetime context.Context) error {
 	return nil
 }
 
-// runPipeline parses, enriches and evaluates raw lines; one goroutine
-// per worker runs it. Bad lines are dropped and counted.
+// runPipeline parses, enriches and evaluates raw lines; bad lines are
+// dropped and counted.
 func (d *Daemon) runPipeline() {
 	defer d.wg.Done()
 	for line := range d.lines {
@@ -267,9 +234,8 @@ func (d *Daemon) runPipeline() {
 	}
 }
 
-// sweep periodically expires tracker cache entries, logs the periodic
-// statistics line (drop accounting and cache stats, DECISIONS §6) and
-// deletes expired reports.
+// sweep periodically expires cache entries, logs the statistics line
+// and deletes expired reports.
 func (d *Daemon) sweep() {
 	defer d.wg.Done()
 	t := time.NewTicker(sweepInterval)
@@ -293,11 +259,8 @@ func (d *Daemon) sweep() {
 	}
 }
 
-// logStatistics emits the periodic statistics record (DECISIONS §6):
-// drop accounting and cache statistics under their long-standing field
-// names. It renders from the same Stats snapshot /stats serves, so the
-// two always agree; the sweep ticker calls it at the internal cadence
-// and tests drive it directly (like sweepOnce), never by sleeping.
+// logStatistics emits the periodic statistics record (DECISIONS
+// section 6) from the same Stats snapshot /stats serves.
 func (d *Daemon) logStatistics() {
 	s := d.Stats()
 	d.logger.Info().
@@ -307,29 +270,16 @@ func (d *Daemon) logStatistics() {
 		Msg("statistics")
 }
 
-// sweepOnce runs one sweeper pass: it deletes expired reports through
-// the report service at the injected wall clock and returns the number
-// of deleted rows. The periodic sweeper calls it once per tick; tests
-// drive a pass directly, so expiry behavior needs no sleeping.
+// sweepOnce deletes expired reports at the injected wall clock and
+// returns the number deleted.
 func (d *Daemon) sweepOnce(ctx context.Context) (int, error) {
 	return d.reports.DeleteExpired(ctx, d.now())
 }
 
-// Shutdown drains the pipeline and closes every resource, in that
-// order: the ingest stops, the line channel closes and the workers
-// finish the events already in flight — their report upserts complete
-// — before the resources close. Shutdown is bounded by the caller's
-// deadline even if a store call never returns: only when ctx expires
-// does the daemon cancel the lifetime context to abort stragglers and
-// return without waiting for them (spec: Daemon context). The lifetime
-// context is cancelled either way before Shutdown returns, so none
-// leaks. Idempotent.
+// Shutdown drains in-flight work and closes every resource, bounded by
+// ctx; the lifetime context never outlives it. Idempotent.
 func (d *Daemon) Shutdown(ctx context.Context) error {
 	d.once.Do(func() {
-		// Context hygiene: the lifetime context is cancelled before
-		// Shutdown returns — after the drain on the clean path, as the
-		// bounded backstop on the deadline path — so no live context
-		// outlives the daemon.
 		defer d.cancel()
 		done := make(chan error, 1)
 		go func() {
@@ -352,10 +302,8 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 		case err := <-done:
 			d.shutdown = err
 		case <-ctx.Done():
-			// Bounded backstop: the deadline expired with stragglers
-			// still in flight (e.g. a store call that never returns).
-			// Cancel the lifetime context to abort them and return
-			// without waiting; the drain goroutine finishes them off.
+			// Deadline expired with stragglers in flight: abort them
+			// via the lifetime context and return without waiting.
 			d.cancel()
 			d.shutdown = ctx.Err()
 		}
@@ -363,8 +311,7 @@ func (d *Daemon) Shutdown(ctx context.Context) error {
 	return d.shutdown
 }
 
-// apiAddr is the bound API listen address (host:port), read by
-// in-package tests through the HTTP API.
+// apiAddr is the bound API listen address (host:port).
 func (d *Daemon) apiAddr() string {
 	if d.apiLn == nil {
 		return ""
@@ -372,15 +319,13 @@ func (d *Daemon) apiAddr() string {
 	return d.apiLn.Addr().String()
 }
 
-// waitProcessed blocks until n raw lines have been fully processed
-// (parsed and evaluated, or dropped) or ctx is done. It is the in-package
-// test driver for the pipeline; the binary never waits on it.
+// waitProcessed blocks until n lines are processed (or dropped) or ctx
+// is done. Test-only.
 func (d *Daemon) waitProcessed(ctx context.Context, n int64) error {
 	return d.processed.wait(ctx, n)
 }
 
-// counters returns the drop accounting counters — the internal
-// accessor, distinct from the exported Stats snapshot it feeds.
+// counters returns the drop accounting snapshot that feeds Stats.
 func (d *Daemon) counters() counters {
 	return counters{
 		Received: d.received.Load(),
@@ -389,11 +334,8 @@ func (d *Daemon) counters() counters {
 	}
 }
 
-// Stats assembles the /stats snapshot (httpapi.StatsSource, satisfied
-// structurally): the build identity module, the cumulative pipeline
-// counters and the tracker cache statistics, all since start. The
-// periodic statistics log line renders from the same snapshot, so its
-// counters always agree with /stats.
+// Stats assembles the /stats snapshot (httpapi.StatsSource): build
+// identity, pipeline counters and cache statistics since start.
 func (d *Daemon) Stats() httpapi.Stats {
 	c := d.counters()
 	cs := d.cache.Statistics()
@@ -425,8 +367,7 @@ func (d *Daemon) Stats() httpapi.Stats {
 	}
 }
 
-// progress counts processed lines and wakes waiters (no polling, no
-// sleeps).
+// progress counts processed lines and wakes waiters without polling.
 type progress struct {
 	mu sync.Mutex
 	n  int64

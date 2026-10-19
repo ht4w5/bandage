@@ -10,8 +10,7 @@ import (
 )
 
 // Test validates the config and rules files and returns the validated
-// plan (bandage --test): chains → rules with filter, tracker config and
-// actions. It opens no sockets and ingests nothing.
+// plan (bandage --test). It opens no sockets.
 func Test(configPath, rulesPath string) (string, error) {
 	cfg, err := LoadConfig(configPath)
 	if err != nil {
@@ -26,7 +25,6 @@ func Test(configPath, rulesPath string) (string, error) {
 
 func planText(cfg Config, chains []bandage.Chain) string {
 	var b strings.Builder
-	// The plan opens with the build identity header (spec story 6).
 	fmt.Fprintf(&b, "%s\n", identity.Header())
 	fmt.Fprintf(&b, "config: ingest syslog/%s %s %s\n", cfg.Ingest.Parser, cfg.Ingest.Syslog.Network, cfg.Ingest.Syslog.Listen)
 	fmt.Fprintf(&b, "config: db %s %s\n", cfg.DB.Driver, cfg.DB.SQLite.Path)
@@ -40,8 +38,6 @@ func planText(cfg Config, chains []bandage.Chain) string {
 			if rule.Tracker == nil {
 				fmt.Fprintf(&b, "    tracker: none\n")
 			} else {
-				// Replay derives its cache TTL per event from the volume
-				// method output (DECISIONS §8).
 				ttl := rule.Tracker.TTL.String()
 				if rule.Tracker.Kind == bandage.TrackReplay {
 					ttl = "per-event"
@@ -50,8 +46,7 @@ func planText(cfg Config, chains []bandage.Chain) string {
 					rule.Tracker.Kind, fmtFloat(rule.Tracker.Leak), rule.Tracker.VolumeDesc(), ttl)
 			}
 			for _, action := range rule.Actions {
-				// The describer cannot fail; Accept is the single action
-				// dispatch point shared with evaluation.
+				// The describer cannot fail; Accept is shared with evaluation.
 				_ = action.Accept(actionDescriber{b: &b})
 			}
 		}
@@ -59,8 +54,8 @@ func planText(cfg Config, chains []bandage.Chain) string {
 	return b.String()
 }
 
-// actionDescriber is the --test side of Action.Accept: it appends one
-// action line to the validated plan.
+// actionDescriber is the --test side of Action.Accept, appending one
+// action line to the plan.
 type actionDescriber struct {
 	b *strings.Builder
 }
