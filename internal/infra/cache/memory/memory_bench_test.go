@@ -14,34 +14,22 @@ import (
 	"github.com/HT4w5/bandage/internal/domain/track"
 )
 
-// BenchmarkStoreUpdate and BenchmarkStoreUpdateParallel measure
-// Store.Update per call (H3): full-key concat and FNV hashing, shard
-// lock and LRU bookkeeping, over the corpus's uniform, Zipfian and hot
-// key distributions — sequential and contended. The cap (65536) is
-// sized so the 256-key pools never evict (steady state without
-// eviction skew); the deliberately evicting variant runs the uniform
-// pool over a cap of 16 so nearly every update evicts. The clock is
-// fixed and the eviction logger is zerolog.Nop(), so eviction log
-// rendering is excluded. fn is the production accumulate step; one op
-// is one tracker update (a per-key microbenchmark, so ns/op rather
-// than lines/s).
+// Benchmarks measure Store.Update per call (sequential and contended over the
+// uniform, Zipfian and hot key distributions) plus the sweep and stats snapshot.
 
 const (
 	benchNS  = "bench-rule"
 	benchTTL = time.Hour
 )
 
-// benchNow is the fixed wall clock the store runs on: the shared
-// fixture epoch (internal/bench.Epoch).
+// benchNow is the fixed wall clock the store runs on (internal/bench.Epoch).
 var benchNow = bench.Epoch
 
-// benchUpdateFn is the accumulate step a tracker rule runs under the
-// shard lock.
+// benchUpdateFn is the accumulate step a tracker rule runs under the shard lock.
 func benchUpdateFn(r *track.Record) { r.Accumulate(1, 0, benchNow.Unix()) }
 
-// benchKeys derives one tracker-cache key per corpus line: the line's
-// client aggregated to its target prefix, the domain's key convention.
-// The pools hold 256 distinct keys (one, for the hot distribution).
+// benchKeys derives one tracker-cache key per corpus line (client aggregated to
+// its target prefix); the pools hold 256 distinct keys (one for DistHot).
 func benchKeys(b *testing.B, dist bench.KeyDist) []string {
 	b.Helper()
 	corpus := bench.NewCorpus(bench.Seed, bench.ShapeFull, dist, 1024)
@@ -53,9 +41,8 @@ func benchKeys(b *testing.B, dist bench.KeyDist) []string {
 	return keys
 }
 
-// benchStoreCases names the key distributions and the store cap: the
-// steady-state cap keeps every distribution eviction-free, the
-// evicting case deliberately thrashes the cap.
+// benchStoreCases names the key distributions and the store cap: the steady-state
+// cap keeps every distribution eviction-free, "evicting" deliberately thrashes it.
 var benchStoreCases = []struct {
 	name string
 	dist bench.KeyDist
@@ -90,9 +77,8 @@ func BenchmarkStoreUpdateParallel(b *testing.B) {
 			ctx := context.Background()
 			var offsets atomic.Int64
 			b.RunParallel(func(pb *testing.PB) {
-				// Each goroutine starts at a distinct stride offset so
-				// goroutines do not march through the key pool in
-				// lockstep (257 is coprime with the 1024-line corpus).
+				// Distinct stride offset per goroutine so they do not
+				// march through the key pool in lockstep (257 is coprime with 1024).
 				i := int(offsets.Add(257))
 				for pb.Next() {
 					if _, err := s.Update(ctx, benchNS, keys[i%len(keys)], benchTTL, benchUpdateFn); err != nil {
@@ -106,8 +92,7 @@ func BenchmarkStoreUpdateParallel(b *testing.B) {
 	}
 }
 
-// seedStore fills s with n distinct tracker entries at ttl. Fixture
-// setup for the cadence benchmarks below.
+// seedStore fills s with n distinct tracker entries at ttl (fixture setup).
 func seedStore(tb testing.TB, s *Store, n int, ttl time.Duration) {
 	tb.Helper()
 	ctx := context.Background()
@@ -118,12 +103,8 @@ func seedStore(tb testing.TB, s *Store, n int, ttl time.Duration) {
 	}
 }
 
-// BenchmarkStoreSweepExpired measures one tracker-cache expiry sweep
-// (the daemon's minute cadence, spec hot-path inventory stage 7): the
-// scan of every shard's LRU list. The live case is the steady-state
-// tick over unexpired entries (the common tick); the expiring case
-// re-seeds already-expired entries with the timer stopped and measures
-// their removal. One op is one SweepExpired call.
+// BenchmarkStoreSweepExpired measures one expiry sweep over all shards' LRU
+// lists; the expiring case re-seeds expired entries with the timer stopped.
 func BenchmarkStoreSweepExpired(b *testing.B) {
 	const entries = 256
 	for _, tc := range []struct {
@@ -149,10 +130,8 @@ func BenchmarkStoreSweepExpired(b *testing.B) {
 	}
 }
 
-// BenchmarkStoreStatistics measures one Statistics() snapshot (the
-// minute cadence's statistics line renders from it): the atomic counter
-// reads plus a locked walk of every shard's LRU length. One op is one
-// call over a populated store.
+// BenchmarkStoreStatistics measures one Statistics() snapshot over a populated
+// store: atomic counter reads plus a locked walk of every shard's LRU length.
 func BenchmarkStoreStatistics(b *testing.B) {
 	s := New(65536, func() time.Time { return benchNow }, zerolog.Nop())
 	seedStore(b, s, 1024, benchTTL)

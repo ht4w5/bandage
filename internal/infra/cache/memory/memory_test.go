@@ -14,12 +14,8 @@ import (
 	"github.com/HT4w5/bandage/internal/domain/track"
 )
 
-// Tests at the store seam (the tracker-cache port's adapter): the entry
-// cap and its per-shard LRU eviction, the eviction log line (logging IS
-// the contract for evictions per the spec's Testing Decisions), lazy
-// TTL expiry plus the periodic sweep seam, no-TTL enrichment survival,
-// and the statistics counters. Time is driven through the injected
-// clock and direct sweep triggers — never sleep.
+// Store tests cover the entry cap and LRU eviction, the eviction log line (log
+// text IS the eviction contract), lazy TTL expiry, sweeps and counters; no sleeps.
 
 type testClock struct{ t time.Time }
 
@@ -29,8 +25,7 @@ func (c *testClock) Now() time.Time { return c.t }
 
 func (c *testClock) Advance(d time.Duration) { c.t = c.t.Add(d) }
 
-// testLogger writes console-style records to buf so tests can assert
-// the log text where logging is the contract.
+// testLogger writes console-style records to buf so tests can assert the log text.
 func testLogger(buf *bytes.Buffer) zerolog.Logger {
 	return zerolog.New(zerolog.ConsoleWriter{Out: buf, NoColor: true})
 }
@@ -47,9 +42,8 @@ func update(t *testing.T, s *Store, ns, key string, ttl time.Duration, inc float
 	return rec
 }
 
-// Under the cap, least-recently-used entries are evicted: a touched
-// entry survives the next insert, the stale one restarts from zero.
-// Single shard pins the LRU order deterministically.
+// TestStoreCapEvictsLeastRecentlyUsed: over the cap the LRU entry is evicted;
+// touched entries survive, the stale one restarts from zero. Single shard pins LRU order.
 func TestStoreCapEvictsLeastRecentlyUsed(t *testing.T) {
 	s := newStore(3, 1, newTestClock(time.Time{}).Now, testLogger(&bytes.Buffer{}))
 
@@ -72,18 +66,14 @@ func TestStoreCapEvictsLeastRecentlyUsed(t *testing.T) {
 	if rec := update(t, s, "rule-one", "a", time.Hour, 1); rec.Value != 3 {
 		t.Errorf("a after drop = %v, want 3 (LRU order kept a)", rec.Value)
 	}
-	// The evicted bucket accumulates fresh state from zero on the next
-	// event — never a crash, never a stale continuation.
+	// The evicted bucket accumulates fresh state from zero on the next event.
 	if rec := update(t, s, "rule-one", "b", time.Hour, 1); rec.Value != 1 {
 		t.Errorf("b after eviction = %v, want 1 (fresh accumulation)", rec.Value)
 	}
 }
 
-// Every eviction is logged with its tracker namespace and its key and
-// counted in statistics (spec: evictions are the one place where log
-// text IS the contract). The key is spelled out per namespace: tracker
-// entries log the Target (and the path where the key has one), the
-// filesize namespace is keyed by paths and logs the path.
+// TestStoreEvictionLoggedWithNamespaceAndTarget: every eviction is logged with its
+// namespace and key and counted (log text IS the eviction contract).
 func TestStoreEvictionLoggedWithNamespaceAndTarget(t *testing.T) {
 	buf := &bytes.Buffer{}
 	s := newStore(1, 1, newTestClock(time.Time{}).Now, testLogger(buf))
@@ -103,10 +93,8 @@ func TestStoreEvictionLoggedWithNamespaceAndTarget(t *testing.T) {
 	}
 }
 
-// The logged Target is the true Target split from the key convention —
-// never the raw cache key — and per-(Target, path) keys carry their path
-// as its own attribute (the record always carries the namespace and its
-// key: Target and path here).
+// TestStoreEvictionLogsTrueTargetAndPath: the logged Target is the true Target
+// split from the key convention (never the raw key), path as its own attribute.
 func TestStoreEvictionLogsTrueTargetAndPath(t *testing.T) {
 	buf := &bytes.Buffer{}
 	s := newStore(1, 1, newTestClock(time.Time{}).Now, testLogger(buf))
@@ -129,9 +117,8 @@ func TestStoreEvictionLogsTrueTargetAndPath(t *testing.T) {
 	}
 }
 
-// The filesize namespace is keyed by paths, so its evictions carry the
-// path as the record's key and never invent a Target (the namespace is
-// named either way).
+// TestStoreEvictionFilesizeLogsPathOnly: filesize evictions carry the path as
+// the record's key and never invent a Target.
 func TestStoreEvictionFilesizeLogsPathOnly(t *testing.T) {
 	buf := &bytes.Buffer{}
 	s := newStore(1, 1, newTestClock(time.Time{}).Now, testLogger(buf))
@@ -151,11 +138,8 @@ func TestStoreEvictionFilesizeLogsPathOnly(t *testing.T) {
 	}
 }
 
-// reenterWriter proves where the eviction record is emitted from: its
-// Write re-enters the store (Statistics locks every shard). Re-entry
-// succeeds only while the evicting Update holds no shard lock — if the
-// record were rendered under the lock, the probe would deadlock against
-// the very shard being evicted.
+// reenterWriter proves the eviction record is emitted outside the shard lock:
+// its Write re-enters the store, which would deadlock under the lock.
 type reenterWriter struct {
 	s *Store
 }
@@ -165,9 +149,8 @@ func (w reenterWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// The eviction record is emitted after the shard lock is released
-// (PLAN house rule: no I/O under the store's lock) — a log sink is free
-// to call back into the store while rendering the record.
+// TestStoreEvictionLogEmittedAfterUnlock: the record is emitted after the shard
+// lock is released (no I/O under the store's lock).
 func TestStoreEvictionLogEmittedAfterUnlock(t *testing.T) {
 	w := &reenterWriter{}
 	s := newStore(1, 1, newTestClock(time.Time{}).Now, zerolog.New(w))
@@ -194,8 +177,8 @@ func TestStoreEvictionLogEmittedAfterUnlock(t *testing.T) {
 	}
 }
 
-// TTL expiry is enforced lazily on access: an expired entry restarts
-// from zero and is counted as a miss, not an eviction.
+// TestStoreLazyTTLExpiry: an expired entry restarts from zero and is
+// counted as a miss, not an eviction.
 func TestStoreLazyTTLExpiry(t *testing.T) {
 	clock := newTestClock(time.Time{})
 	s := newStore(4, 1, clock.Now, testLogger(&bytes.Buffer{}))
@@ -217,8 +200,8 @@ func TestStoreLazyTTLExpiry(t *testing.T) {
 	}
 }
 
-// The periodic sweep removes entries nobody touched again; triggered
-// directly here (the daemon ticks it at an internal cadence).
+// TestStoreSweepExpiredRemovesStaleEntries: the sweep removes entries nobody
+// touched again (triggered directly here).
 func TestStoreSweepExpiredRemovesStaleEntries(t *testing.T) {
 	clock := newTestClock(time.Time{})
 	s := newStore(4, 1, clock.Now, testLogger(&bytes.Buffer{}))
@@ -239,8 +222,8 @@ func TestStoreSweepExpiredRemovesStaleEntries(t *testing.T) {
 	}
 }
 
-// The enrichment namespace shares the store without TTL (ttl == 0 =
-// never expire) and survives sweeps and clock advances.
+// TestStoreNoTTLEntrySurvivesSweeps: ttl == 0 entries never expire
+// and survive sweeps and clock advances.
 func TestStoreNoTTLEntrySurvivesSweeps(t *testing.T) {
 	clock := newTestClock(time.Time{})
 	s := newStore(4, 1, clock.Now, testLogger(&bytes.Buffer{}))
@@ -259,10 +242,8 @@ func TestStoreNoTTLEntrySurvivesSweeps(t *testing.T) {
 	}
 }
 
-// Clear empties the record for (ns, key) — the Trigger reset — so later
-// updates start from zero; clearing an absent key is a no-op, and a
-// clear counts in no statistics (neither a get nor a set, never an
-// eviction — the entry simply leaves with the reset).
+// TestStoreClearEmptiesRecord: Clear resets the record (the Trigger reset), is a
+// no-op on absent keys, and counts in no statistics.
 func TestStoreClearEmptiesRecord(t *testing.T) {
 	s := newStore(3, 1, newTestClock(time.Time{}).Now, testLogger(&bytes.Buffer{}))
 
@@ -286,10 +267,8 @@ func TestStoreClearEmptiesRecord(t *testing.T) {
 	}
 }
 
-// The statistics counters: gets and sets count lookups and writes,
-// misses count lookups without a live entry, evictions count entries
-// removed by the entry cap, size counts entries (TTL removals are not
-// evictions), and the entry cap is reported with them.
+// TestStoreStatisticsCounters: gets/sets count lookups and writes, misses
+// lookups without a live entry, evictions count cap removals (not TTL removals).
 func TestStoreStatisticsCounters(t *testing.T) {
 	clock := newTestClock(time.Time{})
 	s := newStore(2, 1, clock.Now, testLogger(&bytes.Buffer{}))
@@ -322,9 +301,8 @@ func TestStoreStatisticsCounters(t *testing.T) {
 	}
 }
 
-// The cap holds across all shards and namespaces: size never exceeds
-// maxEntries, and every eviction is logged (eviction-log count ==
-// eviction count).
+// TestStoreCapEnforcedAcrossShardsAndNamespaces: size never exceeds maxEntries
+// and every eviction is logged (log-line count == eviction count).
 func TestStoreCapEnforcedAcrossShardsAndNamespaces(t *testing.T) {
 	buf := &bytes.Buffer{}
 	s := New(10, newTestClock(time.Time{}).Now, testLogger(buf))

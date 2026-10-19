@@ -1,7 +1,5 @@
 // Package syslog is the syslog ingest driver (go-syslog.v2, flux parity):
-// tcp, udp or unixgram listeners with automatic format detection. It is a
-// pure transport — it extracts the raw message text and forwards it for
-// parsing.
+// tcp, udp or unixgram listeners with automatic format detection, pure transport.
 package syslog
 
 import (
@@ -33,8 +31,8 @@ type Source struct {
 	once     sync.Once
 }
 
-// New returns a syslog source for the given network ("tcp", "udp" or
-// "unixgram") and listen address. Start binds the listener.
+// New returns a syslog source for the given network ("tcp", "udp" or "unixgram")
+// and listen address; Start binds the listener.
 func New(network, addr string, out chan<- string, logger zerolog.Logger) *Source {
 	return &Source{
 		network:  network,
@@ -77,9 +75,8 @@ func (s *Source) Start() error {
 	return nil
 }
 
-// run forwards raw message lines in arrival order. After Shutdown it
-// keeps draining the parts channel (discarding) until every producer has
-// wound down, so no go-syslog goroutine blocks on its handler.
+// run forwards raw message lines in arrival order; after Shutdown it keeps
+// draining (discarding) until every producer winds down, so none block on its handler.
 func (s *Source) run() {
 	defer s.wg.Done()
 	for {
@@ -107,8 +104,7 @@ func extractLine(part gformat.LogParts) string {
 	if line, ok := part["message"].(string); ok {
 		return line
 	}
-	// Unrecognized parts become an empty line: the parser drops it and
-	// the drop is counted.
+	// Unrecognized parts become an empty line: the parser drops and counts it.
 	return ""
 }
 

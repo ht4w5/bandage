@@ -9,16 +9,10 @@ import (
 	"github.com/HT4w5/bandage/internal/infra/parse/nginx"
 )
 
-// Correctness of the fixture corpus at its two seams: the generator
-// (deterministic for a fixed seed, key distributions as documented,
-// minimal/full line shapes) and the parser seam (every line parses
-// cleanly through internal/infra/parse/nginx and yields exactly the
-// Event rendering — the corpus is parseable-by-construction and its
-// two renderings cannot drift apart).
+// Corpus tests pin generator determinism, key distributions, line shapes and
+// the parser seam (every fixture line parses to exactly its Event).
 
 // The four published splitmix64 reference vectors for a zero state.
-// They pin the PRNG the whole corpus hangs on independently of its
-// callers (TestRNGMatchesSplitmix64Reference).
 var splitmix64Vectors = []uint64{
 	0xe220a8397b1dcdaf,
 	0x6e789e6aa1b965f4,
@@ -188,10 +182,8 @@ func TestCorpusZipfKeysSkewToTheHead(t *testing.T) {
 }
 
 func TestCorpusHotPinsOneTrackerKey(t *testing.T) {
-	// Every DistHot line carries the hot (path, client) pair, so every
-	// line maps to one tracker-cache key — Target for rate/bandwidth
-	// trackers, Target joined with path for replay (the domain's key
-	// convention) — and parallel updates contend on one shard.
+	// Every DistHot line maps to one tracker-cache key, so parallel
+	// updates contend on one shard.
 	c := NewCorpus(Seed, ShapeFull, DistHot, 64)
 	first := ""
 	for i := 0; i < c.Len(); i++ {
@@ -214,9 +206,8 @@ func TestCorpusHotPinsOneTrackerKey(t *testing.T) {
 // benchmarkSink keeps generated corpora alive across iterations.
 var benchmarkSink *Corpus
 
-// BenchmarkCorpusBuild measures the fixture generator itself — the
-// harness every later benchmark builds on. One op builds one 1024-line
-// full-shape Zipfian corpus.
+// BenchmarkCorpusBuild measures the fixture generator itself (one
+// 1024-line full-shape Zipfian corpus per op).
 func BenchmarkCorpusBuild(b *testing.B) {
 	for b.Loop() {
 		benchmarkSink = NewCorpus(Seed, ShapeFull, DistZipf, 1024)

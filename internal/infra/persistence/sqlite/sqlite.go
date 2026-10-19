@@ -1,15 +1,5 @@
-// Package sqlite is the sqlite report repository adapter (modernc.org/sqlite,
-// pure Go). One row per (rule, target) with indexed rule/target/expiry
-// columns and a JSON record body; reports survive restarts while tracker
-// state stays memory-only (ADR 0002). Writes flow through a single
-// connection so concurrent writes serialize through it and land
-// deterministically (ADR 0007); queries run on their own connections so
-// the API never queues behind upserts (ADR 0009). File databases run
-// journal_mode=WAL with synchronous=NORMAL: a commit survives a process
-// crash, losing only the final moments on power failure. :memory:
-// databases (tests) ignore WAL and treat every connection as a separate
-// database, so the read path falls back to the single write connection
-// there.
+// Package sqlite is the sqlite report repository adapter (modernc.org/sqlite):
+// one row per (rule, target) with a JSON body; reports survive restarts (ADR 0002).
 package sqlite
 
 import (
@@ -30,23 +20,18 @@ const driverName = "sqlite"
 
 // ReportRepository is a report.Repository backed by a sqlite database.
 type ReportRepository struct {
-	// write is the sole writer: exactly one connection, so every write
-	// serializes through it and lands deterministically (ADR 0007).
+	// write is the sole writer (one connection): writes serialize
+	// through it and land deterministically (ADR 0007).
 	write *sql.DB
-	// read serves the query paths on its own connections (ADR 0009): a
-	// bounded pool, so the API never queues behind upserts and the read
-	// side cannot grow without limit. For a :memory: database it is
-	// write — every connection to an in-memory database would be its
-	// own private database.
+	// read serves queries on its own bounded pool (ADR 0009); for a
+	// :memory: database it is write (each connection would be its own database).
 	read *sql.DB
 	// upsert is prepared once at Open and reused by every Upsert.
 	upsert *sql.Stmt
 }
 
-// upsertSQL inserts the row or refreshes the mutable columns on
-// conflict. created_at is deliberately absent from the UPDATE set: the
-// statement preserves it on update without reading the row first (spec:
-// Upsert sheds its pre-read).
+// upsertSQL inserts the row or refreshes the mutable columns on conflict;
+// created_at is excluded from the UPDATE set, so it survives without a pre-read.
 const upsertSQL = `
 INSERT INTO reports (rule, target, created_at, updated_at, expires_at, body)
 VALUES (?, ?, ?, ?, ?, ?)
@@ -55,11 +40,8 @@ ON CONFLICT (rule, target) DO UPDATE SET
 	expires_at = excluded.expires_at,
 	body       = excluded.body`
 
-// Open opens (creating if needed) the report database at path and
-// ensures the schema exists. File databases run in journal_mode=WAL
-// with synchronous=NORMAL (ADR 0009); writes keep one connection
-// (ADR 0007) and queries get their own. A :memory: path (tests) keeps
-// everything on the single write connection.
+// Open opens (creating if needed) the report database at path and ensures the
+// schema; file databases run WAL/synchronous=NORMAL (ADR 0009), :memory: does not split.
 func Open(path string) (*ReportRepository, error) {
 	write, err := sql.Open(driverName, path)
 	if err != nil {
@@ -72,9 +54,8 @@ func Open(path string) (*ReportRepository, error) {
 			return nil, fmt.Errorf("sqlite: journal mode: %w", err)
 		}
 	}
-	// synchronous is per connection; the write connection is the only
-	// one that commits. NORMAL in WAL mode is durable across process
-	// crashes — only power failure can lose the final moments (ADR 0009).
+	// synchronous is per connection (only the write one commits);
+	// NORMAL in WAL mode survives process crashes (ADR 0009).
 	if _, err := write.Exec(`PRAGMA synchronous=NORMAL`); err != nil {
 		write.Close()
 		return nil, fmt.Errorf("sqlite: synchronous: %w", err)
@@ -85,13 +66,8 @@ func Open(path string) (*ReportRepository, error) {
 	}
 	read := write
 	if !isMemory(path) {
-		// Opened after the pragmas: journal_mode=WAL is a property of
-		// the database file, so every read connection sees it.
-		// The pool is bounded (spec story 19 needs only its own
-		// connections, not an unbounded number: 4 covers concurrent API
-		// reads and the startup rebuild) and every read connection gets
-		// a busy timeout through the DSN, so a query that loses a WAL
-		// checkpoint race retries instead of failing the request.
+		// Opened after the pragmas (WAL is a property of the database
+		// file); each read connection gets a busy timeout via the DSN.
 		readDSN := path + "?_pragma=busy_timeout(5000)"
 		if strings.Contains(path, "?") {
 			readDSN = path + "&_pragma=busy_timeout(5000)"
@@ -113,9 +89,8 @@ func Open(path string) (*ReportRepository, error) {
 	return &ReportRepository{write: write, read: read, upsert: upsert}, nil
 }
 
-// isMemory reports whether path names an in-memory database: WAL does
-// not apply there and each connection would be a separate database
-// (ADR 0009 consequences), so reads fall back to the write connection.
+// isMemory reports whether path names an in-memory database: WAL does not apply
+// there and each connection would be a separate database (ADR 0009).
 func isMemory(path string) bool {
 	return path == ":memory:" || strings.Contains(path, "mode=memory")
 }
@@ -153,9 +128,8 @@ func (r *ReportRepository) Close() error {
 	return err
 }
 
-// Upsert inserts or overwrites the report for (rule, target) in one
-// prepared statement: created_at is fixed at the row's first insert by
-// the statement itself — no read precedes the write.
+// Upsert inserts or overwrites the report for (rule, target) in one prepared
+// statement; created_at is fixed at first insert by the statement, no pre-read.
 func (r *ReportRepository) Upsert(ctx context.Context, rec bandage.Report) error {
 	rawBody, err := json.Marshal(body{
 		Chain:   rec.Chain,
@@ -176,9 +150,8 @@ func (r *ReportRepository) Upsert(ctx context.Context, rec bandage.Report) error
 	return nil
 }
 
-// List returns matching, unexpired reports sorted by created_at
-// descending (ties broken by rule, target for determinism). It runs on
-// the read path's own connections (ADR 0009).
+// List returns matching, unexpired reports sorted by created_at descending
+// (ties by rule, target), on the read path's own connections (ADR 0009).
 func (r *ReportRepository) List(ctx context.Context, q report.Query) ([]bandage.Report, error) {
 	query := `SELECT rule, target, created_at, updated_at, expires_at, body FROM reports WHERE expires_at > ?`
 	args := []any{q.Now.UnixNano()}
@@ -229,9 +202,8 @@ func (r *ReportRepository) List(ctx context.Context, q report.Query) ([]bandage.
 	return out, nil
 }
 
-// Delete removes reports matching the query regardless of expiry and
-// returns the number of deleted rows. At least one filter is required
-// (ErrUnfiltered otherwise): deletion is never delete-all.
+// Delete removes matching reports regardless of expiry and returns the count;
+// at least one filter is required (ErrUnfiltered): deletion is never delete-all.
 func (r *ReportRepository) Delete(ctx context.Context, q report.Query) (int, error) {
 	var (
 		query string

@@ -7,26 +7,15 @@ import (
 	"time"
 )
 
-// ReportLinesPerSec reports the benchmark's throughput as lines/s.
-// Call it after the b.Loop() loop with the number of raw log lines the
-// benchmark processed:
-//
-//	var lines int
-//	for b.Loop() {
-//		process(corpus.Line(lines))
-//		lines++
-//	}
-//	bench.ReportLinesPerSec(b, lines)
-//
-// It is meaningful where one op is one raw log line (parse, whole
-// pipeline); per-key microbenchmarks report ns/op instead.
+// ReportLinesPerSec reports the benchmark's throughput as lines/s; meaningful
+// where one op is one raw log line. Call it after the b.Loop() loop.
 func ReportLinesPerSec(b *testing.B, lines int) {
 	b.Helper()
 	b.ReportMetric(linesPerSec(lines, b.Elapsed()), "lines/s")
 }
 
-// linesPerSec is the rate ReportLinesPerSec reports: lines divided by
-// elapsed benchmark time, zero when no time elapsed (never +Inf).
+// linesPerSec is the rate ReportLinesPerSec reports; zero when no time
+// elapsed (never +Inf).
 func linesPerSec(lines int, elapsed time.Duration) float64 {
 	if elapsed <= 0 {
 		return 0
@@ -34,11 +23,8 @@ func linesPerSec(lines int, elapsed time.Duration) float64 {
 	return float64(lines) / elapsed.Seconds()
 }
 
-// ListenAddr returns the ingest listen address for network: a socket
-// path under tb's temp dir for unixgram, a probed free loopback port
-// for tcp (go-syslog wants a fixed address, so the ephemeral port is
-// reserved by a probe listener first — the freeAddr pattern). Shared
-// here so every ingest benchmark binds sockets the same way.
+// ListenAddr returns the ingest listen address for network: a unixgram socket
+// under tb's temp dir, or a probed free loopback port for tcp (fixed address).
 func ListenAddr(tb testing.TB, network string) string {
 	tb.Helper()
 	switch network {

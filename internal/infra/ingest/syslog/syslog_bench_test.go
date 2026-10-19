@@ -11,15 +11,8 @@ import (
 	"github.com/HT4w5/bandage/internal/bench"
 )
 
-// BenchmarkIngestForward measures the isolated ingest forwarding cost
-// (spec hot-path inventory, stage 1): go-syslog's receive/scan/framing
-// plus Source.run's extractLine and forward onto the out channel, with
-// no parser, enrichment or evaluation attached — the consumer drains
-// and counts (the pipeline's d.lines handoff, unbuffered). One op is
-// one raw log line fed; lines/s is reported. The socket decouples the
-// feed from forwarding (parts buffer + kernel buffers), so the final
-// drain runs inside the timed region: every counted line is forwarded
-// before the timer stops.
+// BenchmarkIngestForward measures the isolated ingest forwarding cost: receive,
+// framing, extractLine and forward; the final drain runs inside the timed region.
 func BenchmarkIngestForward(b *testing.B) {
 	for _, network := range []string{"tcp", "unixgram"} {
 		b.Run(network, func(b *testing.B) {
@@ -75,9 +68,8 @@ func BenchmarkIngestForward(b *testing.B) {
 	}
 }
 
-// waitForwarded blocks until n lines have been forwarded on out, or
-// fails b after a generous deadline. It is called inside the timed
-// region, so the poll interval bounds the drain's accounting error.
+// waitForwarded blocks until n lines are forwarded on out, or fails b after a
+// generous deadline (in the timed region; the poll interval bounds the error).
 func waitForwarded(tb testing.TB, forwarded *atomic.Int64, n int) {
 	tb.Helper()
 	deadline := time.Now().Add(30 * time.Second)

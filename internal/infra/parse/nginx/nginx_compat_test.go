@@ -6,13 +6,11 @@ import (
 	"time"
 )
 
-// Behavior pins for the encoding/json/v2 rewrite (v0-hot-path ticket 05):
-// contract cases the fixture tests in nginx_test.go do not cover but the
-// rewrite preserves byte-identically. Each case was characterized against
-// the original map-based decoder before the rewrite.
+// Behavior pins for the encoding/json/v2 rewrite: contract cases the fixture
+// tests do not cover, preserved byte-identically from the map-based decoder.
 
-// The optional agent field may be present with a JSON null, meaning
-// absent (flux $http_user_agent is "-" or empty for agent-less clients).
+// TestParseAgentNullIsAbsent: a JSON null agent means absent
+// (flux $http_user_agent is "-" or empty for agent-less clients).
 func TestParseAgentNullIsAbsent(t *testing.T) {
 	for _, line := range []string{
 		`{"time":"1734345934","client":"203.0.113.7","method":"GET","url":"/","status":200,"sent":0,"agent":null}`,
@@ -28,8 +26,7 @@ func TestParseAgentNullIsAbsent(t *testing.T) {
 	}
 }
 
-// Duplicate member names keep map semantics: the last occurrence wins,
-// including for the optional agent field.
+// TestParseDuplicateNamesLastWins: duplicate member names keep map semantics (last wins).
 func TestParseDuplicateNamesLastWins(t *testing.T) {
 	ev, err := New().Parse([]byte(`{"time":"1734345934","time":"1734345935","client":"203.0.113.7","method":"GET","url":"/","status":200,"sent":0}`))
 	if err != nil {
@@ -68,9 +65,8 @@ func TestParseDuplicateNamesLastWins(t *testing.T) {
 	}
 }
 
-// A bare JSON null is syntactically valid but carries no fields: the line
-// fails required-field validation on "time", exactly like a line missing
-// the field, rather than counting as a malformed line.
+// TestParseNullLineIsMissingField: a bare JSON null fails required-field
+// validation on "time", not as a malformed line.
 func TestParseNullLineIsMissingField(t *testing.T) {
 	_, err := New().Parse([]byte(`null`))
 	var fe *FieldError
@@ -82,10 +78,8 @@ func TestParseNullLineIsMissingField(t *testing.T) {
 	}
 }
 
-// nginx escape=json passes raw non-UTF-8 bytes (e.g. legacy-encoded
-// user agents) through unescaped. Such lines parse successfully and the
-// invalid bytes are kept as U+FFFD, matching the historic decoder; they
-// must not become malformed-line drops.
+// TestParseInvalidUTF8InAgent: raw non-UTF-8 bytes parse successfully and are
+// kept as U+FFFD (historic decoder), never malformed-line drops.
 func TestParseInvalidUTF8InAgent(t *testing.T) {
 	tests := []struct {
 		name string
