@@ -3,6 +3,7 @@ package splint
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
@@ -42,8 +43,16 @@ type docResponse struct {
 
 func newDocServer(t *testing.T) *docServer {
 	t.Helper()
+	return newDocServerTLS(t, nil)
+}
+
+// newDocServerTLS starts the fake report endpoint as HTTPS with tlsCfg
+// (mutual TLS when it requires client certificates); a nil config keeps
+// the plain-HTTP endpoint.
+func newDocServerTLS(t *testing.T, tlsCfg *tls.Config) *docServer {
+	t.Helper()
 	s := &docServer{}
-	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		r := docResponse{status: http.StatusInternalServerError}
@@ -55,6 +64,13 @@ func newDocServer(t *testing.T) *docServer {
 		w.WriteHeader(r.status)
 		io.WriteString(w, r.body) // error ignored: tests assert the outcome
 	}))
+	if tlsCfg != nil {
+		srv.TLS = tlsCfg
+		srv.StartTLS()
+	} else {
+		srv.Start()
+	}
+	s.Server = srv
 	t.Cleanup(s.Close)
 	return s
 }

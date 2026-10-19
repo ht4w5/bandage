@@ -39,11 +39,15 @@ const progName = "splint-nft"
 
 // options is the resolved command line.
 type options struct {
-	url      string
-	hook     string
-	interval time.Duration
-	dryRun   bool
-	logLevel string
+	url          string
+	hook         string
+	caFile       string
+	certFile     string
+	keyFile      string
+	fetchTimeout time.Duration
+	interval     time.Duration
+	dryRun       bool
+	logLevel     string
 }
 
 func main() {
@@ -61,6 +65,12 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	fs.SetOutput(stdout)
 	url := fs.StringP("url", "u", "", "URL of the bandage report document")
 	hookFlag := fs.String("hook", "input", "enforcement hook: input or prerouting")
+	// The certificate surface is bandaid's flag for flag, so the
+	// operator's PKI runbook applies unchanged.
+	caFile := fs.String("cacert", "", "CA certificate file")
+	certFile := fs.String("cert", "", "client certificate file")
+	keyFile := fs.String("key", "", "client key file")
+	fetchTimeout := fs.DurationP("fetch-timeout", "t", splint.DefaultFetchTimeout, "set fetch HTTP timeout")
 	interval := fs.DurationP("update-interval", "i", splint.DefaultInterval, "report document update interval (clamped to a 1m floor)")
 	dryRun := fs.BoolP("dry-run", "d", false, "fetch and print the compiled ban rules once without installing")
 	logLevel := fs.StringP("log-level", "l", "info", "log level: debug, info, warn or error")
@@ -79,17 +89,24 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 		return exitOK, options{}
 	}
 	opts := options{
-		url:      *url,
-		hook:     *hookFlag,
-		interval: *interval,
-		dryRun:   *dryRun,
-		logLevel: *logLevel,
+		url:          *url,
+		hook:         *hookFlag,
+		caFile:       *caFile,
+		certFile:     *certFile,
+		keyFile:      *keyFile,
+		fetchTimeout: *fetchTimeout,
+		interval:     *interval,
+		dryRun:       *dryRun,
+		logLevel:     *logLevel,
 	}
 	logger, err := newLogger(stderr, opts.logLevel)
 	if err != nil {
 		return fail(stderr, err), opts
 	}
-	fetcher, err := splint.NewFetcher(opts.url)
+	fetcher, err := splint.NewFetcher(opts.url,
+		splint.WithTLS(opts.caFile, opts.certFile, opts.keyFile),
+		splint.WithFetchTimeout(opts.fetchTimeout),
+	)
 	if err != nil {
 		return fail(stderr, err), opts
 	}
