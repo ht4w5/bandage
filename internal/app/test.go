@@ -61,7 +61,11 @@ type actionDescriber struct {
 }
 
 func (d actionDescriber) VisitReport(a *bandage.ReportAction) error {
-	fmt.Fprintf(d.b, "    action report reason=%s ttl=%s\n", a.Reason, a.TTL)
+	fmt.Fprintf(d.b, "    action report reason=%s ttl=%s penalty=%s", a.Reason, a.TTL, a.Penalty.Action)
+	if a.Penalty.Rate != nil {
+		fmt.Fprintf(d.b, " rate=%d", *a.Penalty.Rate)
+	}
+	fmt.Fprintln(d.b)
 	return nil
 }
 

@@ -478,6 +478,8 @@ chains:
           - report:
               reason: egress-overflow
               ttl: 24h
+              penalty: limit-bandwidth
+              rate: 1MB
 `
 
 // TestE2EOverflowWritesReport: overflow writes exactly one report carrying
@@ -534,7 +536,7 @@ chains:
     rules:
       - id: bursty-api
         tracker: {track: rate, leak: 0, volume: 2}
-        actions: [{report: {reason: api-rate-overflow, ttl: 1h}}]
+        actions: [{report: {reason: api-rate-overflow, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
@@ -567,7 +569,7 @@ chains:
     rules:
       - id: bursty-api
         tracker: {track: rate, leak: 1, volume: 4}
-        actions: [{report: {reason: api-rate-overflow, ttl: 1h}}]
+        actions: [{report: {reason: api-rate-overflow, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
@@ -629,7 +631,7 @@ chains:
     rules:
       - id: byte-flood
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: byte-flood, ttl: 1h}}]
+        actions: [{report: {reason: byte-flood, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
@@ -709,13 +711,13 @@ chains:
     rules:
       - id: rule-one
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: one, ttl: 1h}}]
+        actions: [{report: {reason: one, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
   - name: abuse-two
     rules:
       - id: rule-two
         filter: any
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: two, ttl: 2h}}]
+        actions: [{report: {reason: two, ttl: 2h, penalty: limit-bandwidth, rate: 1MB}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
@@ -890,7 +892,7 @@ chains:
     rules:
       - id: bursty-api
         tracker: {track: rate, leak: 0, volume: 2}
-        actions: [{report: {reason: api-rate-overflow, ttl: 1h}}]
+        actions: [{report: {reason: api-rate-overflow, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
 `
 	// max_entries 1: the file-size record and the tracker bucket share
 	// one slot, so inserting the bucket evicts the record.
@@ -991,7 +993,7 @@ chains:
     rules:
       - id: one-shot
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: one-shot, ttl: 1h}}]
+        actions: [{report: {reason: one-shot, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
 `
 	for _, network := range []string{"unixgram", "tcp", "udp"} {
 		t.Run(network, func(t *testing.T) {
@@ -1017,7 +1019,7 @@ chains:
     rules:
       - id: bursty-api
         tracker: {track: rate, leak: 0, volume: 2}
-        actions: [{report: {reason: api-rate-overflow, ttl: 1h}}, {log: "debug,MARK:BURSTY"}]
+        actions: [{report: {reason: api-rate-overflow, ttl: 1h, penalty: limit-req-rate, rate: 200}}, {log: "debug,MARK:BURSTY"}]
 `
 	// max_entries 2 with a per-shard budget of one: the fixed keys place
 	// both tracker targets in one shard and the filesize record in the other.
@@ -1097,7 +1099,7 @@ chains:
     rules:
       - id: one-shot
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: one-shot, ttl: 1h}}]
+        actions: [{report: {reason: one-shot, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 	d.send("<134>Dec 16 12:00:00 web1 nginx: " + nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
@@ -1118,12 +1120,12 @@ chains:
     rules:
       - id: rule-one
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: one, ttl: 1h}}]
+        actions: [{report: {reason: one, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
   - name: abuse-two
     rules:
       - id: rule-two
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: two, ttl: 1h}}]
+        actions: [{report: {reason: two, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
@@ -1200,7 +1202,7 @@ chains:
     rules:
       - id: sticky
         tracker: {track: bandwidth, leak: 0, volume: 200}
-        actions: [{report: {reason: sticky, ttl: 1h}}]
+        actions: [{report: {reason: sticky, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
@@ -1254,17 +1256,17 @@ chains:
     rules:
       - id: rule-one
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: one, ttl: 1h}}]
+        actions: [{report: {reason: one, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
   - name: three
     rules:
       - id: rule-three
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: three, ttl: 1h}}]
+        actions: [{report: {reason: three, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
   - name: two
     rules:
       - id: rule-two
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: two, ttl: 2h}}]
+        actions: [{report: {reason: two, ttl: 2h, penalty: limit-bandwidth, rate: 1MB}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
@@ -1307,7 +1309,7 @@ chains:
     rules:
       - id: sticky
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: sticky, ttl: %s}}]
+        actions: [{report: {reason: sticky, ttl: %s, penalty: limit-bandwidth, rate: 1MB}}]
 `, ttl)
 	}
 	clock := newTestClock(mustTime(t, wallBase))
@@ -1371,7 +1373,7 @@ chains:
       - id: gated-egress
         filter: 'path prefix "/releases" and method GET'
         tracker: {track: bandwidth, leak: 1, volume: 20}
-        actions: [{report: {reason: gated-overflow, ttl: 24h}}, {log: "debug,MARK:GATE"}]
+        actions: [{report: {reason: gated-overflow, ttl: 24h, penalty: limit-bandwidth, rate: 1MB}}, {log: "debug,MARK:GATE"}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
@@ -1437,12 +1439,12 @@ chains:
         actions: [{goto: topic}]
       - id: after-goto
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: after-goto, ttl: 1h}}]
+        actions: [{report: {reason: after-goto, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
   - name: topic
     rules:
       - id: topic-match
         tracker: {track: rate, leak: 0, volume: 1}
-        actions: [{report: {reason: topic-match, ttl: 1h}}]
+        actions: [{report: {reason: topic-match, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
@@ -1476,12 +1478,12 @@ chains:
         actions: [{jump: topic}]
       - id: after-jump
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: after-jump, ttl: 1h}}]
+        actions: [{report: {reason: after-jump, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
   - name: topic
     rules:
       - id: topic-match
         tracker: {track: rate, leak: 0, volume: 1}
-        actions: [{report: {reason: topic-match, ttl: 1h}}]
+        actions: [{report: {reason: topic-match, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
@@ -1508,17 +1510,17 @@ chains:
     rules:
       - id: first-match
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: first-match, ttl: 1h}}]
+        actions: [{report: {reason: first-match, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
       - id: second-match
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: second-match, ttl: 1h}}]
+        actions: [{report: {reason: second-match, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
   - name: continue
     rules:
       - id: non-terminal
         actions: [{log: "debug,CONT:"}]
       - id: after-non-terminal
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: after-non-terminal, ttl: 1h}}]
+        actions: [{report: {reason: after-non-terminal, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
@@ -1547,12 +1549,12 @@ chains:
         actions: [stop]
       - id: after-stop
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: after-stop, ttl: 1h}}]
+        actions: [{report: {reason: after-stop, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
   - name: topic
     rules:
       - id: topic-match
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: topic-match, ttl: 1h}}]
+        actions: [{report: {reason: topic-match, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
@@ -1579,7 +1581,7 @@ chains:
         tracker: {track: bandwidth, leak: 0, volume: 100}
         actions:
           - log: "info,OVERFLOW:"
-          - report: {reason: overflow, ttl: 1h}
+          - report: {reason: overflow, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
@@ -1712,17 +1714,17 @@ chains:
         actions: [{log: "debug,MARK:A2"}, {goto: gamma}]
       - id: a3
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: a3, ttl: 1h}}]
+        actions: [{report: {reason: a3, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
   - name: beta
     rules:
       - id: b1
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{log: "debug,MARK:B1"}, {report: {reason: b1, ttl: 1h}}]
+        actions: [{log: "debug,MARK:B1"}, {report: {reason: b1, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
   - name: gamma
     rules:
       - id: g1
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{log: "debug,MARK:G1"}, {report: {reason: g1, ttl: 1h}}]
+        actions: [{log: "debug,MARK:G1"}, {report: {reason: g1, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
@@ -1779,15 +1781,15 @@ chains:
         tracker: {track: bandwidth, leak: 0, volume: 100}
         actions:
           - goto: topic
-          - report: {reason: routed, ttl: 1h}
+          - report: {reason: routed, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}
       - id: after
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: after, ttl: 1h}}]
+        actions: [{report: {reason: after, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
   - name: topic
     rules:
       - id: topic-match
         tracker: {track: bandwidth, leak: 0, volume: 250}
-        actions: [{report: {reason: topic-match, ttl: 1h}}]
+        actions: [{report: {reason: topic-match, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 	d.send(nginxLine(eventTime1, "203.0.113.7", "GET", "/big", 200, 150))
@@ -1838,7 +1840,7 @@ chains:
     rules:
       - id: burst
         tracker: {track: rate, leak: 0, volume: 2, target_prefix: {ipv4: 24, ipv6: 64}}
-        actions: [{report: {reason: burst, ttl: 1h}}]
+        actions: [{report: {reason: burst, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
 `,
 			clients: []string{"203.0.113.7", "203.0.113.8", "203.0.113.254"},
 			fourth:  "203.0.113.9",
@@ -1854,7 +1856,7 @@ chains:
     rules:
       - id: burst
         tracker: {track: rate, leak: 0, volume: 2}
-        actions: [{report: {reason: burst, ttl: 1h}}]
+        actions: [{report: {reason: burst, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
 `,
 			clients: []string{"2001:db8::1", "2001:db8::2", "2001:db8:0:0:1:2:3:4"},
 			fourth:  "2001:db8::ffff",
@@ -1916,7 +1918,7 @@ chains:
     rules:
       - id: burst
         tracker: {track: rate, leak: 0, volume: 2, target_prefix: {ipv4: 24, ipv6: 64}}
-        actions: [{report: {reason: burst, ttl: 1h}}]
+        actions: [{report: {reason: burst, ttl: 1h, penalty: limit-req-rate, rate: 200}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
@@ -1970,7 +1972,7 @@ chains:
     rules:
       - id: iso-replay
         tracker: {track: replay, leak: 0, volume: 2}
-        actions: [{report: {reason: iso-replay, ttl: 1h}}]
+        actions: [{report: {reason: iso-replay, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
@@ -2017,7 +2019,7 @@ chains:
           track: replay
           leak: 0
           volume: {method: step, threshold: 1000, volume_low: 1, volume_high: 3}
-        actions: [{report: {reason: iso-replay, ttl: 1h}}]
+        actions: [{report: {reason: iso-replay, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 

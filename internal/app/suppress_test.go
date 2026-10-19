@@ -43,7 +43,7 @@ chains:
     rules:
       - id: sticky
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: sticky, ttl: 1h}}]
+        actions: [{report: {reason: sticky, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
 `
 
 // tripwireRules is the tracker-less tripwire: an agent keyword filter with a
@@ -55,7 +55,7 @@ chains:
     rules:
       - id: ua-trip
         filter: 'agent keyword "curl"'
-        actions: [{report: {reason: ua-trip, ttl: 1h}}]
+        actions: [{report: {reason: ua-trip, ttl: 1h, penalty: drop}}]
 `
 
 // TestE2ESuppressedTriggersFreezeReportButRunActions: while the report is
@@ -69,7 +69,7 @@ chains:
     rules:
       - id: flood
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: flood, ttl: 1h}}, {log: "debug,MARK:FLOOD"}]
+        actions: [{report: {reason: flood, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}, {log: "debug,MARK:FLOOD"}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
@@ -121,7 +121,7 @@ chains:
     rules:
       - id: sticky
         tracker: {track: bandwidth, leak: 0, volume: 200}
-        actions: [{report: {reason: sticky, ttl: 1h}}]
+        actions: [{report: {reason: sticky, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
@@ -211,12 +211,12 @@ chains:
     rules:
       - id: rule-one
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: one, ttl: 1h}}]
+        actions: [{report: {reason: one, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
   - name: abuse-two
     rules:
       - id: rule-two
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: two, ttl: 2h}}]
+        actions: [{report: {reason: two, ttl: 2h, penalty: limit-bandwidth, rate: 1MB}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
@@ -486,12 +486,12 @@ chains:
     rules:
       - id: egress
         tracker: {track: bandwidth, leak: 0, volume: 100}
-        actions: [{report: {reason: egress-overflow, ttl: 1h}}, {log: "debug,MARK:FLAG"}]
+        actions: [{report: {reason: egress-overflow, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}, {log: "debug,MARK:FLAG"}]
   - name: replay
     rules:
       - id: iso-replay
         tracker: {track: replay, leak: 0, volume: 1}
-        actions: [{report: {reason: iso-replay, ttl: 1h}}]
+        actions: [{report: {reason: iso-replay, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 
@@ -546,7 +546,7 @@ chains:
     rules:
       - id: iso-replay
         tracker: {track: replay, leak: 0, volume: 1}
-        actions: [{report: {reason: iso-replay, ttl: 1h}}, {log: "debug,MARK:REPLAY"}]
+        actions: [{report: {reason: iso-replay, ttl: 1h, penalty: limit-bandwidth, rate: 1MB}}, {log: "debug,MARK:REPLAY"}]
 `
 	d := startTestDaemon(t, clock, "unixgram", ":memory:", rules)
 

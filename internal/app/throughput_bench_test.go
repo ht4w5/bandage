@@ -50,7 +50,7 @@ chains:
     rules:
       - id: bench-episode
         tracker: {track: rate, leak: 0, volume: 3}
-        actions: [{report: {reason: bench-overflow, ttl: 24h}}]
+        actions: [{report: {reason: bench-overflow, ttl: 24h, penalty: limit-req-rate, rate: 200}}]
 `
 
 // benchMatchNeverRules is the same rule shape with a volume nothing reaches:
@@ -62,7 +62,7 @@ chains:
     rules:
       - id: bench-never
         tracker: {track: rate, leak: 0, volume: 1000000000000}
-        actions: [{report: {reason: bench-overflow, ttl: 24h}}]
+        actions: [{report: {reason: bench-overflow, ttl: 24h, penalty: limit-req-rate, rate: 200}}]
 `
 
 // benchScenario is one throughput scenario: rules, tracker-cache cap, rule
