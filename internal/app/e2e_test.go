@@ -298,6 +298,13 @@ func (d *testDaemon) waitProcessed(t *testing.T, n int64) {
 // connection can outlive a test and race the cleanup deadline.
 var apiClient = &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 
+// penaltyEntry mirrors the report entry's nested penalty object: the
+// action always, its rate exactly for a limit action.
+type penaltyEntry struct {
+	Action string `json:"action"`
+	Rate   *int64 `json:"rate"`
+}
+
 // reportEntry mirrors the version-0 report document entry.
 type reportEntry struct {
 	Rule      string `json:"rule"`
@@ -321,6 +328,7 @@ type reportEntry struct {
 		Sent   int64  `json:"sent"`
 		Size   int64  `json:"size"`
 	} `json:"sample"`
+	Penalty *penaltyEntry `json:"penalty"`
 }
 
 type reportDoc struct {

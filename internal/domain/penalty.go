@@ -1,5 +1,7 @@
 package bandage
 
+import "encoding/json"
+
 // PenaltyAction is the enforcement stance a report recommends for its
 // target: the closed vocabulary of ADR 0010.
 type PenaltyAction string
@@ -22,8 +24,19 @@ const (
 // target (ADR 0010). Rate is a limit action's per-second threshold in
 // the unit the action name states, nil for drop and reject.
 type Penalty struct {
-	Action PenaltyAction
-	Rate   *int64
+	Action PenaltyAction `json:"action"`
+	Rate   *int64        `json:"rate,omitempty"`
+}
+
+// MarshalJSON renders the penalty in the report document shape: the
+// action always, the rate exactly for a limit action (an integer >= 1,
+// never 0).
+func (p Penalty) MarshalJSON() ([]byte, error) {
+	if !p.IsLimit() || p.Rate == nil || *p.Rate < 1 {
+		p.Rate = nil
+	}
+	type wire Penalty
+	return json.Marshal(wire(p))
 }
 
 // IsLimit reports whether Action is a limit penalty: the only kind
