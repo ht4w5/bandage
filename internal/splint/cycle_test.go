@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -1138,6 +1139,275 @@ func TestUpdateCycleConstructsTheServicePrefilter(t *testing.T) {
 	}
 }
 
+// TestUpdateCycleSkipIfUnchanged: the skip-if-unchanged seam — the
+// install is skipped exactly when the compiled ruleset is the one last
+// installed in that namespace and its table is still in place
+// (probed fresh every cycle). Every case is observed as the stub
+// driver's install call count; the rolling hash behind the comparison
+// is never asserted directly.
+func TestUpdateCycleSkipIfUnchanged(t *testing.T) {
+	t.Run("an identical document installs once and then skips", func(t *testing.T) {
+		srv := newDocServer(t)
+		srv.serve(http.StatusOK, canonicalDoc(t))
+		u, stub, logs := newTestUpdater(t, srv)
+
+		if _, err := u.Update(context.Background()); err != nil {
+			t.Fatalf("first Update: %v", err)
+		}
+		if _, err := u.Update(context.Background()); err != nil {
+			t.Fatalf("second Update: %v", err)
+		}
+		assertInstalls(t, stub, []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+		if !strings.Contains(logs.String(), "ban rules unchanged; skipping install") {
+			t.Errorf("the skipped install is not logged: %s", logs.String())
+		}
+	})
+
+	changed := func(t *testing.T, mutate func(t *testing.T, doc map[string]any)) int {
+		t.Helper()
+		srv := newDocServer(t)
+		srv.serve(http.StatusOK, canonicalDoc(t))
+		srv.serve(http.StatusOK, fixture(t, mutate))
+		u, stub, _ := newTestUpdater(t, srv)
+		if _, err := u.Update(context.Background()); err != nil {
+			t.Fatalf("first Update: %v", err)
+		}
+		if _, err := u.Update(context.Background()); err != nil {
+			t.Fatalf("second Update: %v", err)
+		}
+		return len(stub.InstallCalls())
+	}
+
+	t.Run("a new Target reinstalls", func(t *testing.T) {
+		if n := changed(t, func(t *testing.T, doc map[string]any) {
+			record(t, doc, 0)["target"] = "198.51.100.9/32"
+		}); n != 2 {
+			t.Errorf("installed %d rulesets, want 2 (a new Target is a change)", n)
+		}
+	})
+
+	t.Run("an expired report disappearing reinstalls", func(t *testing.T) {
+		if n := changed(t, func(t *testing.T, doc map[string]any) {
+			setReports(t, doc, []reportSpec{
+				{target: "203.0.113.7/32", action: PenaltyLimitBandwidth, rate: json.Number("1000000")},
+				{target: "198.51.100.9/32", action: PenaltyDrop},
+			})
+		}); n != 2 {
+			t.Errorf("installed %d rulesets, want 2 (an expired report disappearing is a change)", n)
+		}
+	})
+
+	t.Run("a stance change reinstalls", func(t *testing.T) {
+		if n := changed(t, func(t *testing.T, doc map[string]any) {
+			penalty(t, record(t, doc, 0))["action"] = string(PenaltyLimitPktRate)
+		}); n != 2 {
+			t.Errorf("installed %d rulesets, want 2 (a stance change is a change)", n)
+		}
+	})
+
+	t.Run("a matching hash with a missing table reinstalls", func(t *testing.T) {
+		srv := newDocServer(t)
+		srv.serve(http.StatusOK, canonicalDoc(t))
+		u, stub, _ := newTestUpdater(t, srv)
+		if _, err := u.Update(context.Background()); err != nil {
+			t.Fatalf("first Update: %v", err)
+		}
+		// The table is gone behind our back — an external reset, a
+		// recreated container — while the ruleset is unchanged.
+		stub.TableGone = true
+		if _, err := u.Update(context.Background()); err != nil {
+			t.Fatalf("second Update: %v", err)
+		}
+		if n := len(stub.InstallCalls()); n != 2 {
+			t.Errorf("installed %d rulesets, want 2 (a missing table must not hide behind an unchanged hash)", n)
+		}
+	})
+
+	t.Run("the skip probes for the table every cycle", func(t *testing.T) {
+		srv := newDocServer(t)
+		srv.serve(http.StatusOK, canonicalDoc(t))
+		u, stub, _ := newTestUpdater(t, srv)
+		if _, err := u.Update(context.Background()); err != nil {
+			t.Fatalf("first Update: %v", err)
+		}
+		for range 2 {
+			if _, err := u.Update(context.Background()); err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+		}
+		if n := len(stub.InstallCalls()); n != 1 {
+			t.Errorf("installed %d rulesets, want 1", n)
+		}
+		if n := stub.TableProbes(); n != 2 {
+			t.Errorf("probed for the table %d times, want 2 (freshly probed every skip, never cached)", n)
+		}
+	})
+}
+
+// TestUpdateCycleLogsTheRulesetHash: the ruleset hash is logged every
+// cycle and is deterministic — the same document hashes identically in
+// every run, so installs can be correlated across runs, and a changed
+// ruleset hashes differently. The hash's value is public output; its
+// construction is never pinned in tests.
+func TestUpdateCycleLogsTheRulesetHash(t *testing.T) {
+	t.Run("every cycle logs the hash, identical across runs", func(t *testing.T) {
+		srv := newDocServer(t)
+		srv.serve(http.StatusOK, canonicalDoc(t))
+		u, _, logs := newTestUpdater(t, srv)
+		for range 2 {
+			if _, err := u.Update(context.Background()); err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+		}
+		hashes := loggedHashes(logs.String())
+		if len(hashes) < 2 {
+			t.Fatalf("logged %d ruleset hashes, want at least one per cycle: %s", len(hashes), logs.String())
+		}
+		for _, h := range hashes {
+			if h != hashes[0] {
+				t.Errorf("cycle hashes disagree: %v", hashes)
+			}
+		}
+
+		// A fresh run over the same document logs the same hash — the
+		// cross-run correlation the hash exists for.
+		srv2 := newDocServer(t)
+		srv2.serve(http.StatusOK, canonicalDoc(t))
+		u2, _, logs2 := newTestUpdater(t, srv2)
+		if _, err := u2.Update(context.Background()); err != nil {
+			t.Fatalf("fresh run Update: %v", err)
+		}
+		if got := loggedHashes(logs2.String()); len(got) != 1 || got[0] != hashes[0] {
+			t.Errorf("a fresh run logs hashes %v, want exactly [%s]", got, hashes[0])
+		}
+	})
+
+	t.Run("a changed ruleset logs a different hash", func(t *testing.T) {
+		hashOf := func(t *testing.T, body string) string {
+			t.Helper()
+			srv := newDocServer(t)
+			srv.serve(http.StatusOK, body)
+			u, _, logs := newTestUpdater(t, srv)
+			if _, err := u.Update(context.Background()); err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+			hashes := loggedHashes(logs.String())
+			if len(hashes) != 1 {
+				t.Fatalf("logged %d ruleset hashes, want 1: %s", len(hashes), logs.String())
+			}
+			return hashes[0]
+		}
+		before := hashOf(t, canonicalDoc(t))
+		after := hashOf(t, fixture(t, func(t *testing.T, doc map[string]any) {
+			record(t, doc, 0)["target"] = "198.51.100.9/32"
+		}))
+		if after == before {
+			t.Errorf("the changed ruleset logs the same hash %q as the old one", before)
+		}
+	})
+}
+
+// TestDryRunPrintsTheRulesetHash: --dry-run prints the ruleset hash
+// alongside the compiled ban rules; the same document prints the same
+// hash every run, a changed ruleset a different one.
+func TestDryRunPrintsTheRulesetHash(t *testing.T) {
+	printHash := func(t *testing.T, body string) string {
+		t.Helper()
+		srv := newDocServer(t)
+		srv.serve(http.StatusOK, body)
+		u, stub, _ := newTestUpdater(t, srv)
+		var out bytes.Buffer
+		if err := u.DryRun(context.Background(), &out); err != nil {
+			t.Fatalf("DryRun: %v", err)
+		}
+		_, hash := splitDryRunHash(t, out.String())
+		assertInstalls(t, stub, nil)
+		return hash
+	}
+	hash := printHash(t, canonicalDoc(t))
+	if again := printHash(t, canonicalDoc(t)); again != hash {
+		t.Errorf("the same document prints hashes %q and %q across runs", hash, again)
+	}
+	if changed := printHash(t, fixture(t, func(t *testing.T, doc map[string]any) {
+		record(t, doc, 0)["target"] = "198.51.100.9/32"
+	})); changed == hash {
+		t.Errorf("the changed ruleset prints the old hash %q", hash)
+	}
+}
+
+// hashPattern matches one logged ruleset hash. Values are compared to
+// each other only — never pinned — so the rolling-hash construction
+// stays refactorable.
+var hashPattern = regexp.MustCompile(`"hash":"([0-9a-f]+)"`)
+
+// loggedHashes returns the ruleset hashes logged in text.
+func loggedHashes(text string) []string {
+	var out []string
+	for _, m := range hashPattern.FindAllStringSubmatch(text, -1) {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+// splitDryRunHash splits the dry-run output into its body and its
+// ruleset-hash line ("hash=<hex>"). The hash is public output, but its
+// value follows the rolling-hash construction and is checked for
+// shape only.
+func splitDryRunHash(t *testing.T, out string) (body, hash string) {
+	t.Helper()
+	var lines []string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "hash=") {
+			if hash != "" {
+				t.Fatalf("dry-run output has two hash lines: %q", out)
+			}
+			hash = strings.TrimPrefix(line, "hash=")
+			continue
+		}
+		lines = append(lines, line)
+	}
+	if hash == "" {
+		t.Fatalf("dry-run output has no hash line: %q", out)
+	}
+	if strings.Trim(hash, "0123456789abcdef") != "" || hash == "" {
+		t.Errorf("dry-run hash = %q, want lowercase hex", hash)
+	}
+	return strings.Join(lines, "\n"), hash
+}
+
+// TestUpdateCycleLogsTheBanRuleHits: every install logs the nonzero
+// packet/byte counters of the rules it replaces — the hits covering
+// the period since the last change — while a skipped cycle logs the
+// skip and no hits.
+func TestUpdateCycleLogsTheBanRuleHits(t *testing.T) {
+	srv := newDocServer(t)
+	srv.serve(http.StatusOK, canonicalDoc(t))
+	u, stub, logs := newTestUpdater(t, srv)
+	stub.InstallHits = []Hit{{Rule: 0, Packets: 5, Bytes: 100}}
+
+	if _, err := u.Update(context.Background()); err != nil {
+		t.Fatalf("first Update: %v", err)
+	}
+	logText := logs.String()
+	if !strings.Contains(logText, "ban rule hit") {
+		t.Errorf("the install logs no ban rule hit: %s", logText)
+	}
+	if !strings.Contains(logText, `"rule":0`) || !strings.Contains(logText, `"packets":5`) || !strings.Contains(logText, `"bytes":100`) {
+		t.Errorf("the ban rule hit does not carry its rule, packets and bytes: %s", logText)
+	}
+
+	// A skipped cycle logs the skip and no hits.
+	if _, err := u.Update(context.Background()); err != nil {
+		t.Fatalf("second Update: %v", err)
+	}
+	if !strings.Contains(logs.String(), "ban rules unchanged") {
+		t.Errorf("the skipped install is not logged: %s", logs.String())
+	}
+	if n := strings.Count(logs.String(), "ban rule hit"); n != 1 {
+		t.Errorf("logged %d ban rule hits, want 1 (a skipped cycle logs no hits): %s", n, logs.String())
+	}
+}
+
 // TestUpdateKeepsTheLastInstalledRules: a failed cycle installs nothing
 // and leaves the last installed rules in place.
 func TestUpdateKeepsTheLastInstalledRules(t *testing.T) {
@@ -1335,8 +1605,9 @@ func TestDryRunPrintsTheCompiledBanRules(t *testing.T) {
 ]
 stance=limit-bandwidth rate=1000000 chain=egress
 `
-		if out.String() != want {
-			t.Errorf("DryRun output = %q, want %q", out.String(), want)
+		body, _ := splitDryRunHash(t, out.String())
+		if body != want {
+			t.Errorf("DryRun output = %q, want %q", body, want)
 		}
 		assertInstalls(t, stub, nil)
 	})
@@ -1411,8 +1682,9 @@ func TestDryRunShowsTheEffectiveSets(t *testing.T) {
 ]
 stance=limit-bandwidth rate=1000000 chain=egress
 `
-	if out.String() != want {
-		t.Errorf("DryRun output = %q, want %q", out.String(), want)
+	body, _ := splitDryRunHash(t, out.String())
+	if body != want {
+		t.Errorf("DryRun output = %q, want %q", body, want)
 	}
 	assertInstalls(t, stub, nil)
 }

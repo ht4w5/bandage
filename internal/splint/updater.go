@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"strconv"
 	"time"
 
@@ -67,50 +66,33 @@ func (n Namespace) name() string {
 }
 
 // nsState is one namespace's cycle state: where to install, plus the
-// per-namespace installed state that follows each namespace.
+// identity of the ruleset last installed there — the compiled
+// ruleset's rolling hash. The skip compares that hash per namespace
+// and still probes that the table exists (freshly, every cycle), so a
+// recreated container or an external reset cannot hide behind an
+// unchanged hash.
 type nsState struct {
 	Namespace
 
-	// installed is the ruleset last installed here — the
-	// per-namespace installed-state slot. Ticket 06 fills it with the
-	// compiled ruleset's rolling hash (and the table-existence probe
-	// that keeps a recreated container from hiding behind it); until
-	// then the slot holds the ruleset itself and unchanged compares
-	// that, so quiet cycles skip the reinstall per namespace.
-	installed []BanRule
+	// hash is the rolling hash of the ruleset last installed here;
+	// installed marks that an install has succeeded (the zero hash is
+	// a legal hash, so presence is its own flag).
+	hash      uint32
+	installed bool
 }
 
-// unchanged reports whether rules match the last installed ruleset
-// for this namespace.
-func (t *nsState) unchanged(rules []BanRule) bool {
-	return t.installed != nil && rulesEqual(t.installed, rules)
+// unchanged reports whether hash is the rolling hash of the ruleset
+// last installed for this namespace — the skip-if-unchanged
+// comparison. (The ruleset-equality stand-in is gone: the rolling hash
+// is the compiled ruleset's identity.)
+func (t *nsState) unchanged(hash uint32) bool {
+	return t.installed && t.hash == hash
 }
 
-// setInstalled records rules as this namespace's last installed
-// ruleset (ticket 06 records its hash instead).
-func (t *nsState) setInstalled(rules []BanRule) {
-	t.installed = slices.Clone(rules)
-}
-
-// rulesEqual reports whether two compiled rulesets are identical —
-// the minimal stand-in for ticket 06's rolling-hash comparison. Every
-// ban rule field counts: a changed rate or prefilter must reinstall.
-func rulesEqual(a, b []BanRule) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		x, y := a[i], b[i]
-		if x.Stance != y.Stance || !slices.Equal(x.Targets, y.Targets) ||
-			!slices.Equal(x.Prefilter.DstPorts, y.Prefilter.DstPorts) ||
-			!slices.Equal(x.Prefilter.DstAddrs, y.Prefilter.DstAddrs) {
-			return false
-		}
-		if (x.Rate == nil) != (y.Rate == nil) || (x.Rate != nil && *x.Rate != *y.Rate) {
-			return false
-		}
-	}
-	return true
+// setInstalled records hash as this namespace's last installed
+// ruleset identity.
+func (t *nsState) setInstalled(hash uint32) {
+	t.hash, t.installed = hash, true
 }
 
 // New assembles an Updater over a single driver — the default shape,
@@ -152,11 +134,11 @@ func newUpdater(f *Fetcher, namespaces []Namespace, p Policy, interval time.Dura
 // stay and nothing more installs, and the returned skips are the
 // report records left out of the compilation.
 func (u *Updater) Update(ctx context.Context) ([]Skip, error) {
-	rules, skips, err := u.load(ctx)
+	rules, skips, hash, err := u.load(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if err := u.installAll(rules); err != nil {
+	if err := u.installAll(rules, hash); err != nil {
 		return skips, fmt.Errorf("install: %w", err)
 	}
 	return skips, nil
@@ -168,18 +150,41 @@ func (u *Updater) Update(ctx context.Context) ([]Skip, error) {
 // one dead container cannot halt enforcement everywhere — and a real
 // install failure is loud after every namespace has been tried, so
 // missing netlink privileges surface at the startup install.
-// Unchanged rules skip the reinstall per namespace.
-func (u *Updater) installAll(rules []BanRule) error {
+// Unchanged rules skip the reinstall per namespace, provided the
+// namespace's table still exists (probed fresh every cycle).
+func (u *Updater) installAll(rules []BanRule, hash uint32) error {
 	var failed []error
 	for _, t := range u.targets {
 		name := t.name()
-		if t.unchanged(rules) {
-			u.log.Info().Str("netns", name).Msg("ban rules unchanged; skipping install")
-			continue
+		if t.unchanged(hash) {
+			exists, err := t.Driver.TableExists()
+			switch {
+			case errors.Is(err, ErrUnreachable):
+				u.log.Warn().Err(err).Str("netns", name).Msg("namespace unreachable; skipping for the cycle")
+				continue
+			case err == nil && exists:
+				// Known limit: the probe is existence, not rule bodies
+				// — tampering with the rules under a surviving table is
+				// undetected.
+				u.log.Info().Str("netns", name).Str("hash", fmt.Sprintf("%x", hash)).Msg("ban rules unchanged; skipping install")
+				continue
+			}
+			// A probe that could not decide is answered by installing:
+			// only a table known to exist may skip.
 		}
-		err := t.Driver.Install(rules)
+		hits, err := t.Driver.Install(rules)
 		if err == nil {
-			t.setInstalled(rules)
+			t.setInstalled(hash)
+			// The nonzero counters of the rules just replaced — what the
+			// enforcement did since the last change.
+			for _, h := range hits {
+				u.log.Info().
+					Str("netns", name).
+					Int("rule", h.Rule).
+					Uint64("packets", h.Packets).
+					Uint64("bytes", h.Bytes).
+					Msg("ban rule hit")
+			}
 			u.log.Info().Str("netns", name).Int("rules", len(rules)).Msg("installed ban rules")
 			continue
 		}
@@ -215,11 +220,11 @@ func (u *Updater) resetAll() error {
 
 // DryRun runs one fetch-compile cycle and writes the compiled ban rules
 // to w as indented JSON, then one mapping line per ban rule — stance,
-// rate and chain (the contract's penalty → nftables mapping) — instead
-// of installing them: no firewall driver, no netlink, no privileges.
-// Skipped records are logged like any cycle.
+// rate and chain (the contract's penalty → nftables mapping) — and the
+// ruleset hash line, instead of installing them: no firewall driver, no
+// netlink, no privileges. Skipped records are logged like any cycle.
 func (u *Updater) DryRun(ctx context.Context, w io.Writer) error {
-	rules, _, err := u.load(ctx)
+	rules, _, hash, err := u.load(ctx)
 	if err != nil {
 		return err
 	}
@@ -237,19 +242,21 @@ func (u *Updater) DryRun(ctx context.Context, w io.Writer) error {
 			return err
 		}
 	}
-	return nil
+	_, err = fmt.Fprintf(w, "hash=%x\n", hash)
+	return err
 }
 
-// load fetches and compiles one report document, logging every skipped
-// report record and the cycle's counts.
-func (u *Updater) load(ctx context.Context) ([]BanRule, []Skip, error) {
+// load fetches and compiles one report document, logging the ruleset
+// hash (every cycle), every skipped report record and the cycle's
+// counts, and returning the compiled ruleset with its rolling hash.
+func (u *Updater) load(ctx context.Context) ([]BanRule, []Skip, uint32, error) {
 	data, err := u.fetcher.Fetch(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	doc, err := ParseDocument(data)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	rules, skips := Compile(doc, u.policy)
 	for _, s := range skips {
@@ -259,12 +266,14 @@ func (u *Updater) load(ctx context.Context) ([]BanRule, []Skip, error) {
 			Str("reason", s.Reason).
 			Msg("skipped report record")
 	}
+	hash := Hash(rules)
 	u.log.Info().
 		Int("reports", len(doc.Reports)).
 		Int("rules", len(rules)).
 		Int("skipped", len(skips)).
+		Str("hash", fmt.Sprintf("%x", hash)).
 		Msg("compiled ban rules")
-	return rules, skips, nil
+	return rules, skips, hash, nil
 }
 
 // Run performs the startup test install and then one update per tick

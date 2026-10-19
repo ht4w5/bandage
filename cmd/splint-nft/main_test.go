@@ -91,6 +91,22 @@ func reportDocFor(target string) string {
 	return `{"version":0,"generated_at":"2025-10-17T18:00:00Z","reports":[{"rule":"r","chain":"c","reason":"x","target":"` + target + `","penalty":{"action":"drop"}}]}`
 }
 
+// dryRunBody strips the dry-run output's ruleset-hash line — the
+// trailing public output of the rolling hash — so these assertions
+// stay on the compiled ban rules; the hash's value is never pinned
+// (cycle_test.go splits the same line for the same reason).
+func dryRunBody(t *testing.T, out string) string {
+	t.Helper()
+	var lines []string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "hash=") {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // TestRunValidatesTheClientCertificatePair: startup validation — a
 // client certificate without its key (or a key without its
 // certificate) is rejected before any network I/O, and the pair is
@@ -207,8 +223,8 @@ func TestRunExclusionFlags(t *testing.T) {
 		if code != exitOK {
 			t.Fatalf("exit code = %d, want %d (stderr %q)", code, exitOK, stderr.String())
 		}
-		if stdout.String() != "[]\n" {
-			t.Errorf("--dry-run output = %q, want the fully excluded Target to compile to no ban rule", stdout.String())
+		if body := dryRunBody(t, stdout.String()); body != "[]\n" {
+			t.Errorf("--dry-run output = %q, want the fully excluded Target to compile to no ban rule", body)
 		}
 	})
 }
@@ -227,8 +243,8 @@ func TestRunExcludePrivateFlag(t *testing.T) {
 		if !opts.excludePrivate {
 			t.Error("--exclude-private defaults to false, want true")
 		}
-		if stdout.String() != "[]\n" {
-			t.Errorf("--dry-run output = %q, want the private Target excluded by default", stdout.String())
+		if body := dryRunBody(t, stdout.String()); body != "[]\n" {
+			t.Errorf("--dry-run output = %q, want the private Target excluded by default", body)
 		}
 	})
 

@@ -94,26 +94,45 @@ func TestKernelInstallReadBackReset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New(input): %v", err)
 	}
-	if err := input.Install(rules); err != nil {
+	firstHits, err := input.Install(rules)
+	if err != nil {
 		t.Fatalf("first Install: %v", err)
+	}
+	if len(firstHits) != 0 {
+		t.Errorf("first Install reported %d hits, want none (nothing was installed to count)", len(firstHits))
+	}
+	if exists, err := input.TableExists(); err != nil || !exists {
+		t.Errorf("TableExists after Install = (%v, %v), want (true, nil)", exists, err)
 	}
 	assertKernelState(t, conn, HookInput)
 
 	// Rebuilding over the live table proves the delete and the rebuild
 	// share one atomic batch; the second install is also the --hook
-	// prerouting case.
+	// prerouting case, and it reports the replaced rules' counter
+	// readings mapped onto the ban rules they count (how many depends
+	// on what traffic met the fixture rules; the mapping is what is
+	// asserted).
 	prerouting, err := New(HookPrerouting)
 	if err != nil {
 		t.Fatalf("New(prerouting): %v", err)
 	}
-	if err := prerouting.Install(rules); err != nil {
+	rebuildHits, err := prerouting.Install(rules)
+	if err != nil {
 		t.Fatalf("rebuild Install: %v", err)
+	}
+	for _, h := range rebuildHits {
+		if h.Rule < 0 || h.Rule >= len(rules) {
+			t.Errorf("counter read-back mapped to ban rule %d, want 0..%d", h.Rule, len(rules)-1)
+		}
 	}
 	assertKernelState(t, conn, HookPrerouting)
 
 	// Reset removes the owned table ...
 	if err := prerouting.Reset(); err != nil {
 		t.Fatalf("Reset: %v", err)
+	}
+	if exists, err := prerouting.TableExists(); err != nil || exists {
+		t.Errorf("TableExists after Reset = (%v, %v), want (false, nil)", exists, err)
 	}
 	if exists, err := tableExists(conn, ownedTable()); err != nil {
 		t.Fatalf("probe after Reset: %v", err)
@@ -248,9 +267,10 @@ func assertKernelState(t *testing.T, conn *nftables.Conn, hook Hook) {
 	}
 }
 
-// wantRule is one expected kernel rule: the family gate, the service
-// prefilter first (the destination-port set behind its l4 gate, then
-// the destination-address set — either absent when its set is empty,
+// wantRule is one expected kernel rule: the leading packet/byte
+// counter, the family gate, the service prefilter first (the
+// destination-port set behind its l4 gate, then the
+// destination-address set — either absent when its set is empty,
 // meaning all), the target match and the stance's verdict tail. The
 // match load is the source address on the ingress chain and the
 // destination address on the egress chain.
@@ -300,13 +320,14 @@ func assertChain(t *testing.T, conn *nftables.Conn, table *nftables.Table, name 
 type tailCheck func(t *testing.T, exprs []expr.Any)
 
 // assertMatch asserts the shared rule prefix in match order — the
-// family gate, the service prefilter, and the address load at off:len
-// into register 1 followed by the lookup of setName — and returns the
-// verdict tail for the caller.
+// leading packet/byte counter every ban rule carries, the family gate,
+// the service prefilter, and the address load at off:len into register
+// 1 followed by the lookup of setName — and returns the verdict tail
+// for the caller.
 func assertMatch(t *testing.T, r *nftables.Rule, w wantRule) []expr.Any {
 	t.Helper()
 	exprs := r.Exprs
-	wantLen := 5
+	wantLen := 6
 	if w.portSet != "" {
 		wantLen += 4
 	}
@@ -316,9 +337,14 @@ func assertMatch(t *testing.T, r *nftables.Rule, w wantRule) []expr.Any {
 	if len(exprs) < wantLen {
 		t.Fatalf("rule exprs = %d, want at least %d: %v", len(exprs), wantLen, exprs)
 	}
-	assertMeta(t, "family gate", exprs[0], expr.MetaKeyNFPROTO)
-	assertCmp(t, "family gate", exprs[1], []byte{w.proto})
-	i := 2
+	// Every ban rule carries its packet/byte counter first: the fixed
+	// index the counter read-back finds it at.
+	if _, ok := exprs[0].(*expr.Counter); !ok {
+		t.Errorf("rule counter = %+v, want the leading packet/byte counter", exprs[0])
+	}
+	assertMeta(t, "family gate", exprs[1], expr.MetaKeyNFPROTO)
+	assertCmp(t, "family gate", exprs[2], []byte{w.proto})
+	i := 3
 	if w.portSet != "" {
 		assertMeta(t, "l4proto gate", exprs[i], expr.MetaKeyL4PROTO)
 		i++
