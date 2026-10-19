@@ -7,16 +7,16 @@ import (
 
 // Driver is the firewall-driver port: Install replaces the
 // wholly-owned ruleset with rules, Reset removes it. The port is the
-// update cycle's seam: Stub below and ticket 02's nftables driver
-// implement it.
+// update cycle's seam: Stub below and the nftables driver
+// (internal/splint/nft) implement it.
 type Driver interface {
 	Install(rules []BanRule) error
 	Reset() error
 }
 
-// Stub is a recording Driver: the walking skeleton's placeholder
-// installer until ticket 02's nftables driver lands, and the test
-// double the update-cycle seam observes. It never touches netlink.
+// Stub is a recording Driver: the test double the update-cycle seam
+// observes. It never touches netlink, so lifecycle behavior is
+// testable without privileges.
 type Stub struct {
 	// InstallErr, when set before use, makes Install fail.
 	InstallErr error

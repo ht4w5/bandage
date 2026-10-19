@@ -22,6 +22,7 @@ import (
 
 	"github.com/HT4w5/bandage/internal/identity"
 	"github.com/HT4w5/bandage/internal/splint"
+	"github.com/HT4w5/bandage/internal/splint/nft"
 )
 
 // Exit codes: 0 for a clean run, 1 for a load or run error, 2 for a bad
@@ -39,6 +40,7 @@ const progName = "splint-nft"
 // options is the resolved command line.
 type options struct {
 	url      string
+	hook     string
 	interval time.Duration
 	dryRun   bool
 	logLevel string
@@ -58,6 +60,7 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	// are decided here. Help goes to stdout, errors to stderr below.
 	fs.SetOutput(stdout)
 	url := fs.StringP("url", "u", "", "URL of the bandage report document")
+	hookFlag := fs.String("hook", "input", "enforcement hook: input or prerouting")
 	interval := fs.DurationP("update-interval", "i", splint.DefaultInterval, "report document update interval (clamped to a 1m floor)")
 	dryRun := fs.BoolP("dry-run", "d", false, "fetch and print the compiled ban rules once without installing")
 	logLevel := fs.StringP("log-level", "l", "info", "log level: debug, info, warn or error")
@@ -77,6 +80,7 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	}
 	opts := options{
 		url:      *url,
+		hook:     *hookFlag,
 		interval: *interval,
 		dryRun:   *dryRun,
 		logLevel: *logLevel,
@@ -89,9 +93,14 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	if err != nil {
 		return fail(stderr, err), opts
 	}
-	// The stub driver until ticket 02 wires the nftables driver in;
-	// --dry-run never reaches a driver at all.
-	driver := &splint.Stub{}
+	hook, err := nft.ParseHook(opts.hook)
+	if err != nil {
+		return fail(stderr, err), opts
+	}
+	driver, err := nft.New(hook)
+	if err != nil {
+		return fail(stderr, err), opts
+	}
 	u := splint.New(fetcher, driver, opts.interval, logger)
 
 	// SIGINT/SIGTERM end the update loop, which resets the installed
@@ -99,6 +108,7 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if opts.dryRun {
+		// --dry-run never reaches the driver: no netlink, no privileges.
 		if err := u.DryRun(ctx, stdout); err != nil {
 			return fail(stderr, err), opts
 		}

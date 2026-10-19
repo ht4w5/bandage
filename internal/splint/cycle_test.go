@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -479,6 +480,39 @@ func TestUpdateKeepsTheLastInstalledRules(t *testing.T) {
 		keepLast(t, http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
 			doc["version"] = json.Number("1")
 		}))
+	})
+}
+
+// TestUpdateFailsLoudlyWhenTheDriverRefusesTheInstall: an install
+// failure is a loud cycle error — the surface a
+// missing-netlink-privileges install takes — and fatal at the startup
+// test install, all stub-driven and unprivileged.
+func TestUpdateFailsLoudlyWhenTheDriverRefusesTheInstall(t *testing.T) {
+	t.Run("a refused install fails the cycle", func(t *testing.T) {
+		srv := newDocServer(t)
+		srv.serve(http.StatusOK, canonicalDoc(t))
+		u, stub, _ := newTestUpdater(t, srv)
+		stub.InstallErr = errors.New("netlink: permission denied")
+
+		if _, err := u.Update(context.Background()); err == nil || !strings.Contains(err.Error(), "install") {
+			t.Fatalf("Update error = %v, want an install failure", err)
+		}
+		assertInstalls(t, stub, nil)
+	})
+
+	t.Run("a refused install at startup exits with an error", func(t *testing.T) {
+		srv := newDocServer(t)
+		srv.serve(http.StatusOK, canonicalDoc(t))
+		u, stub, _ := newTestUpdater(t, srv)
+		stub.InstallErr = errors.New("netlink: permission denied")
+
+		err := u.Run(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "startup test install") {
+			t.Fatalf("Run error = %v, want a startup test install failure", err)
+		}
+		if stub.ResetCalls() != 1 {
+			t.Errorf("Reset ran %d times, want 1 (reset before exiting non-zero)", stub.ResetCalls())
+		}
 	})
 }
 
