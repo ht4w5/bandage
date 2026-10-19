@@ -110,7 +110,7 @@ func Compile(doc Document, p Policy) ([]BanRule, []Skip) {
 	var entries []entry
 	var skips []Skip
 	for _, r := range doc.Reports {
-		e, reason := compileRecord(r, p)
+		e, reason := compileReport(r, p)
 		if reason != "" {
 			skips = append(skips, Skip{Rule: r.Rule, Target: r.Target, Reason: reason})
 			continue
@@ -134,13 +134,13 @@ type entry struct {
 	rate      *int64
 }
 
-// compileRecord maps one report record onto its merge entry: the
-// record validation (parseRecord), the penalty mapping (mapPenalty)
+// compileReport maps one report record onto its merge entry: the
+// record validation (parseReport), the penalty mapping (mapPenalty)
 // and the policy's exclusion subtraction, which leaves the record's
 // residual Targets — a fully excluded Target contributes nothing and
 // is skipped. The reason is "" exactly when the record compiles.
-func compileRecord(r Report, p Policy) (entry, string) {
-	target, reason := parseRecord(r)
+func compileReport(r Report, p Policy) (entry, string) {
+	target, reason := parseReport(r)
 	if reason != "" {
 		return entry{}, reason
 	}
@@ -361,7 +361,7 @@ func rateValue(r *int64) int64 {
 // mapPenalty maps a penalty's action onto the ban rule's stance — the
 // penalty → nftables mapping, total over the closed version-0
 // vocabulary so a consumer's switch is never silently wrong. The
-// penalty's rate (validated by parseRecord) travels onto the ban rule
+// penalty's rate (validated by parseReport) travels onto the ban rule
 // unchanged. limit-req-rate maps to a skip reason instead of a stance:
 // it is deliberately not applied (ADR 0011) and nothing installs for
 // it. The default keeps unknown actions loud even if one slips past
@@ -383,10 +383,10 @@ func mapPenalty(p Penalty) (Stance, string) {
 	}
 }
 
-// parseRecord validates one record against the contract's penalty and
+// parseReport validates one record against the contract's penalty and
 // target rules, returning its masked Target prefix or the reason the
 // record is skipped ("" when it compiles).
-func parseRecord(r Report) (netip.Prefix, string) {
+func parseReport(r Report) (netip.Prefix, string) {
 	if r.Penalty == nil {
 		return netip.Prefix{}, "penalty: missing"
 	}

@@ -166,8 +166,8 @@ func encodeFixture(t *testing.T, doc map[string]any) string {
 	return string(data)
 }
 
-// record returns the i-th report record of a decoded fixture document.
-func record(t *testing.T, doc map[string]any, i int) map[string]any {
+// report returns the i-th report record of a decoded fixture document.
+func report(t *testing.T, doc map[string]any, i int) map[string]any {
 	t.Helper()
 	reports, ok := doc["reports"].([]any)
 	if !ok || i >= len(reports) {
@@ -190,8 +190,8 @@ func penalty(t *testing.T, rec map[string]any) map[string]any {
 	return p
 }
 
-// cloneRecord deep-copies a decoded fixture record via a JSON round trip.
-func cloneRecord(t *testing.T, rec map[string]any) map[string]any {
+// cloneReport deep-copies a decoded fixture record via a JSON round trip.
+func cloneReport(t *testing.T, rec map[string]any) map[string]any {
 	t.Helper()
 	return decodeFixture(t, encodeFixture(t, rec))
 }
@@ -211,7 +211,7 @@ func setReports(t *testing.T, doc map[string]any, specs []reportSpec) {
 	t.Helper()
 	var reports []any
 	for _, spec := range specs {
-		rec := cloneRecord(t, record(t, doc, 0))
+		rec := cloneReport(t, report(t, doc, 0))
 		rec["target"] = spec.target
 		p := penalty(t, rec)
 		p["action"] = string(spec.action)
@@ -365,14 +365,36 @@ func TestUpdateCycleValidations(t *testing.T) {
 			wantErr: "version",
 		},
 		{
-			name:      "document version 0 compiles its records",
+			name:    "an envelope without a version refuses the cycle",
+			mutate:  func(t *testing.T, doc map[string]any) { delete(doc, "version") },
+			wantErr: "version: required",
+		},
+		{
+			name:    "an envelope without generated_at refuses the cycle",
+			mutate:  func(t *testing.T, doc map[string]any) { delete(doc, "generated_at") },
+			wantErr: "generated_at: required",
+		},
+		{
+			name:    "an envelope without reports refuses the cycle",
+			mutate:  func(t *testing.T, doc map[string]any) { delete(doc, "reports") },
+			wantErr: "reports: required",
+		},
+		{
+			name:      "document version 0 compiles its reports",
 			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")},
+		},
+		{
+			name: "an envelope with an empty reports list compiles to an empty ruleset",
+			mutate: func(t *testing.T, doc map[string]any) {
+				doc["reports"] = []any{}
+			},
+			wantRules: []BanRule{},
 		},
 		{
 			name: "unknown document fields are ignored",
 			mutate: func(t *testing.T, doc map[string]any) {
 				doc["future_envelope_field"] = true
-				rec := record(t, doc, 0)
+				rec := report(t, doc, 0)
 				rec["future_record_field"] = 42
 				penalty(t, rec)["future_penalty_field"] = "x"
 			},
@@ -384,41 +406,41 @@ func TestUpdateCycleValidations(t *testing.T) {
 			wantErr: "parse",
 		},
 		{
-			name: "a record without a penalty is skipped",
+			name: "a report without a penalty is skipped",
 			mutate: func(t *testing.T, doc map[string]any) {
-				delete(record(t, doc, 0), "penalty")
+				delete(report(t, doc, 0), "penalty")
 			},
 			wantRules:   []BanRule{},
 			wantSkipped: 1,
 		},
 		{
-			name: "a record with a valid penalty compiles",
+			name: "a report with a valid penalty compiles",
 			mutate: func(t *testing.T, doc map[string]any) {
-				p := penalty(t, record(t, doc, 0))
+				p := penalty(t, report(t, doc, 0))
 				p["action"] = string(PenaltyReject)
 				delete(p, "rate")
 			},
 			wantRules: []BanRule{banRule(StanceReject, nil, "203.0.113.7/32")},
 		},
 		{
-			name: "a record with an unknown penalty action is skipped",
+			name: "a report with an unknown penalty action is skipped",
 			mutate: func(t *testing.T, doc map[string]any) {
-				penalty(t, record(t, doc, 0))["action"] = "throttle"
+				penalty(t, report(t, doc, 0))["action"] = "throttle"
 			},
 			wantRules:   []BanRule{},
 			wantSkipped: 1,
 		},
 		{
-			name: "a record with a known penalty action compiles",
+			name: "a report with a known penalty action compiles",
 			mutate: func(t *testing.T, doc map[string]any) {
-				penalty(t, record(t, doc, 0))["action"] = string(PenaltyLimitPktRate)
+				penalty(t, report(t, doc, 0))["action"] = string(PenaltyLimitPktRate)
 			},
 			wantRules: []BanRule{banRule(StanceLimitPktRate, ratePtr(1000000), "203.0.113.7/32")},
 		},
 		{
 			name: "a limit penalty without its rate is skipped",
 			mutate: func(t *testing.T, doc map[string]any) {
-				delete(penalty(t, record(t, doc, 0)), "rate")
+				delete(penalty(t, report(t, doc, 0)), "rate")
 			},
 			wantRules:   []BanRule{},
 			wantSkipped: 1,
@@ -426,7 +448,7 @@ func TestUpdateCycleValidations(t *testing.T) {
 		{
 			name: "a penalty rate below one is skipped",
 			mutate: func(t *testing.T, doc map[string]any) {
-				penalty(t, record(t, doc, 0))["rate"] = json.Number("0")
+				penalty(t, report(t, doc, 0))["rate"] = json.Number("0")
 			},
 			wantRules:   []BanRule{},
 			wantSkipped: 1,
@@ -434,14 +456,14 @@ func TestUpdateCycleValidations(t *testing.T) {
 		{
 			name: "a limit penalty with its rate compiles",
 			mutate: func(t *testing.T, doc map[string]any) {
-				penalty(t, record(t, doc, 0))["rate"] = json.Number("500000")
+				penalty(t, report(t, doc, 0))["rate"] = json.Number("500000")
 			},
 			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(500000), "203.0.113.7/32")},
 		},
 		{
 			name: "a rate on a non-limit penalty is skipped",
 			mutate: func(t *testing.T, doc map[string]any) {
-				penalty(t, record(t, doc, 0))["action"] = string(PenaltyDrop)
+				penalty(t, report(t, doc, 0))["action"] = string(PenaltyDrop)
 			},
 			wantRules:   []BanRule{},
 			wantSkipped: 1,
@@ -449,34 +471,34 @@ func TestUpdateCycleValidations(t *testing.T) {
 		{
 			name: "a non-limit penalty without its rate compiles",
 			mutate: func(t *testing.T, doc map[string]any) {
-				p := penalty(t, record(t, doc, 0))
+				p := penalty(t, report(t, doc, 0))
 				p["action"] = string(PenaltyDrop)
 				delete(p, "rate")
 			},
 			wantRules: []BanRule{banRule(StanceDrop, nil, "203.0.113.7/32")},
 		},
 		{
-			name: "a record with an unparseable Target is skipped",
+			name: "a report with an unparseable Target is skipped",
 			mutate: func(t *testing.T, doc map[string]any) {
-				record(t, doc, 0)["target"] = "not-a-prefix"
+				report(t, doc, 0)["target"] = "not-a-prefix"
 			},
 			wantRules:   []BanRule{},
 			wantSkipped: 1,
 		},
 		{
-			name: "a record with a parseable Target compiles",
+			name: "a report with a parseable Target compiles",
 			mutate: func(t *testing.T, doc map[string]any) {
-				record(t, doc, 0)["target"] = "203.0.113.7/24"
+				report(t, doc, 0)["target"] = "203.0.113.7/24"
 			},
 			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.0/24")},
 		},
 		{
-			name: "invalid records are skipped while the rest compile",
+			name: "invalid reports are skipped while the rest compile",
 			mutate: func(t *testing.T, doc map[string]any) {
-				rec := record(t, doc, 0)
-				badTarget := cloneRecord(t, rec)
+				rec := report(t, doc, 0)
+				badTarget := cloneReport(t, rec)
 				badTarget["target"] = "not-a-prefix"
-				noPenalty := cloneRecord(t, rec)
+				noPenalty := cloneReport(t, rec)
 				delete(noPenalty, "penalty")
 				doc["reports"] = []any{rec, badTarget, noPenalty}
 			},
@@ -599,7 +621,7 @@ func TestUpdateCyclePenaltyMapping(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := newDocServer(t)
 			srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
-				p := penalty(t, record(t, doc, 0))
+				p := penalty(t, report(t, doc, 0))
 				p["action"] = string(tt.action)
 				if tt.rate == nil {
 					delete(p, "rate")
@@ -629,16 +651,16 @@ func TestUpdateCyclePenaltyMapping(t *testing.T) {
 	}
 }
 
-// TestUpdateCycleLogsAndCountsSkippedRecords: every skipped record is
+// TestUpdateCycleLogsAndCountsSkippedReports: every skipped report is
 // logged with its identity and reason, and the cycle's summary counts
 // the skips.
-func TestUpdateCycleLogsAndCountsSkippedRecords(t *testing.T) {
+func TestUpdateCycleLogsAndCountsSkippedReports(t *testing.T) {
 	srv := newDocServer(t)
 	srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
-		rec := record(t, doc, 0)
-		badTarget := cloneRecord(t, rec)
+		rec := report(t, doc, 0)
+		badTarget := cloneReport(t, rec)
 		badTarget["target"] = "not-a-prefix"
-		noPenalty := cloneRecord(t, rec)
+		noPenalty := cloneReport(t, rec)
 		delete(noPenalty, "penalty")
 		doc["reports"] = []any{rec, badTarget, noPenalty}
 	}))
@@ -1028,7 +1050,7 @@ func TestUpdateCycleSubtractsExclusions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := newDocServer(t)
 			srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
-				record(t, doc, 0)["target"] = tt.target
+				report(t, doc, 0)["target"] = tt.target
 			}))
 			u, stub, _ := newTestUpdaterCfg(t, srv, Policy{Exclude: mustPrefixes(t, tt.exclude...)})
 
@@ -1068,7 +1090,7 @@ func TestUpdateCycleSafetyExclusions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			srv := newDocServer(t)
 			srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
-				record(t, doc, 0)["target"] = tt.target
+				report(t, doc, 0)["target"] = tt.target
 			}))
 			u, stub, _ := newTestUpdaterCfg(t, srv, tt.policy)
 
@@ -1180,7 +1202,7 @@ func TestUpdateCycleSkipIfUnchanged(t *testing.T) {
 
 	t.Run("a new Target reinstalls", func(t *testing.T) {
 		if n := changed(t, func(t *testing.T, doc map[string]any) {
-			record(t, doc, 0)["target"] = "198.51.100.9/32"
+			report(t, doc, 0)["target"] = "198.51.100.9/32"
 		}); n != 2 {
 			t.Errorf("installed %d rulesets, want 2 (a new Target is a change)", n)
 		}
@@ -1199,7 +1221,7 @@ func TestUpdateCycleSkipIfUnchanged(t *testing.T) {
 
 	t.Run("a stance change reinstalls", func(t *testing.T) {
 		if n := changed(t, func(t *testing.T, doc map[string]any) {
-			penalty(t, record(t, doc, 0))["action"] = string(PenaltyLimitPktRate)
+			penalty(t, report(t, doc, 0))["action"] = string(PenaltyLimitPktRate)
 		}); n != 2 {
 			t.Errorf("installed %d rulesets, want 2 (a stance change is a change)", n)
 		}
@@ -1299,7 +1321,7 @@ func TestUpdateCycleLogsTheRulesetHash(t *testing.T) {
 		}
 		before := hashOf(t, canonicalDoc(t))
 		after := hashOf(t, fixture(t, func(t *testing.T, doc map[string]any) {
-			record(t, doc, 0)["target"] = "198.51.100.9/32"
+			report(t, doc, 0)["target"] = "198.51.100.9/32"
 		}))
 		if after == before {
 			t.Errorf("the changed ruleset logs the same hash %q as the old one", before)
@@ -1329,7 +1351,7 @@ func TestDryRunPrintsTheRulesetHash(t *testing.T) {
 		t.Errorf("the same document prints hashes %q and %q across runs", hash, again)
 	}
 	if changed := printHash(t, fixture(t, func(t *testing.T, doc map[string]any) {
-		record(t, doc, 0)["target"] = "198.51.100.9/32"
+		report(t, doc, 0)["target"] = "198.51.100.9/32"
 	})); changed == hash {
 		t.Errorf("the changed ruleset prints the old hash %q", hash)
 	}
@@ -1497,7 +1519,7 @@ func TestUpdaterRun(t *testing.T) {
 		srv.serve(http.StatusOK, canonicalDoc(t))
 		srv.serve(http.StatusInternalServerError, "")
 		srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
-			record(t, doc, 0)["target"] = "198.51.100.9/32"
+			report(t, doc, 0)["target"] = "198.51.100.9/32"
 		}))
 		srv.serve(http.StatusInternalServerError, "")
 		u, stub, logs := newTestUpdater(t, srv)
@@ -1651,7 +1673,7 @@ stance=limit-bandwidth rate=1000000 chain=egress
 func TestDryRunShowsTheEffectiveSets(t *testing.T) {
 	srv := newDocServer(t)
 	srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
-		record(t, doc, 0)["target"] = "203.0.113.0/24"
+		report(t, doc, 0)["target"] = "203.0.113.0/24"
 	}))
 	u, stub, _ := newTestUpdaterCfg(t, srv, NewPolicy(
 		mustPrefixes(t, "203.0.113.0/25"), true,

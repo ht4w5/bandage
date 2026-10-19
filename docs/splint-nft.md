@@ -79,9 +79,10 @@ faked at the packet layer (ADR 0011).
 Every limit is an aggregate over the Report's whole Target prefix, not
 each host inside it. Rate limits carry a derived burst of one second's
 worth of the rate (floored), so legitimate micro-bursts survive
-enforcement. Every ban rule carries a packet/byte counter; nonzero hits
-are logged at each install — "since the last change" (see the cycle
-logs below).
+enforcement. Every ban rule carries a packet/byte counter on the
+traffic the rule matches — never the traffic its prefilter or Target
+match lets past; nonzero hits are logged at each install — "since the
+last change" (see the cycle logs below).
 
 ## Merge policy
 

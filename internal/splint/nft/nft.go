@@ -161,10 +161,10 @@ func (d *Driver) TableExists() (bool, error) {
 // resets the counters): a probe decides whether the delete joins the
 // batch, the replaced rules' counters are read back first, then the
 // table, both chains and one kernel rule per ban rule and address
-// family — each carrying its counter first and leading with the
-// service prefilter — are buffered and flushed together. The table is
-// never absent while the new one applies — there is no
-// delete-then-rebuild window.
+// family — each leading with the service prefilter and carrying its
+// packet/byte counter immediately before the verdict — are buffered
+// and flushed together. The table is never absent while the new one
+// applies — there is no delete-then-rebuild window.
 func (d *Driver) Install(rules []splint.BanRule) ([]splint.Hit, error) {
 	conn, nsFile, err := d.connect()
 	if err != nil {
@@ -205,11 +205,11 @@ func (d *Driver) Install(rules []splint.BanRule) ([]splint.Hit, error) {
 }
 
 // ruleHits reads the owned table's per-rule counters back, one hit per
-// ban rule: every kernel rule leads with its counter (addBanRule) and
-// carries its ban rule's index in its set names, so every reading maps
-// onto the ban rule it counts — the index in the ruleset being
-// replaced. Only the nonzero readings come back: they are the hits
-// worth logging.
+// ban rule: every kernel rule carries its counter immediately before
+// its verdict (addBanRule) and its ban rule's index in its set names,
+// so every reading maps onto the ban rule it counts — the index in the
+// ruleset being replaced. Only the nonzero readings come back: they
+// are the hits worth logging.
 func ruleHits(conn *nftables.Conn, table *nftables.Table) ([]splint.Hit, error) {
 	byRule := map[int]splint.Hit{}
 	for _, name := range []string{ingressName, egressName} {
@@ -245,14 +245,17 @@ func ruleHits(conn *nftables.Conn, table *nftables.Table) ([]splint.Hit, error) 
 	return hits, nil
 }
 
-// ruleCounter is a kernel rule's leading packet/byte counter (every
-// ban rule carries one), or false when the rule carries none.
+// ruleCounter is a kernel rule's packet/byte counter (every ban rule
+// carries one immediately before its verdict), or false when the rule
+// carries none. It is found by shape rather than a fixed index: the
+// match exprs in front of it vary with the rule's prefilter.
 func ruleCounter(r *nftables.Rule) (*expr.Counter, bool) {
-	if len(r.Exprs) == 0 {
-		return nil, false
+	for _, e := range r.Exprs {
+		if c, ok := e.(*expr.Counter); ok {
+			return c, true
+		}
 	}
-	c, ok := r.Exprs[0].(*expr.Counter)
-	return c, ok
+	return nil, false
 }
 
 // ruleIndex maps a kernel rule back onto its ban rule: the ban rule's
@@ -385,8 +388,8 @@ var (
 // of the rule's Target prefixes and one kernel rule that leads with the
 // service prefilter — the destination-port set first, then the
 // destination-address set, either empty meaning all — before the
-// target match and the stance's verdict. The direction split of the
-// penalty mapping: bandwidth meters the response direction on the
+// target match, the packet/byte counter and the stance's verdict. The
+// direction split of the penalty mapping: bandwidth meters the response direction on the
 // egress chain, matched on destination ∈ Target; every other stance
 // matches source on the ingress chain.
 func addBanRule(conn *nftables.Conn, table *nftables.Table, ingress, egress *nftables.Chain, i int, r splint.BanRule) error {
@@ -409,12 +412,12 @@ func addBanRule(conn *nftables.Conn, table *nftables.Table, ingress, egress *nft
 	// traffic: when the operator configured destination addresses and
 	// none is in this family, nothing here is service traffic and the
 	// family gets no kernel rule at all.
-	type famRule struct {
-		fam      addrFamily
+	type familyRule struct {
+		family   addrFamily
 		targets  []netip.Prefix
 		dstAddrs []netip.Prefix
 	}
-	var frs []famRule
+	var familyRules []familyRule
 	for _, fam := range families {
 		targets := familyPrefixes(r.Targets, fam)
 		if len(targets) == 0 {
@@ -424,9 +427,9 @@ func addBanRule(conn *nftables.Conn, table *nftables.Table, ingress, egress *nft
 		if len(r.Prefilter.DstAddrs) > 0 && len(dstAddrs) == 0 {
 			continue
 		}
-		frs = append(frs, famRule{fam, targets, dstAddrs})
+		familyRules = append(familyRules, familyRule{fam, targets, dstAddrs})
 	}
-	if len(frs) == 0 {
+	if len(familyRules) == 0 {
 		return nil
 	}
 	// The destination-port prefilter is family-independent: its sets
@@ -458,32 +461,30 @@ func addBanRule(conn *nftables.Conn, table *nftables.Table, ingress, egress *nft
 			&expr.Lookup{SourceRegister: 1, SetName: portSetName(i)},
 		}
 	}
-	for _, fr := range frs {
-		fam := fr.fam
+	for _, f := range familyRules {
+		fam := f.family
 		if err := conn.AddSet(&nftables.Set{
 			Table:    table,
 			KeyType:  fam.keyType,
 			Name:     fam.setName(i),
 			Interval: true,
-		}, intervalElements(fr.targets)); err != nil {
+		}, intervalElements(f.targets)); err != nil {
 			return err
 		}
 		exprs := []expr.Any{
-			// Every ban rule carries its packet/byte counter first — the
-			// fixed index ruleHits reads it back at — then the family
-			// gate.
-			&expr.Counter{},
+			// The family gate leads: only this family's packets can
+			// reach the rule's matches at all.
 			&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
 			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{fam.proto}},
 		}
 		exprs = append(exprs, portExprs...)
-		if len(fr.dstAddrs) > 0 {
+		if len(f.dstAddrs) > 0 {
 			if err := conn.AddSet(&nftables.Set{
 				Table:    table,
 				KeyType:  fam.keyType,
 				Name:     fam.dstSetName(i),
 				Interval: true,
-			}, intervalElements(fr.dstAddrs)); err != nil {
+			}, intervalElements(f.dstAddrs)); err != nil {
 				return err
 			}
 			exprs = append(exprs,
@@ -496,6 +497,11 @@ func addBanRule(conn *nftables.Conn, table *nftables.Table, ingress, egress *nft
 			&expr.Payload{DestRegister: 1, OperationType: expr.PayloadLoad,
 				Base: expr.PayloadBaseNetworkHeader, Offset: matchOff(fam), Len: fam.srcLen},
 			&expr.Lookup{SourceRegister: 1, SetName: fam.setName(i)},
+			// The counter comes after every match expr and immediately
+			// before the verdict: it counts only the packets this ban
+			// rule matches, so its nonzero readings are the hits worth
+			// logging at the next install.
+			&expr.Counter{},
 		)
 		exprs = append(exprs, verdict...)
 		conn.AddRule(&nftables.Rule{

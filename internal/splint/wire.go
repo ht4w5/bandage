@@ -7,6 +7,7 @@ package splint
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -101,17 +102,38 @@ func (a PenaltyAction) IsLimit() bool {
 }
 
 // ParseDocument decodes a report document as the published contract.
-// Unknown fields are ignored, per the contract's evolution policy; an
-// unknown document version refuses the document, and so does JSON that
-// does not match the contract's types — whole-cycle refusals, unlike
-// the per-record tolerances Compile applies.
+// Unknown fields are ignored, per the contract's evolution policy. The
+// envelope's version, generated_at and reports fields are required
+// (docs/reports.md's Envelope table): a document missing one of them is
+// malformed and refuses the whole cycle, and so does an unknown
+// document version or JSON that does not match the contract's types —
+// whole-cycle refusals, unlike the per-record tolerances Compile
+// applies. A present but empty reports array is valid (every report
+// expired) and decodes to an empty ruleset.
 func ParseDocument(data []byte) (Document, error) {
-	var doc Document
-	if err := json.Unmarshal(data, &doc); err != nil {
+	var envelope struct {
+		Version     *int      `json:"version"`
+		GeneratedAt *string   `json:"generated_at"`
+		Reports     *[]Report `json:"reports"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
 		return Document{}, fmt.Errorf("report document: parse: %w", err)
 	}
-	if doc.Version != 0 {
-		return Document{}, fmt.Errorf("report document: version: unknown (got %d, want 0)", doc.Version)
+	if envelope.Version == nil {
+		return Document{}, errors.New("report document: version: required")
 	}
-	return doc, nil
+	if envelope.GeneratedAt == nil {
+		return Document{}, errors.New("report document: generated_at: required")
+	}
+	if envelope.Reports == nil {
+		return Document{}, errors.New("report document: reports: required")
+	}
+	if *envelope.Version != 0 {
+		return Document{}, fmt.Errorf("report document: version: unknown (got %d, want 0)", *envelope.Version)
+	}
+	return Document{
+		Version:     *envelope.Version,
+		GeneratedAt: *envelope.GeneratedAt,
+		Reports:     *envelope.Reports,
+	}, nil
 }

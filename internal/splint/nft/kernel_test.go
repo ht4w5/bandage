@@ -267,13 +267,12 @@ func assertKernelState(t *testing.T, conn *nftables.Conn, hook Hook) {
 	}
 }
 
-// wantRule is one expected kernel rule: the leading packet/byte
-// counter, the family gate, the service prefilter first (the
-// destination-port set behind its l4 gate, then the
-// destination-address set — either absent when its set is empty,
-// meaning all), the target match and the stance's verdict tail. The
-// match load is the source address on the ingress chain and the
-// destination address on the egress chain.
+// wantRule is one expected kernel rule: the family gate, the service
+// prefilter first (the destination-port set behind its l4 gate, then
+// the destination-address set — either absent when its set is empty,
+// meaning all), the target match, the packet/byte counter and the
+// stance's verdict tail. The match load is the source address on the
+// ingress chain and the destination address on the egress chain.
 type wantRule struct {
 	proto   byte
 	off     uint32
@@ -320,10 +319,11 @@ func assertChain(t *testing.T, conn *nftables.Conn, table *nftables.Table, name 
 type tailCheck func(t *testing.T, exprs []expr.Any)
 
 // assertMatch asserts the shared rule prefix in match order — the
-// leading packet/byte counter every ban rule carries, the family gate,
-// the service prefilter, and the address load at off:len into register
-// 1 followed by the lookup of setName — and returns the verdict tail
-// for the caller.
+// family gate, the service prefilter, and the address load at off:len
+// into register 1 followed by the lookup of setName — then the
+// packet/byte counter every ban rule carries after its matches and
+// immediately before its verdict, and returns the verdict tail for the
+// caller.
 func assertMatch(t *testing.T, r *nftables.Rule, w wantRule) []expr.Any {
 	t.Helper()
 	exprs := r.Exprs
@@ -337,14 +337,9 @@ func assertMatch(t *testing.T, r *nftables.Rule, w wantRule) []expr.Any {
 	if len(exprs) < wantLen {
 		t.Fatalf("rule exprs = %d, want at least %d: %v", len(exprs), wantLen, exprs)
 	}
-	// Every ban rule carries its packet/byte counter first: the fixed
-	// index the counter read-back finds it at.
-	if _, ok := exprs[0].(*expr.Counter); !ok {
-		t.Errorf("rule counter = %+v, want the leading packet/byte counter", exprs[0])
-	}
-	assertMeta(t, "family gate", exprs[1], expr.MetaKeyNFPROTO)
-	assertCmp(t, "family gate", exprs[2], []byte{w.proto})
-	i := 3
+	assertMeta(t, "family gate", exprs[0], expr.MetaKeyNFPROTO)
+	assertCmp(t, "family gate", exprs[1], []byte{w.proto})
+	i := 2
 	if w.portSet != "" {
 		assertMeta(t, "l4proto gate", exprs[i], expr.MetaKeyL4PROTO)
 		i++
@@ -364,6 +359,14 @@ func assertMatch(t *testing.T, r *nftables.Rule, w wantRule) []expr.Any {
 	assertPayload(t, "target-address load", exprs[i], expr.PayloadBaseNetworkHeader, w.off, w.length)
 	i++
 	assertLookup(t, "target set", exprs[i], w.setName)
+	i++
+	// Every ban rule carries its packet/byte counter after every match
+	// expr and immediately before the verdict: it counts only the
+	// packets the ban rule matches — never the traffic the prefilter or
+	// the target match lets past.
+	if _, ok := exprs[i].(*expr.Counter); !ok {
+		t.Errorf("rule counter = %+v, want the packet/byte counter before the verdict", exprs[i])
+	}
 	i++
 	return exprs[i:]
 }

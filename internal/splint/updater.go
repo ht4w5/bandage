@@ -85,14 +85,14 @@ type nsState struct {
 // last installed for this namespace — the skip-if-unchanged
 // comparison. (The ruleset-equality stand-in is gone: the rolling hash
 // is the compiled ruleset's identity.)
-func (t *nsState) unchanged(hash uint32) bool {
-	return t.installed && t.hash == hash
+func (s *nsState) unchanged(hash uint32) bool {
+	return s.installed && s.hash == hash
 }
 
 // setInstalled records hash as this namespace's last installed
 // ruleset identity.
-func (t *nsState) setInstalled(hash uint32) {
-	t.hash, t.installed = hash, true
+func (s *nsState) setInstalled(hash uint32) {
+	s.hash, s.installed = hash, true
 }
 
 // New assembles an Updater over a single driver — the default shape,
@@ -154,10 +154,10 @@ func (u *Updater) Update(ctx context.Context) ([]Skip, error) {
 // namespace's table still exists (probed fresh every cycle).
 func (u *Updater) installAll(rules []BanRule, hash uint32) error {
 	var failed []error
-	for _, t := range u.targets {
-		name := t.name()
-		if t.unchanged(hash) {
-			exists, err := t.Driver.TableExists()
+	for _, target := range u.targets {
+		name := target.name()
+		if target.unchanged(hash) {
+			exists, err := target.Driver.TableExists()
 			switch {
 			case errors.Is(err, ErrUnreachable):
 				u.log.Warn().Err(err).Str("netns", name).Msg("namespace unreachable; skipping for the cycle")
@@ -172,9 +172,9 @@ func (u *Updater) installAll(rules []BanRule, hash uint32) error {
 			// A probe that could not decide is answered by installing:
 			// only a table known to exist may skip.
 		}
-		hits, err := t.Driver.Install(rules)
+		hits, err := target.Driver.Install(rules)
 		if err == nil {
-			t.setInstalled(hash)
+			target.setInstalled(hash)
 			// The nonzero counters of the rules just replaced — what the
 			// enforcement did since the last change.
 			for _, h := range hits {
@@ -204,16 +204,16 @@ func (u *Updater) installAll(rules []BanRule, hash uint32) error {
 // namespace has been tried.
 func (u *Updater) resetAll() error {
 	var failed []error
-	for _, t := range u.targets {
-		err := t.Driver.Reset()
+	for _, target := range u.targets {
+		err := target.Driver.Reset()
 		if err == nil {
 			continue
 		}
 		if errors.Is(err, ErrUnreachable) {
-			u.log.Warn().Err(err).Str("netns", t.name()).Msg("namespace unreachable at reset; tolerating")
+			u.log.Warn().Err(err).Str("netns", target.name()).Msg("namespace unreachable at reset; tolerating")
 			continue
 		}
-		failed = append(failed, fmt.Errorf("netns %s: %w", t.name(), err))
+		failed = append(failed, fmt.Errorf("netns %s: %w", target.name(), err))
 	}
 	return errors.Join(failed...)
 }
