@@ -1,5 +1,6 @@
-// Package nginx parses nginx JSON access-log lines (flux log format,
-// escape=json) into domain events: required fields validated, reserved and unknown ignored.
+// Package nginx parses nginx JSON access-log lines in the bandage nginx
+// log format (flux-compatible) into domain events: required fields
+// validated, reserved and unknown ignored.
 package nginx
 
 import (

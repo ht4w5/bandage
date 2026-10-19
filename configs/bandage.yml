@@ -6,7 +6,7 @@ ingest:
   syslog:
     network: unixgram          # tcp | udp | unixgram
     listen: /run/bandage/log.sock
-  parser: nginx                # nginx JSON (flux log format)
+  parser: nginx                # nginx JSON in the bandage nginx log format (flux-compatible)
 
 db:
   driver: sqlite               # driver-keyed; more stores later
