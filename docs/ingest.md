@@ -2,8 +2,9 @@
 
 bandage receives events over syslog. `configs/bandage.yml` selects the
 driver and transport; every syslog message must carry exactly one
-access-log line (v0: nginx JSON, see `ingest.parser`) — each message
-becomes one [Event](../GLOSSARY.md) in the pipeline.
+access-log line (v0: nginx JSON in the bandage nginx log format, see
+`ingest.parser`) — each message becomes one [Event](../GLOSSARY.md) in
+the pipeline.
 
 ```yaml
 ingest:
@@ -11,12 +12,27 @@ ingest:
   syslog:
     network: unixgram          # tcp | udp | unixgram
     listen: /run/bandage/log.sock
-  parser: nginx                # nginx JSON (flux log format)
+  parser: nginx                # nginx JSON in the bandage nginx log format (flux-compatible)
 ```
 
 `ingest.syslog.network` accepts `tcp`, `udp` or `unixgram`;
 `ingest.syslog.listen` is the listen address (host:port, or a socket
 path for unixgram). Unknown keys and invalid values abort startup.
+
+## The bandage nginx log format
+
+`ingest.parser: nginx` parses one JSON access-log line per message: the
+bandage nginx log format. Bandage ships it ready to include —
+[`configs/nginx/bandage_log.conf`](../configs/nginx/bandage_log.conf)
+defines `log_format bandage escape=json` with exactly the parser's seven
+mapped fields (`time`, `client`, `method`, `url`, `status`, `sent`,
+`agent`), so wiring ingest is `include .../bandage_log.conf;` and
+`access_log <path> bandage;` — no field contract to reverse-engineer.
+
+Migration (flux-compatible): lines from an existing flux `log_format`
+keep parsing unchanged — its extra `host`/`server`/`duration` fields
+(and any others) are accepted and ignored — while the `bandage` format
+name never collides with an existing `flux` definition.
 
 ## Recommendation: udp or unixgram at high rate
 

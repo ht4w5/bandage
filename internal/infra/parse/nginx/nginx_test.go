@@ -2,12 +2,15 @@ package nginx
 
 import (
 	"errors"
+	"os"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
 
-// fullLine is a full-shape flux log-format line (optional, reserved and
-// unknown fields included).
+// fullLine is a full-shape bandage nginx log format line (optional, reserved
+// and unknown fields included).
 const fullLine = `{"time":"1734345934.123","client":"203.0.113.7","server":"203.0.113.1","method":"GET","url":"/releases/24.04.iso","duration":"0.125","host":"example.org","status":200,"sent":123456,"agent":"Wget/1.21","extra":"ignored"}`
 
 func TestParseFieldMapping(t *testing.T) {
@@ -38,6 +41,81 @@ func TestParseFieldMapping(t *testing.T) {
 	}
 	if ev.SizeBytes != 0 {
 		t.Errorf("SizeBytes = %d, want 0 (file size unknown until enrichment)", ev.SizeBytes)
+	}
+}
+
+// shippedFormat is the log_format template the shipped nginx snippet
+// (configs/nginx/bandage_log.conf) must define: the parser's seven mapped
+// fields, time as a quoted $msec string, status and sent unquoted integers.
+const shippedFormat = `{"time":"$msec","client":"$remote_addr","method":"$request_method","url":"$uri","status":$status,"sent":$body_bytes_sent,"agent":"$http_user_agent"}`
+
+// shippedLogFormat returns the template from the shipped nginx snippet; the
+// anchored match also pins the file to exactly one directive, no comments
+// and no vhost.
+func shippedLogFormat(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile("../../../../configs/nginx/bandage_log.conf")
+	if err != nil {
+		t.Fatalf("read shipped snippet: %v", err)
+	}
+	pat := regexp.MustCompile(`\Alog_format bandage escape=json '([^']*)';\z`)
+	m := pat.FindStringSubmatch(strings.TrimRight(string(data), "\n"))
+	if m == nil {
+		t.Fatalf("shipped snippet = %q, want one log_format bandage escape=json '<format>'; directive", data)
+	}
+	return m[1]
+}
+
+// TestShippedLogFormatConf pins the shipped snippet to the parser's field
+// contract: one log_format bandage escape=json directive carrying exactly
+// the seven mapped fields (time a quoted $msec string, status and sent
+// unquoted; no reserved superset fields, no vhost, no comments).
+func TestShippedLogFormatConf(t *testing.T) {
+	if got := shippedLogFormat(t); got != shippedFormat {
+		t.Errorf("shipped log format = %q, want %q", got, shippedFormat)
+	}
+}
+
+// TestParseShippedLogFormatLine renders one line the way nginx renders the
+// shipped format and proves it parses into a mapped Event, agent included:
+// agent is the field agent-based filters (the tripwire pattern) read.
+func TestParseShippedLogFormatLine(t *testing.T) {
+	line := strings.NewReplacer(
+		"$msec", "1734345934.123",
+		"$remote_addr", "203.0.113.7",
+		"$request_method", "GET",
+		"$uri", "/releases/24.04.iso",
+		"$status", "200",
+		"$body_bytes_sent", "123456",
+		"$http_user_agent", "curl/8.5.0",
+	).Replace(shippedLogFormat(t))
+	if strings.Contains(line, "$") {
+		t.Fatalf("rendered line %q leaves a variable unsubstituted", line)
+	}
+	ev, err := New().Parse([]byte(line))
+	if err != nil {
+		t.Fatalf("Parse error: %v", err)
+	}
+	if want := time.Unix(1734345934, 123000000).UTC(); !ev.Time.Equal(want) {
+		t.Errorf("Time = %v, want %v", ev.Time, want)
+	}
+	if got := ev.RemoteAddr.String(); got != "203.0.113.7" {
+		t.Errorf("RemoteAddr = %q, want %q", got, "203.0.113.7")
+	}
+	if ev.Method != "GET" {
+		t.Errorf("Method = %q, want %q", ev.Method, "GET")
+	}
+	if ev.Path != "/releases/24.04.iso" {
+		t.Errorf("Path = %q, want %q", ev.Path, "/releases/24.04.iso")
+	}
+	if ev.Status != 200 {
+		t.Errorf("Status = %d, want 200", ev.Status)
+	}
+	if ev.SentBytes != 123456 {
+		t.Errorf("SentBytes = %d, want 123456", ev.SentBytes)
+	}
+	if ev.Agent != "curl/8.5.0" {
+		t.Errorf("Agent = %q, want %q", ev.Agent, "curl/8.5.0")
 	}
 }
 
