@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -183,6 +184,35 @@ func penalty(t *testing.T, rec map[string]any) map[string]any {
 func cloneRecord(t *testing.T, rec map[string]any) map[string]any {
 	t.Helper()
 	return decodeFixture(t, encodeFixture(t, rec))
+}
+
+// reportSpec identifies one fixture report record: the Target it is
+// about and the penalty it advises.
+type reportSpec struct {
+	target string
+	action PenaltyAction
+	rate   any // json.Number for a limit; nil deletes the rate
+}
+
+// setReports replaces the fixture document's reports with one record
+// per spec, each cloned from the canonical example's record and
+// retargeted with the spec's penalty.
+func setReports(t *testing.T, doc map[string]any, specs []reportSpec) {
+	t.Helper()
+	var reports []any
+	for _, spec := range specs {
+		rec := cloneRecord(t, record(t, doc, 0))
+		rec["target"] = spec.target
+		p := penalty(t, rec)
+		p["action"] = string(spec.action)
+		if spec.rate == nil {
+			delete(p, "rate")
+		} else {
+			p["rate"] = spec.rate
+		}
+		reports = append(reports, rec)
+	}
+	doc["reports"] = reports
 }
 
 // banRule is a compiled ban rule expectation: the stance, its rate
@@ -600,6 +630,244 @@ func TestUpdateCycleLogsAndCountsSkippedRecords(t *testing.T) {
 	}
 }
 
+// TestUpdateCycleMergePolicy: reports that disagree about overlapping
+// Targets resolve as the spec's merge policy states — the most
+// specific Target wins in both directions, ties on specificity go to
+// the strictest Penalty and tied limits of different actions combine.
+// Each policy rule gets a failing and a passing case; every case
+// asserts the whole installed ruleset, so the losing report's absence
+// is asserted beside the winner's presence.
+func TestUpdateCycleMergePolicy(t *testing.T) {
+	tests := []struct {
+		name      string
+		reports   []reportSpec
+		wantRules []BanRule
+	}{
+		{
+			name: "reports of one family, length and penalty group into one ban rule",
+			reports: []reportSpec{
+				{target: "203.0.113.0/24", action: PenaltyDrop},
+				{target: "198.51.100.0/24", action: PenaltyDrop},
+				{target: "192.0.2.0/24", action: PenaltyDrop},
+			},
+			wantRules: []BanRule{dropRule("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")},
+		},
+		{
+			name: "reports of one length with different penalties do not group",
+			reports: []reportSpec{
+				{target: "203.0.113.0/24", action: PenaltyDrop},
+				{target: "192.0.2.0/24", action: PenaltyReject},
+			},
+			wantRules: []BanRule{
+				dropRule("203.0.113.0/24"),
+				banRule(StanceReject, nil, "192.0.2.0/24"),
+			},
+		},
+		{
+			name: "reports of one penalty with different lengths do not group",
+			reports: []reportSpec{
+				{target: "203.0.113.7/32", action: PenaltyDrop},
+				{target: "203.0.113.0/24", action: PenaltyDrop},
+			},
+			wantRules: []BanRule{
+				dropRule("203.0.113.7/32"),
+				dropRule("203.0.113.0/24"),
+			},
+		},
+		{
+			name: "targets of different families do not group",
+			reports: []reportSpec{
+				{target: "203.0.113.7/32", action: PenaltyDrop},
+				{target: "2001:db8::7/32", action: PenaltyDrop},
+			},
+			wantRules: []BanRule{
+				dropRule("203.0.113.7/32"),
+				dropRule("2001:db8::/32"),
+			},
+		},
+		{
+			name: "ban rules order by prefix length descending, then strictness",
+			reports: []reportSpec{
+				{target: "203.0.0.0/16", action: PenaltyLimitPktRate, rate: json.Number("100")},
+				{target: "198.51.100.9/32", action: PenaltyDrop},
+				{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("50")},
+				{target: "192.0.2.0/24", action: PenaltyReject},
+			},
+			wantRules: []BanRule{
+				dropRule("198.51.100.9/32"),
+				banRule(StanceLimitPktRate, ratePtr(50), "203.0.113.7/32"),
+				banRule(StanceReject, nil, "192.0.2.0/24"),
+				banRule(StanceLimitPktRate, ratePtr(100), "203.0.0.0/16"),
+			},
+		},
+		{
+			name: "a weaker /32 stance exceptions a stronger /16 ban",
+			reports: []reportSpec{
+				{target: "203.0.0.0/16", action: PenaltyDrop},
+				{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("10")},
+			},
+			wantRules: []BanRule{
+				banRule(StanceLimitPktRate, ratePtr(10), "203.0.113.7/32"),
+				dropRule("203.0.0.0/16"),
+			},
+		},
+		{
+			name: "a stronger /32 stance tightens under a weaker /16 ban",
+			reports: []reportSpec{
+				{target: "203.0.0.0/16", action: PenaltyLimitPktRate, rate: json.Number("100")},
+				{target: "203.0.113.7/32", action: PenaltyDrop},
+			},
+			wantRules: []BanRule{
+				dropRule("203.0.113.7/32"),
+				banRule(StanceLimitPktRate, ratePtr(100), "203.0.0.0/16"),
+			},
+		},
+		{
+			name: "a narrower report agreeing with the broader one keeps both bans",
+			reports: []reportSpec{
+				{target: "203.0.0.0/16", action: PenaltyDrop},
+				{target: "203.0.113.7/32", action: PenaltyDrop},
+			},
+			wantRules: []BanRule{
+				dropRule("203.0.113.7/32"),
+				dropRule("203.0.0.0/16"),
+			},
+		},
+		{
+			name: "a drop tie beats a limit tie",
+			reports: []reportSpec{
+				{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("250")},
+				{target: "203.0.113.7/32", action: PenaltyDrop},
+			},
+			wantRules: []BanRule{dropRule("203.0.113.7/32")},
+		},
+		{
+			name: "a drop tie beats a reject tie",
+			reports: []reportSpec{
+				{target: "203.0.113.7/32", action: PenaltyReject},
+				{target: "203.0.113.7/32", action: PenaltyDrop},
+			},
+			wantRules: []BanRule{dropRule("203.0.113.7/32")},
+		},
+		{
+			name: "a reject tie beats a limit tie",
+			reports: []reportSpec{
+				{target: "203.0.113.7/32", action: PenaltyLimitBandwidth, rate: json.Number("500")},
+				{target: "203.0.113.7/32", action: PenaltyReject},
+			},
+			wantRules: []BanRule{banRule(StanceReject, nil, "203.0.113.7/32")},
+		},
+		{
+			name: "a smaller rate wins a limit tie of one action",
+			reports: []reportSpec{
+				{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("250")},
+				{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("100")},
+			},
+			wantRules: []BanRule{banRule(StanceLimitPktRate, ratePtr(100), "203.0.113.7/32")},
+		},
+		{
+			name: "duplicate reports of one penalty compile to one ban rule",
+			reports: []reportSpec{
+				{target: "203.0.113.7/32", action: PenaltyDrop},
+				{target: "203.0.113.7/32", action: PenaltyDrop},
+			},
+			wantRules: []BanRule{dropRule("203.0.113.7/32")},
+		},
+		{
+			name: "tied limits of different actions combine — one meter per direction",
+			reports: []reportSpec{
+				{target: "203.0.113.7/32", action: PenaltyLimitBandwidth, rate: json.Number("5000")},
+				{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("100")},
+			},
+			wantRules: []BanRule{
+				banRule(StanceLimitPktRate, ratePtr(100), "203.0.113.7/32"),
+				banRule(StanceLimitBandwidth, ratePtr(5000), "203.0.113.7/32"),
+			},
+		},
+		{
+			name: "tied limits of one action keep one meter at the smallest rate",
+			reports: []reportSpec{
+				{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("200")},
+				{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("50")},
+				{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("100")},
+			},
+			wantRules: []BanRule{banRule(StanceLimitPktRate, ratePtr(50), "203.0.113.7/32")},
+		},
+		{
+			name: "a drop tie wins over combined limit ties",
+			reports: []reportSpec{
+				{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("100")},
+				{target: "203.0.113.7/32", action: PenaltyLimitBandwidth, rate: json.Number("5000")},
+				{target: "203.0.113.7/32", action: PenaltyDrop},
+			},
+			wantRules: []BanRule{dropRule("203.0.113.7/32")},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newDocServer(t)
+			srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
+				setReports(t, doc, tt.reports)
+			}))
+			u, stub, _ := newTestUpdater(t, srv)
+
+			if _, err := u.Update(context.Background()); err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+			assertInstalls(t, stub, tt.wantRules)
+		})
+	}
+}
+
+// TestUpdateCycleMergePolicyIsOrderIndependent: permuting the input
+// document's report order produces an identical compiled ruleset — the
+// canonical compile ticket 06's rolling hash folds. Every ordering of
+// a document exercising exceptions, ties and combined limits installs
+// exactly the same ban rules in the same order.
+func TestUpdateCycleMergePolicyIsOrderIndependent(t *testing.T) {
+	reports := []reportSpec{
+		{target: "203.0.0.0/16", action: PenaltyDrop},
+		{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("10")},
+		{target: "203.0.113.7/32", action: PenaltyLimitBandwidth, rate: json.Number("5000")},
+		{target: "203.0.113.0/24", action: PenaltyReject},
+	}
+	want := []BanRule{
+		banRule(StanceLimitPktRate, ratePtr(10), "203.0.113.7/32"),
+		banRule(StanceLimitBandwidth, ratePtr(5000), "203.0.113.7/32"),
+		banRule(StanceReject, nil, "203.0.113.0/24"),
+		dropRule("203.0.0.0/16"),
+	}
+	for i, perm := range permutations(reports) {
+		t.Run(fmt.Sprintf("permutation %d", i), func(t *testing.T) {
+			srv := newDocServer(t)
+			srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
+				setReports(t, doc, perm)
+			}))
+			u, stub, _ := newTestUpdater(t, srv)
+
+			if _, err := u.Update(context.Background()); err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+			assertInstalls(t, stub, want)
+		})
+	}
+}
+
+// permutations returns every ordering of specs.
+func permutations(specs []reportSpec) [][]reportSpec {
+	if len(specs) <= 1 {
+		return [][]reportSpec{specs}
+	}
+	var out [][]reportSpec
+	for i := range specs {
+		rest := slices.Concat(specs[:i:i], specs[i+1:])
+		for _, p := range permutations(rest) {
+			out = append(out, append([]reportSpec{specs[i]}, p...))
+		}
+	}
+	return out
+}
+
 // TestUpdateKeepsTheLastInstalledRules: a failed cycle installs nothing
 // and leaves the last installed rules in place.
 func TestUpdateKeepsTheLastInstalledRules(t *testing.T) {
@@ -802,16 +1070,11 @@ stance=limit-bandwidth rate=1000000 chain=egress
 	t.Run("every ban rule prints one mapping line with its stance, rate and chain", func(t *testing.T) {
 		srv := newDocServer(t)
 		srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
-			rec := record(t, doc, 0)
-			dropped := cloneRecord(t, rec)
-			p := penalty(t, dropped)
-			p["action"] = string(PenaltyDrop)
-			delete(p, "rate")
-			throttled := cloneRecord(t, rec)
-			tp := penalty(t, throttled)
-			tp["action"] = string(PenaltyLimitPktRate)
-			tp["rate"] = json.Number("250")
-			doc["reports"] = []any{rec, dropped, throttled}
+			setReports(t, doc, []reportSpec{
+				{target: "203.0.113.7/32", action: PenaltyLimitBandwidth, rate: json.Number("1000000")},
+				{target: "198.51.100.9/32", action: PenaltyDrop},
+				{target: "192.0.2.5/32", action: PenaltyLimitPktRate, rate: json.Number("250")},
+			})
 		}))
 		u, stub, _ := newTestUpdater(t, srv)
 
@@ -826,9 +1089,9 @@ stance=limit-bandwidth rate=1000000 chain=egress
 			}
 		}
 		want := []string{
-			"stance=limit-bandwidth rate=1000000 chain=egress",
 			"stance=drop rate=- chain=ingress",
 			"stance=limit-pkt-rate rate=250 chain=ingress",
+			"stance=limit-bandwidth rate=1000000 chain=egress",
 		}
 		if !slices.Equal(mapping, want) {
 			t.Errorf("mapping lines = %q, want %q", mapping, want)
