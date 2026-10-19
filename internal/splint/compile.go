@@ -6,13 +6,16 @@ import (
 )
 
 // BanRule is one compiled ban rule (the GLOSSARY's Ban rule): a stance
-// over Target prefixes, the unit the firewall driver installs. Rate is
-// the stance's per-second rate in the unit the stance names (packets or
-// response-payload bytes); it is non-nil exactly for the limit stances.
+// over Target prefixes, the unit the firewall driver installs. Every
+// rule leads with the service prefilter, so the ban only ever reaches
+// service traffic. Rate is the stance's per-second rate in the unit
+// the stance names (packets or response-payload bytes); it is non-nil
+// exactly for the limit stances.
 type BanRule struct {
-	Targets []netip.Prefix `json:"targets"`
-	Stance  Stance         `json:"stance"`
-	Rate    *int64         `json:"rate,omitempty"`
+	Targets   []netip.Prefix `json:"targets"`
+	Prefilter Prefilter      `json:"prefilter"`
+	Stance    Stance         `json:"stance"`
+	Rate      *int64         `json:"rate,omitempty"`
 }
 
 // Stance is the enforcement stance a ban rule applies to its Targets,
@@ -67,7 +70,8 @@ type Skip struct {
 	Reason string
 }
 
-// Compile maps a version-0 report document's live reports to ban rules.
+// Compile maps a version-0 report document's live reports to ban
+// rules under policy p.
 //
 // Every report with a valid Penalty and a parseable Target compiles to
 // one ban rule through the contract's penalty mapping (mapPenalty —
@@ -77,14 +81,18 @@ type Skip struct {
 // skipped, logged and counted instead. Ticket 05 merges overlapping
 // Targets and orders the result by specificity and strictness.
 //
-// Records with a missing or unknown Penalty or an unparseable Target
-// are skipped and reported in the returned skips; the remaining records
-// still compile.
-func Compile(doc Document) ([]BanRule, []Skip) {
+// Exclusions are subtracted compiler-side, overriding every report:
+// the driver installs Targets verbatim, and a record whose Target is
+// fully excluded compiles to no ban rule at all.
+//
+// Records with a missing or unknown Penalty, an unparseable Target or
+// a fully excluded Target are skipped and reported in the returned
+// skips; the remaining records still compile.
+func Compile(doc Document, p Policy) ([]BanRule, []Skip) {
 	rules := []BanRule{}
 	var skips []Skip
 	for _, r := range doc.Reports {
-		rule, reason := compileRecord(r)
+		rule, reason := compileRecord(r, p)
 		if reason != "" {
 			skips = append(skips, Skip{Rule: r.Rule, Target: r.Target, Reason: reason})
 			continue
@@ -95,9 +103,11 @@ func Compile(doc Document) ([]BanRule, []Skip) {
 }
 
 // compileRecord maps one report record onto its ban rule: the record
-// validation (parseRecord) followed by the penalty mapping
-// (mapPenalty). The reason is "" exactly when the record compiles.
-func compileRecord(r Report) (BanRule, string) {
+// validation (parseRecord), the penalty mapping (mapPenalty) and the
+// policy's exclusion subtraction, which leaves the rule's residual
+// Targets and the service prefilter every rule leads with. The reason
+// is "" exactly when the record compiles.
+func compileRecord(r Report, p Policy) (BanRule, string) {
 	target, reason := parseRecord(r)
 	if reason != "" {
 		return BanRule{}, reason
@@ -106,10 +116,15 @@ func compileRecord(r Report) (BanRule, string) {
 	if reason != "" {
 		return BanRule{}, reason
 	}
+	residuals := p.Subtract(target)
+	if len(residuals) == 0 {
+		return BanRule{}, fmt.Sprintf("target: fully excluded (got %q)", r.Target)
+	}
 	return BanRule{
-		Targets: []netip.Prefix{target},
-		Stance:  stance,
-		Rate:    r.Penalty.Rate,
+		Targets:   residuals,
+		Prefilter: p.Prefilter.normalized(),
+		Stance:    stance,
+		Rate:      r.Penalty.Rate,
 	}, ""
 }
 

@@ -2,6 +2,7 @@ package nft
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"net/netip"
@@ -52,8 +53,11 @@ func TestKernelInstallReadBackReset(t *testing.T) {
 
 	// One ban rule per shape the compiler can emit: a mixed v4 drop, a
 	// v6 reject, a packet-rate meter, a bandwidth meter (the one egress
-	// rule, matched on destination), and a drop whose range reaches the
-	// top of the space (encoded with the null end).
+	// rule, matched on destination), a drop whose range reaches the top
+	// of the space (encoded with the null end), a rule under the full
+	// service prefilter, and a rule whose family the destination
+	// prefilter cannot reach — no service traffic lives there, so it
+	// gets no kernel rule at all.
 	rules := []splint.BanRule{
 		{Targets: []netip.Prefix{
 			netip.MustParsePrefix("203.0.113.0/24"),
@@ -63,6 +67,28 @@ func TestKernelInstallReadBackReset(t *testing.T) {
 		{Targets: []netip.Prefix{netip.MustParsePrefix("198.51.100.9/32")}, Stance: splint.StanceLimitPktRate, Rate: ratePtr(250)},
 		{Targets: []netip.Prefix{netip.MustParsePrefix("203.0.113.9/32")}, Stance: splint.StanceLimitBandwidth, Rate: ratePtr(1000000)},
 		{Targets: []netip.Prefix{netip.MustParsePrefix("255.255.255.0/24")}, Stance: splint.StanceDrop},
+		{
+			Targets: []netip.Prefix{
+				netip.MustParsePrefix("203.0.113.7/32"),
+				netip.MustParsePrefix("2001:db8::7/128"),
+			},
+			Prefilter: splint.Prefilter{
+				DstPorts: []uint16{53, 443},
+				DstAddrs: []netip.Prefix{
+					netip.MustParsePrefix("198.51.100.5/32"),
+					netip.MustParsePrefix("2001:db8::5/128"),
+				},
+			},
+			Stance: splint.StanceDrop,
+		},
+		{
+			Targets: []netip.Prefix{netip.MustParsePrefix("2001:db8::9/128")},
+			Prefilter: splint.Prefilter{
+				DstPorts: []uint16{443},
+				DstAddrs: []netip.Prefix{netip.MustParsePrefix("198.51.100.5/32")},
+			},
+			Stance: splint.StanceDrop,
+		},
 	}
 	input, err := New(HookInput)
 	if err != nil {
@@ -105,11 +131,11 @@ func ratePtr(n int64) *int64 { return &n }
 
 // assertKernelState reads the owned table back from the kernel and
 // asserts the driver's encoding: table, both chains at their hooks, one
-// match-lookup rule per ban rule and family (source-matched on the
-// ingress chain, the bandwidth meter destination-matched on the egress
-// chain) with the stance's verdict tail, and the interval sets behind
-// them. Expectations are hand-written from the test's fixtures, never
-// computed the way the implementation does.
+// kernel rule per ban rule and family the service prefilter can reach
+// (source-matched on the ingress chain, the bandwidth meter
+// destination-matched on the egress chain) with the stance's verdict
+// tail, and the sets behind them. Expectations are hand-written from
+// the test's fixtures, never computed the way the implementation does.
 func assertKernelState(t *testing.T, conn *nftables.Conn, hook Hook) {
 	t.Helper()
 	table, err := conn.ListTableOfFamily(tableName, nftables.TableFamilyINet)
@@ -133,26 +159,34 @@ func assertKernelState(t *testing.T, conn *nftables.Conn, hook Hook) {
 	egress := assertChain(t, conn, table, egressName, egressHook, nftables.ChainPriorityFilter)
 
 	// The kernel rules, in install order: one per ban rule and family
-	// with targets. The verdict tails are hand-written from the
-	// fixtures: the silent drop, the inet-family reject with icmpx
+	// the prefilter can reach. The verdict tails are hand-written from
+	// the fixtures: the silent drop, the inet-family reject with icmpx
 	// admin-prohibited, the packet-rate meter over 250/second with its
 	// derived burst 250 then drop, and the byte-rate meter over
 	// 1000000 bytes/second with its derived burst 1000000 then drop.
-	type wantRule struct {
-		proto   byte
-		off     uint32
-		length  uint32
-		setName string
-		tail    tailCheck
-	}
+	// Rule 5 leads with its destination-port and destination-address
+	// sets in both families; rule 6's v6 family is unreachable through
+	// the v4-only destination set and gets no kernel rule at all.
 	ingressRules := []wantRule{
-		{unix.NFPROTO_IPV4, 12, 4, "v4_0", dropTail},                                // 203.0.113.0/24 + 198.51.100.7/32
-		{unix.NFPROTO_IPV6, 8, 16, "v6_1", rejectTail},                              // 2001:db8::/32
-		{unix.NFPROTO_IPV4, 12, 4, "v4_2", limitTail(expr.LimitTypePkts, 250, 250)}, // 198.51.100.9/32
-		{unix.NFPROTO_IPV4, 12, 4, "v4_4", dropTail},                                // 255.255.255.0/24
+		{proto: unix.NFPROTO_IPV4, off: 12, length: 4, setName: "v4_0", tail: dropTail},                                // 203.0.113.0/24 + 198.51.100.7/32
+		{proto: unix.NFPROTO_IPV6, off: 8, length: 16, setName: "v6_1", tail: rejectTail},                              // 2001:db8::/32
+		{proto: unix.NFPROTO_IPV4, off: 12, length: 4, setName: "v4_2", tail: limitTail(expr.LimitTypePkts, 250, 250)}, // 198.51.100.9/32
+		{proto: unix.NFPROTO_IPV4, off: 12, length: 4, setName: "v4_4", tail: dropTail},                                // 255.255.255.0/24
+		{
+			proto: unix.NFPROTO_IPV4, off: 12, length: 4, setName: "v4_5",
+			l4Set: "l4_5", portSet: "port_5",
+			dstSet: "dp4_5", dstOff: 16, dstLen: 4,
+			tail: dropTail, // 203.0.113.7/32 under the full service prefilter
+		},
+		{
+			proto: unix.NFPROTO_IPV6, off: 8, length: 16, setName: "v6_5",
+			l4Set: "l4_5", portSet: "port_5",
+			dstSet: "dp6_5", dstOff: 24, dstLen: 16,
+			tail: dropTail, // 2001:db8::7/128 under the full service prefilter
+		},
 	}
 	egressRules := []wantRule{
-		{unix.NFPROTO_IPV4, 16, 4, "v4_3", limitTail(expr.LimitTypePktBytes, 1000000, 1000000)}, // 203.0.113.9/32
+		{proto: unix.NFPROTO_IPV4, off: 16, length: 4, setName: "v4_3", tail: limitTail(expr.LimitTypePktBytes, 1000000, 1000000)}, // 203.0.113.9/32
 	}
 	assertRules := func(t *testing.T, chain *nftables.Chain, want []wantRule) {
 		t.Helper()
@@ -164,22 +198,28 @@ func assertKernelState(t *testing.T, conn *nftables.Conn, hook Hook) {
 			t.Fatalf("chain %s rules = %d, want %d: %v", chain.Name, len(krules), len(want), krules)
 		}
 		for i, w := range want {
-			tail := assertMatch(t, krules[i], w.proto, w.off, w.length, w.setName)
+			tail := assertMatch(t, krules[i], w)
 			w.tail(t, tail)
 		}
 	}
 	assertRules(t, ingress, ingressRules)
 	assertRules(t, egress, egressRules)
 
-	// The interval sets behind the rules: every range is [start, end)
+	// The sets behind the rules: every address range is [start, end)
 	// with end the first address after it; the top-touching range gets
-	// the null end.
-	wantSets := map[string][]string{
-		"v4_0": {"end 198.51.100.8", "end 203.0.114.0", "start 198.51.100.7", "start 203.0.113.0"},
-		"v6_1": {"end 2001:db9::", "start 2001:db8::"},
-		"v4_2": {"end 198.51.100.10", "start 198.51.100.9"},
-		"v4_3": {"end 203.0.113.10", "start 203.0.113.9"},
-		"v4_4": {"end 0.0.0.0", "start 255.255.255.0"},
+	// the null end. The port and l4 prefilter sets hold exact keys.
+	wantSets := map[string]wantSet{
+		"v4_0":   {interval: true, elems: []string{"end 198.51.100.8", "end 203.0.114.0", "start 198.51.100.7", "start 203.0.113.0"}},
+		"v6_1":   {interval: true, elems: []string{"end 2001:db9::", "start 2001:db8::"}},
+		"v4_2":   {interval: true, elems: []string{"end 198.51.100.10", "start 198.51.100.9"}},
+		"v4_3":   {interval: true, elems: []string{"end 203.0.113.10", "start 203.0.113.9"}},
+		"v4_4":   {interval: true, elems: []string{"end 0.0.0.0", "start 255.255.255.0"}},
+		"v4_5":   {interval: true, elems: []string{"end 203.0.113.8", "start 203.0.113.7"}},
+		"dp4_5":  {interval: true, elems: []string{"end 198.51.100.6", "start 198.51.100.5"}},
+		"v6_5":   {interval: true, elems: []string{"end 2001:db8::8", "start 2001:db8::7"}},
+		"dp6_5":  {interval: true, elems: []string{"end 2001:db8::6", "start 2001:db8::5"}},
+		"port_5": {elems: []string{"443", "53"}}, // udp and tcp dports; sorted as strings
+		"l4_5":   {elems: []string{"17", "6"}},   // udp and tcp; sorted as strings
 	}
 	sets, err := conn.GetSets(table)
 	if err != nil {
@@ -189,27 +229,51 @@ func assertKernelState(t *testing.T, conn *nftables.Conn, hook Hook) {
 		t.Fatalf("kernel sets = %d, want %d", len(sets), len(wantSets))
 	}
 	for _, s := range sets {
-		wantElems, ok := wantSets[s.Name]
+		w, ok := wantSets[s.Name]
 		if !ok {
 			t.Errorf("unexpected kernel set %q", s.Name)
 			continue
 		}
-		if !s.Interval {
-			t.Errorf("set %q is not an interval set", s.Name)
+		if s.Interval != w.interval {
+			t.Errorf("set %q interval = %v, want %v", s.Name, s.Interval, w.interval)
 		}
 		elems, err := conn.GetSetElements(s)
 		if err != nil {
 			t.Fatalf("read set %q elements: %v", s.Name, err)
 		}
-		var got []string
-		for _, e := range elems {
-			got = append(got, setElementString(e))
-		}
-		slices.Sort(got)
-		if !slices.Equal(got, wantElems) {
-			t.Errorf("set %q elements = %v, want %v", s.Name, got, wantElems)
+		got := elementStrings(s, elems)
+		if !slices.Equal(got, w.elems) {
+			t.Errorf("set %q elements = %v, want %v", s.Name, got, w.elems)
 		}
 	}
+}
+
+// wantRule is one expected kernel rule: the family gate, the service
+// prefilter first (the destination-port set behind its l4 gate, then
+// the destination-address set — either absent when its set is empty,
+// meaning all), the target match and the stance's verdict tail. The
+// match load is the source address on the ingress chain and the
+// destination address on the egress chain.
+type wantRule struct {
+	proto   byte
+	off     uint32
+	length  uint32
+	setName string
+
+	l4Set   string // non-empty: the port prefilter gates on l4proto ∈ l4Set
+	portSet string
+	dstSet  string // non-empty: the destination-address prefilter set
+	dstOff  uint32
+	dstLen  uint32
+
+	tail tailCheck
+}
+
+// wantSet is one expected kernel set: whether it is an interval set
+// and its elements, already sorted as strings.
+type wantSet struct {
+	interval bool
+	elems    []string
 }
 
 // assertChain reads one base chain back and asserts its shape: filter
@@ -235,34 +299,47 @@ func assertChain(t *testing.T, conn *nftables.Conn, table *nftables.Table, name 
 // tailCheck asserts a kernel rule's verdict tail.
 type tailCheck func(t *testing.T, exprs []expr.Any)
 
-// assertMatch asserts the shared rule prefix — the family gate and the
-// address load at off:len into register 1 followed by the lookup of
-// setName — and returns the verdict tail for the caller.
-func assertMatch(t *testing.T, r *nftables.Rule, proto byte, off, length uint32, setName string) []expr.Any {
+// assertMatch asserts the shared rule prefix in match order — the
+// family gate, the service prefilter, and the address load at off:len
+// into register 1 followed by the lookup of setName — and returns the
+// verdict tail for the caller.
+func assertMatch(t *testing.T, r *nftables.Rule, w wantRule) []expr.Any {
 	t.Helper()
 	exprs := r.Exprs
-	if len(exprs) < 5 {
-		t.Fatalf("rule exprs = %d, want at least 4 match + 1 verdict: %v", len(exprs), exprs)
+	wantLen := 5
+	if w.portSet != "" {
+		wantLen += 4
 	}
-	meta, ok := exprs[0].(*expr.Meta)
-	if !ok || meta.Key != expr.MetaKeyNFPROTO || meta.Register != 1 {
-		t.Errorf("exprs[0] = %+v, want the NFPROTO meta load into register 1", exprs[0])
+	if w.dstSet != "" {
+		wantLen += 2
 	}
-	gate, ok := exprs[1].(*expr.Cmp)
-	if !ok || gate.Op != expr.CmpOpEq || gate.Register != 1 || !bytes.Equal(gate.Data, []byte{proto}) {
-		t.Errorf("exprs[1] = %+v, want the NFPROTO %d gate", exprs[1], proto)
+	if len(exprs) < wantLen {
+		t.Fatalf("rule exprs = %d, want at least %d: %v", len(exprs), wantLen, exprs)
 	}
-	payload, ok := exprs[2].(*expr.Payload)
-	if !ok || payload.Base != expr.PayloadBaseNetworkHeader ||
-		payload.Offset != off || payload.Len != length ||
-		payload.DestRegister != 1 || payload.OperationType != expr.PayloadLoad {
-		t.Errorf("exprs[2] = %+v, want the address load at %d:%d into register 1", exprs[2], off, length)
+	assertMeta(t, "family gate", exprs[0], expr.MetaKeyNFPROTO)
+	assertCmp(t, "family gate", exprs[1], []byte{w.proto})
+	i := 2
+	if w.portSet != "" {
+		assertMeta(t, "l4proto gate", exprs[i], expr.MetaKeyL4PROTO)
+		i++
+		assertLookup(t, "l4proto set", exprs[i], w.l4Set)
+		i++
+		assertPayload(t, "destination-port load", exprs[i], expr.PayloadBaseTransportHeader, 2, 2)
+		i++
+		assertLookup(t, "destination-port set", exprs[i], w.portSet)
+		i++
 	}
-	lookup, ok := exprs[3].(*expr.Lookup)
-	if !ok || lookup.SourceRegister != 1 || lookup.SetName != setName {
-		t.Errorf("exprs[3] = %+v, want the lookup of %q from register 1", exprs[3], setName)
+	if w.dstSet != "" {
+		assertPayload(t, "destination-address load", exprs[i], expr.PayloadBaseNetworkHeader, w.dstOff, w.dstLen)
+		i++
+		assertLookup(t, "destination-address set", exprs[i], w.dstSet)
+		i++
 	}
-	return exprs[4:]
+	assertPayload(t, "target-address load", exprs[i], expr.PayloadBaseNetworkHeader, w.off, w.length)
+	i++
+	assertLookup(t, "target set", exprs[i], w.setName)
+	i++
+	return exprs[i:]
 }
 
 // dropTail asserts the silent drop verdict.
@@ -308,16 +385,68 @@ func limitTail(limitType expr.LimitType, rate uint64, burst uint32) tailCheck {
 		if !ok || verdict.Kind != expr.VerdictDrop {
 			t.Errorf("verdict = %+v, want the drop verdict", exprs[1])
 		}
+
 	}
 }
 
-// setElementString renders one set element as its kind and key.
-func setElementString(e nftables.SetElement) string {
-	kind := "start"
-	if e.IntervalEnd {
-		kind = "end"
+// assertMeta checks one meta load into register 1.
+func assertMeta(t *testing.T, what string, e expr.Any, key expr.MetaKey) {
+	t.Helper()
+	meta, ok := e.(*expr.Meta)
+	if !ok || meta.Key != key || meta.Register != 1 {
+		t.Errorf("%s = %+v, want the meta load into register 1", what, e)
 	}
-	return fmt.Sprintf("%s %s", kind, net.IP(e.Key))
+}
+
+// assertCmp checks one comparison of register 1 against data.
+func assertCmp(t *testing.T, what string, e expr.Any, data []byte) {
+	t.Helper()
+	cmp, ok := e.(*expr.Cmp)
+	if !ok || cmp.Op != expr.CmpOpEq || cmp.Register != 1 || !bytes.Equal(cmp.Data, data) {
+		t.Errorf("%s = %+v, want the register-1 comparison against %v", what, e, data)
+	}
+}
+
+// assertPayload checks one header-field load into register 1.
+func assertPayload(t *testing.T, what string, e expr.Any, base expr.PayloadBase, off, length uint32) {
+	t.Helper()
+	payload, ok := e.(*expr.Payload)
+	if !ok || payload.Base != base || payload.Offset != off || payload.Len != length ||
+		payload.DestRegister != 1 || payload.OperationType != expr.PayloadLoad {
+		t.Errorf("%s = %+v, want the %d:%d load into register 1", what, e, off, length)
+	}
+}
+
+// assertLookup checks one set lookup of register 1.
+func assertLookup(t *testing.T, what string, e expr.Any, setName string) {
+	t.Helper()
+	lookup, ok := e.(*expr.Lookup)
+	if !ok || lookup.SourceRegister != 1 || lookup.SetName != setName {
+		t.Errorf("%s = %+v, want the lookup of %q from register 1", what, e, setName)
+	}
+}
+
+// elementStrings renders one set's elements as strings — address keys
+// with their start/end kind, port and protocol keys as their numbers —
+// sorted, for the hand-written expectations.
+func elementStrings(s *nftables.Set, elems []nftables.SetElement) []string {
+	var got []string
+	for _, e := range elems {
+		switch s.KeyType {
+		case nftables.TypeInetService:
+			got = append(got, fmt.Sprintf("%d", binary.BigEndian.Uint16(e.Key)))
+		case nftables.TypeInetProto:
+			got = append(got, fmt.Sprintf("%d", e.Key[0]))
+		default:
+			kind := "start"
+			if e.IntervalEnd {
+				kind = "end"
+			}
+			got = append(got, fmt.Sprintf("%s %s", kind, net.IP(e.Key)))
+		}
+	}
+	slices.Sort(got)
+	return got
 }
 
 // netlinkUnusable reports why the kernel nftables surface cannot be

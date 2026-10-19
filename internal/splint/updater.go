@@ -36,6 +36,7 @@ func ClampInterval(d time.Duration) (time.Duration, bool) {
 type Updater struct {
 	fetcher  *Fetcher
 	driver   Driver
+	policy   Policy
 	log      zerolog.Logger
 	interval time.Duration
 
@@ -45,12 +46,12 @@ type Updater struct {
 
 // New assembles an Updater. The update interval is clamped to
 // MinInterval, warning the operator when it is.
-func New(f *Fetcher, d Driver, interval time.Duration, log zerolog.Logger) *Updater {
+func New(f *Fetcher, d Driver, p Policy, interval time.Duration, log zerolog.Logger) *Updater {
 	interval, clamped := ClampInterval(interval)
 	if clamped {
 		log.Warn().Dur("interval", interval).Msg("update interval clamped to the one-minute floor")
 	}
-	return &Updater{fetcher: f, driver: d, log: log, interval: interval}
+	return &Updater{fetcher: f, driver: d, policy: p, log: log, interval: interval}
 }
 
 // Update runs one update cycle: fetch the report document, compile its
@@ -107,7 +108,7 @@ func (u *Updater) load(ctx context.Context) ([]BanRule, []Skip, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	rules, skips := Compile(doc)
+	rules, skips := Compile(doc, u.policy)
 	for _, s := range skips {
 		u.log.Warn().
 			Str("rule", s.Rule).
