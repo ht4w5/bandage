@@ -36,7 +36,7 @@ func init() {
 	if b, err := strconv.ParseBool(dirtyFlag); err == nil {
 		dirty = b
 	}
-	summary = buildSummary()
+	summary = buildSummary(Name)
 	header = buildHeader()
 }
 
@@ -61,11 +61,16 @@ func Platform() string { return platform }
 // String is the one-line identity summary (`-v` output), computed once at init.
 func String() string { return summary }
 
+// Summary is the one-line identity summary for a named program sharing
+// these linker-injected values: the second command prints
+// Summary("splint-nft") off the same stamp.
+func Summary(name string) string { return buildSummary(name) }
+
 // Header is the short identity (name, version, commit) for `--test` and `-h`.
 func Header() string { return header }
 
-func buildSummary() string {
-	head := Name + " " + version
+func buildSummary(name string) string {
+	head := name + " " + version
 	if commit != "" {
 		head += " " + commit
 		if dirty {

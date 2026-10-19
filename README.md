@@ -25,5 +25,7 @@ describe.
 
 ## Development
 
-`make build`, `make test` (race detector), `make bench`. Agent-facing
+`make build`, `make test` (race detector), `make bench`. `make build`
+produces `bin/bandage` and `bin/splint-nft`, the companion binary that
+derives ban rules from reports. Agent-facing
 process docs live in [docs/agents/](docs/agents/) and in [AGENTS.md](AGENTS.md).

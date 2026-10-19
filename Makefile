@@ -1,8 +1,10 @@
 MODULE      := github.com/HT4w5/bandage
 PKG_INFO    := $(MODULE)/internal/identity
-CMD         := ./cmd/bandage
 BIN_DIR     := bin
+CMD         := ./cmd/bandage
 BIN         := $(BIN_DIR)/bandage
+CMD_SPLINT  := ./cmd/splint-nft
+BIN_SPLINT  := $(BIN_DIR)/splint-nft
 
 GO          ?= go
 
@@ -32,6 +34,7 @@ all: build
 build:
 	@mkdir -p $(BIN_DIR)
 	$(GO) build $(BUILD_FLAGS) -o $(BIN) $(CMD)
+	$(GO) build $(BUILD_FLAGS) -o $(BIN_SPLINT) $(CMD_SPLINT)
 
 test:
 	$(GO) test -race -count=1 ./...
