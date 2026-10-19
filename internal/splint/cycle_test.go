@@ -185,13 +185,22 @@ func cloneRecord(t *testing.T, rec map[string]any) map[string]any {
 	return decodeFixture(t, encodeFixture(t, rec))
 }
 
-// dropRule is the placeholder ban rule (superseded by tickets 04 and 05).
-func dropRule(targets ...string) BanRule {
-	r := BanRule{Stance: StanceDrop}
+// banRule is a compiled ban rule expectation: the stance, its rate
+// (nil for stances that carry none) over the given Targets.
+func banRule(stance Stance, rate *int64, targets ...string) BanRule {
+	r := BanRule{Stance: stance, Rate: rate}
 	for _, target := range targets {
 		r.Targets = append(r.Targets, netip.MustParsePrefix(target))
 	}
 	return r
+}
+
+// ratePtr points at a penalty rate fixture.
+func ratePtr(n int64) *int64 { return &n }
+
+// dropRule is the silent-drop ban rule.
+func dropRule(targets ...string) BanRule {
+	return banRule(StanceDrop, nil, targets...)
 }
 
 // newTestUpdater wires the seam: a real fetcher against the fake report
@@ -233,16 +242,26 @@ func equalRules(got, want []BanRule) bool {
 		return false
 	}
 	for i := range got {
-		if !slices.Equal(got[i].Targets, want[i].Targets) || got[i].Stance != want[i].Stance {
+		if !slices.Equal(got[i].Targets, want[i].Targets) || got[i].Stance != want[i].Stance ||
+			!equalRate(got[i].Rate, want[i].Rate) {
 			return false
 		}
 	}
 	return true
 }
 
+// equalRate compares two penalty rates: both absent or both present
+// with the same value.
+func equalRate(got, want *int64) bool {
+	if got == nil || want == nil {
+		return got == want
+	}
+	return *got == *want
+}
+
 // TestUpdateCycleCompilesTheCanonicalExample: the base fixture — the
-// report document's canonical example — installs one placeholder drop
-// ban rule per live report's Target.
+// report document's canonical example — maps its one report's penalty
+// (limit-bandwidth, rate 1000000) onto the bandwidth ban rule.
 func TestUpdateCycleCompilesTheCanonicalExample(t *testing.T) {
 	srv := newDocServer(t)
 	srv.serve(http.StatusOK, canonicalDoc(t))
@@ -255,7 +274,7 @@ func TestUpdateCycleCompilesTheCanonicalExample(t *testing.T) {
 	if len(skips) != 0 {
 		t.Errorf("skipped %d report records, want 0", len(skips))
 	}
-	assertInstalls(t, stub, []BanRule{dropRule("203.0.113.7/32")})
+	assertInstalls(t, stub, []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 }
 
 // TestUpdateCycleValidations drives one update cycle per fixture
@@ -279,7 +298,7 @@ func TestUpdateCycleValidations(t *testing.T) {
 		},
 		{
 			name:      "document version 0 compiles its records",
-			wantRules: []BanRule{dropRule("203.0.113.7/32")},
+			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")},
 		},
 		{
 			name: "unknown document fields are ignored",
@@ -289,7 +308,7 @@ func TestUpdateCycleValidations(t *testing.T) {
 				rec["future_record_field"] = 42
 				penalty(t, rec)["future_penalty_field"] = "x"
 			},
-			wantRules: []BanRule{dropRule("203.0.113.7/32")},
+			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")},
 		},
 		{
 			name:    "a malformed document body refuses the cycle",
@@ -311,7 +330,7 @@ func TestUpdateCycleValidations(t *testing.T) {
 				p["action"] = string(PenaltyReject)
 				delete(p, "rate")
 			},
-			wantRules: []BanRule{dropRule("203.0.113.7/32")},
+			wantRules: []BanRule{banRule(StanceReject, nil, "203.0.113.7/32")},
 		},
 		{
 			name: "a record with an unknown penalty action is skipped",
@@ -326,7 +345,7 @@ func TestUpdateCycleValidations(t *testing.T) {
 			mutate: func(t *testing.T, doc map[string]any) {
 				penalty(t, record(t, doc, 0))["action"] = string(PenaltyLimitPktRate)
 			},
-			wantRules: []BanRule{dropRule("203.0.113.7/32")},
+			wantRules: []BanRule{banRule(StanceLimitPktRate, ratePtr(1000000), "203.0.113.7/32")},
 		},
 		{
 			name: "a limit penalty without its rate is skipped",
@@ -349,7 +368,7 @@ func TestUpdateCycleValidations(t *testing.T) {
 			mutate: func(t *testing.T, doc map[string]any) {
 				penalty(t, record(t, doc, 0))["rate"] = json.Number("500000")
 			},
-			wantRules: []BanRule{dropRule("203.0.113.7/32")},
+			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(500000), "203.0.113.7/32")},
 		},
 		{
 			name: "a rate on a non-limit penalty is skipped",
@@ -366,7 +385,7 @@ func TestUpdateCycleValidations(t *testing.T) {
 				p["action"] = string(PenaltyDrop)
 				delete(p, "rate")
 			},
-			wantRules: []BanRule{dropRule("203.0.113.7/32")},
+			wantRules: []BanRule{banRule(StanceDrop, nil, "203.0.113.7/32")},
 		},
 		{
 			name: "a record with an unparseable Target is skipped",
@@ -381,7 +400,7 @@ func TestUpdateCycleValidations(t *testing.T) {
 			mutate: func(t *testing.T, doc map[string]any) {
 				record(t, doc, 0)["target"] = "203.0.113.7/24"
 			},
-			wantRules: []BanRule{dropRule("203.0.113.0/24")},
+			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.0/24")},
 		},
 		{
 			name: "invalid records are skipped while the rest compile",
@@ -393,7 +412,7 @@ func TestUpdateCycleValidations(t *testing.T) {
 				delete(noPenalty, "penalty")
 				doc["reports"] = []any{rec, badTarget, noPenalty}
 			},
-			wantRules:   []BanRule{dropRule("203.0.113.7/32")},
+			wantRules:   []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")},
 			wantSkipped: 2,
 		},
 	}
@@ -429,6 +448,119 @@ func TestUpdateCycleValidations(t *testing.T) {
 	}
 }
 
+// TestUpdateCyclePenaltyMapping: every penalty action maps onto the
+// stance the contract defines — the mapping is total over the closed
+// vocabulary — with a failing and a passing case per action.
+// limit-req-rate is deliberately not applied (ADR 0011): its passing
+// case is the skip itself, logged and counted, with nothing installed.
+func TestUpdateCyclePenaltyMapping(t *testing.T) {
+	tests := []struct {
+		name        string
+		action      PenaltyAction
+		rate        any // nil deletes the penalty's rate
+		wantRules   []BanRule
+		wantSkipped int
+		wantSkipHas string
+		wantLogs    []string
+	}{
+		{
+			name:      "drop is applied as a silent drop",
+			action:    PenaltyDrop,
+			wantRules: []BanRule{dropRule("203.0.113.7/32")},
+		},
+		{
+			name:        "a rate on drop is not applied and is skipped",
+			action:      PenaltyDrop,
+			rate:        json.Number("100"),
+			wantRules:   []BanRule{},
+			wantSkipped: 1,
+		},
+		{
+			name:      "reject is applied as a reject",
+			action:    PenaltyReject,
+			wantRules: []BanRule{banRule(StanceReject, nil, "203.0.113.7/32")},
+		},
+		{
+			name:        "a rate on reject is not applied and is skipped",
+			action:      PenaltyReject,
+			rate:        json.Number("100"),
+			wantRules:   []BanRule{},
+			wantSkipped: 1,
+		},
+		{
+			name:      "limit-pkt-rate throttles packets to its rate",
+			action:    PenaltyLimitPktRate,
+			rate:      json.Number("250"),
+			wantRules: []BanRule{banRule(StanceLimitPktRate, ratePtr(250), "203.0.113.7/32")},
+		},
+		{
+			name:        "limit-pkt-rate without its rate is skipped",
+			action:      PenaltyLimitPktRate,
+			wantRules:   []BanRule{},
+			wantSkipped: 1,
+		},
+		{
+			name:      "limit-bandwidth throttles response bytes to its rate",
+			action:    PenaltyLimitBandwidth,
+			rate:      json.Number("500000"),
+			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(500000), "203.0.113.7/32")},
+		},
+		{
+			name:        "limit-bandwidth without its rate is skipped",
+			action:      PenaltyLimitBandwidth,
+			wantRules:   []BanRule{},
+			wantSkipped: 1,
+		},
+		{
+			name:        "limit-req-rate is skipped, logged and counted",
+			action:      PenaltyLimitReqRate,
+			rate:        json.Number("300"),
+			wantRules:   []BanRule{},
+			wantSkipped: 1,
+			wantSkipHas: "not applied",
+			wantLogs:    []string{"skipped report record", `"skipped":1`},
+		},
+		{
+			name:        "limit-req-rate without its rate is skipped too",
+			action:      PenaltyLimitReqRate,
+			wantRules:   []BanRule{},
+			wantSkipped: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newDocServer(t)
+			srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
+				p := penalty(t, record(t, doc, 0))
+				p["action"] = string(tt.action)
+				if tt.rate == nil {
+					delete(p, "rate")
+				} else {
+					p["rate"] = tt.rate
+				}
+			}))
+			u, stub, logs := newTestUpdater(t, srv)
+
+			skips, err := u.Update(context.Background())
+			if err != nil {
+				t.Fatalf("Update: %v", err)
+			}
+			if len(skips) != tt.wantSkipped {
+				t.Fatalf("skipped %d report records, want %d", len(skips), tt.wantSkipped)
+			}
+			if tt.wantSkipHas != "" && !strings.Contains(skips[0].Reason, tt.wantSkipHas) {
+				t.Errorf("skip reason %q does not contain %q", skips[0].Reason, tt.wantSkipHas)
+			}
+			for _, want := range tt.wantLogs {
+				if !strings.Contains(logs.String(), want) {
+					t.Errorf("logs do not contain %q: %s", want, logs.String())
+				}
+			}
+			assertInstalls(t, stub, tt.wantRules)
+		})
+	}
+}
+
 // TestUpdateCycleLogsAndCountsSkippedRecords: every skipped record is
 // logged with its identity and reason, and the cycle's summary counts
 // the skips.
@@ -448,7 +580,7 @@ func TestUpdateCycleLogsAndCountsSkippedRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	assertInstalls(t, stub, []BanRule{dropRule("203.0.113.7/32")})
+	assertInstalls(t, stub, []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 
 	if len(skips) != 2 {
 		t.Fatalf("skipped %d report records, want 2", len(skips))
@@ -483,7 +615,7 @@ func TestUpdateKeepsTheLastInstalledRules(t *testing.T) {
 		if _, err := u.Update(context.Background()); err == nil {
 			t.Fatal("second Update succeeded, want an error")
 		}
-		assertInstalls(t, stub, []BanRule{dropRule("203.0.113.7/32")})
+		assertInstalls(t, stub, []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 		if stub.ResetCalls() != 0 {
 			t.Errorf("Reset ran %d times, want 0", stub.ResetCalls())
 		}
@@ -578,8 +710,8 @@ func TestUpdaterRun(t *testing.T) {
 
 		calls := stub.InstallCalls()
 		want := [][]BanRule{
-			{dropRule("203.0.113.7/32")},
-			{dropRule("198.51.100.9/32")},
+			{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")},
+			{banRule(StanceLimitBandwidth, ratePtr(1000000), "198.51.100.9/32")},
 		}
 		if len(calls) != len(want) {
 			t.Fatalf("installed %d rulesets, want %d", len(calls), len(want))
@@ -637,30 +769,72 @@ func sendTick(t *testing.T, ticks chan<- time.Time, runDone <-chan error) {
 }
 
 // TestDryRunPrintsTheCompiledBanRules: --dry-run prints the compiled
-// ban rules and installs nothing — no driver call, no netlink, no
-// privileges.
+// ban rules and one mapping line per ban rule — stance, rate and chain,
+// the penalty → nftables mapping — and installs nothing: no driver
+// call, no netlink, no privileges.
 func TestDryRunPrintsTheCompiledBanRules(t *testing.T) {
-	srv := newDocServer(t)
-	srv.serve(http.StatusOK, canonicalDoc(t))
-	u, stub, _ := newTestUpdater(t, srv)
+	t.Run("the canonical example prints its ban rule and one mapping line", func(t *testing.T) {
+		srv := newDocServer(t)
+		srv.serve(http.StatusOK, canonicalDoc(t))
+		u, stub, _ := newTestUpdater(t, srv)
 
-	var out bytes.Buffer
-	if err := u.DryRun(context.Background(), &out); err != nil {
-		t.Fatalf("DryRun: %v", err)
-	}
-	want := `[
+		var out bytes.Buffer
+		if err := u.DryRun(context.Background(), &out); err != nil {
+			t.Fatalf("DryRun: %v", err)
+		}
+		want := `[
   {
     "targets": [
       "203.0.113.7/32"
     ],
-    "stance": "drop"
+    "stance": "limit-bandwidth",
+    "rate": 1000000
   }
 ]
+stance=limit-bandwidth rate=1000000 chain=egress
 `
-	if out.String() != want {
-		t.Errorf("DryRun output = %q, want %q", out.String(), want)
-	}
-	assertInstalls(t, stub, nil)
+		if out.String() != want {
+			t.Errorf("DryRun output = %q, want %q", out.String(), want)
+		}
+		assertInstalls(t, stub, nil)
+	})
+
+	t.Run("every ban rule prints one mapping line with its stance, rate and chain", func(t *testing.T) {
+		srv := newDocServer(t)
+		srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
+			rec := record(t, doc, 0)
+			dropped := cloneRecord(t, rec)
+			p := penalty(t, dropped)
+			p["action"] = string(PenaltyDrop)
+			delete(p, "rate")
+			throttled := cloneRecord(t, rec)
+			tp := penalty(t, throttled)
+			tp["action"] = string(PenaltyLimitPktRate)
+			tp["rate"] = json.Number("250")
+			doc["reports"] = []any{rec, dropped, throttled}
+		}))
+		u, stub, _ := newTestUpdater(t, srv)
+
+		var out bytes.Buffer
+		if err := u.DryRun(context.Background(), &out); err != nil {
+			t.Fatalf("DryRun: %v", err)
+		}
+		var mapping []string
+		for _, line := range strings.Split(out.String(), "\n") {
+			if strings.HasPrefix(line, "stance=") {
+				mapping = append(mapping, line)
+			}
+		}
+		want := []string{
+			"stance=limit-bandwidth rate=1000000 chain=egress",
+			"stance=drop rate=- chain=ingress",
+			"stance=limit-pkt-rate rate=250 chain=ingress",
+		}
+		if !slices.Equal(mapping, want) {
+			t.Errorf("mapping lines = %q, want %q", mapping, want)
+		}
+		assertInstalls(t, stub, nil)
+	})
 }
 
 // TestClampInterval: the update interval's one-minute floor, failing

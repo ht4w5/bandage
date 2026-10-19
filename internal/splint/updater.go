@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -69,8 +70,10 @@ func (u *Updater) Update(ctx context.Context) ([]Skip, error) {
 }
 
 // DryRun runs one fetch-compile cycle and writes the compiled ban rules
-// to w as indented JSON instead of installing them: no firewall driver,
-// no netlink, no privileges. Skipped records are logged like any cycle.
+// to w as indented JSON, then one mapping line per ban rule — stance,
+// rate and chain (the contract's penalty → nftables mapping) — instead
+// of installing them: no firewall driver, no netlink, no privileges.
+// Skipped records are logged like any cycle.
 func (u *Updater) DryRun(ctx context.Context, w io.Writer) error {
 	rules, _, err := u.load(ctx)
 	if err != nil {
@@ -78,7 +81,19 @@ func (u *Updater) DryRun(ctx context.Context, w io.Writer) error {
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
-	return enc.Encode(rules)
+	if err := enc.Encode(rules); err != nil {
+		return err
+	}
+	for _, r := range rules {
+		rate := "-"
+		if r.Rate != nil {
+			rate = strconv.FormatInt(*r.Rate, 10)
+		}
+		if _, err := fmt.Fprintf(w, "stance=%s rate=%s chain=%s\n", r.Stance, rate, r.Stance.Chain()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // load fetches and compiles one report document, logging every skipped

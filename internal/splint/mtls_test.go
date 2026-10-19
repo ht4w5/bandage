@@ -191,7 +191,7 @@ func TestUpdateCycleMutualTLS(t *testing.T) {
 	if len(skips) != 0 {
 		t.Errorf("skipped %d report records, want 0", len(skips))
 	}
-	assertInstalls(t, stub, []BanRule{dropRule("203.0.113.7/32")})
+	assertInstalls(t, stub, []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 }
 
 // TestUpdateCycleRefusesTheWrongCA: the wrong-CA failures — a cycle
@@ -221,7 +221,7 @@ func TestUpdateCycleRefusesTheWrongCA(t *testing.T) {
 		if _, err := newUpdater(badOpts...).Update(context.Background()); err == nil {
 			t.Fatal("second Update succeeded, want an error")
 		}
-		assertInstalls(t, stub, []BanRule{dropRule("203.0.113.7/32")})
+		assertInstalls(t, stub, []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 		if stub.ResetCalls() != 0 {
 			t.Errorf("Reset ran %d times, want 0", stub.ResetCalls())
 		}
@@ -245,5 +245,5 @@ func TestUpdateCyclePlainHTTP(t *testing.T) {
 	if _, err := u.Update(context.Background()); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	assertInstalls(t, stub, []BanRule{dropRule("203.0.113.7/32")})
+	assertInstalls(t, stub, []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 }
