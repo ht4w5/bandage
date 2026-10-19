@@ -53,6 +53,8 @@ chains:
           - report:
               reason: iso-egress-overflow
               ttl: 7d
+              penalty: limit-bandwidth
+              rate: 1MB
 
       - id: iso-replay
         filter: 'path suffix ".iso"'
@@ -70,6 +72,8 @@ chains:
           - report:
               reason: iso-replay-overflow
               ttl: 24h
+              penalty: limit-bandwidth
+              rate: 1MB
 
   - name: routing
     rules:
@@ -104,10 +108,13 @@ chains:
   - `report` — the **only write path** into the report table: upserts a
     report for the tracker's target. Requires `reason` (a slug matching
     `^[a-z0-9][a-z0-9_-]*$`; it populates the downstream ban rules and may
-    be shared across rules — the rule ID is internal provenance) and `ttl`
-    (expiry since the trigger; each `report` action sets its own). Rules
-    carrying `report` must have a `tracker` — reports are always
-    evidence-backed.
+    be shared across rules — the rule ID is internal provenance), `ttl`
+    (expiry since the trigger; each `report` action sets its own) and a
+    `penalty` (`drop` | `reject` | `limit-pkt-rate` | `limit-bandwidth` |
+    `limit-req-rate`) with a `rate` on the limit penalties — plain counts
+    or decimal human sizes (`1MB` = 1e6) in the unit the penalty name
+    states. The penalty is advisory (ADR 0010): validated for
+    well-formedness only, never against the tracker or reason.
   - `log` — debug logging in flux's shape (`log: "debug,ROUTE:"`), logging
     the rule, its Target, the event and the rule's tracker reading at
     that point (ADR 0005: the four level words only — a rule can never
@@ -430,8 +437,10 @@ No `/v1` prefix, no debug endpoints. The API never writes reports; only
   `track`/volume methods, volume methods on non-replay trackers, unparseable
   filters (with `ParseError` line/col), dangling `goto`/`jump` targets,
   cyclic `goto`/`jump` graphs (the chain graph must be acyclic), duplicate
-  rule IDs, `report` actions missing `reason`/`ttl`, `reason` not a slug
-  (`^[a-z0-9][a-z0-9_-]*$`), non-positive `ttl`, out-of-range `target_prefix`
+  rule IDs, `report` actions missing `reason`/`ttl`/`penalty`, `reason`
+  not a slug (`^[a-z0-9][a-z0-9_-]*$`), non-positive `ttl`, unknown
+  `penalty` values, `rate` with `drop`/`reject`, missing or non-positive
+  `rate` on `limit-*` penalties, out-of-range `target_prefix`
   (ipv4 ≤ 32, ipv6 ≤ 64).
 - No hot reload in v0: config and rules changes take effect on restart.
 - `bandage -t` (`--test`) prints the validated chain plan, headed by the
