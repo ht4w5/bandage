@@ -136,7 +136,7 @@ func TestUpdateCycleSkipsUnchangedRulesPerNamespace(t *testing.T) {
 		srv := newDocServer(t)
 		srv.serve(http.StatusOK, canonicalDoc(t))
 		srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
-			record(t, doc, 0)["target"] = "198.51.100.9/32"
+			report(t, doc, 0)["target"] = "198.51.100.9/32"
 		}))
 		u, stubs, _ := newTestNamespaces(t, srv, "/a", "/b")
 

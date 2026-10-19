@@ -19,8 +19,9 @@ tooling turns into ban rules.
   the files beside the database and backing them up
 
 Example configuration lives in [configs/](configs/) (`bandage.yml`,
-`rules.yml`, and the sample `splint-nft.service` systemd unit). The vocabulary of record is [GLOSSARY.md](GLOSSARY.md);
-the design plan is [PLAN.md](PLAN.md); accepted decisions are recorded
+`rules.yml`, and the sample `splint-nft.service` systemd unit). The
+vocabulary of record is [GLOSSARY.md](GLOSSARY.md); the design plan is
+[PLAN.md](PLAN.md); accepted decisions are recorded
 as ADRs in [docs/adr/](docs/adr/) — [0008](docs/adr/0008-trigger-semantics-one-live-report.md)
 (Trigger semantics) and [0009](docs/adr/0009-wal-with-a-separate-read-path.md)
 (WAL and the split read path) govern the behavior the operator docs

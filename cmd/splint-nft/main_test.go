@@ -152,28 +152,124 @@ func TestRunValidatesTheClientCertificatePair(t *testing.T) {
 	})
 }
 
+// TestRunValidatesTheReportURL: NewFetcher's startup refusals — the
+// report URL is required and must be an http or https URL with a host
+// — a failing and a passing case per validation.
+func TestRunValidatesTheReportURL(t *testing.T) {
+	srv := newPlainDocServer(t)
+	tests := []struct {
+		name    string
+		url     string
+		wantErr string
+	}{
+		{
+			name:    "an empty report URL is rejected at startup",
+			url:     "",
+			wantErr: "url: required",
+		},
+		{
+			name:    "a non-http(s) report URL is rejected at startup",
+			url:     "ftp://example.com/report",
+			wantErr: "url: scheme must be http or https",
+		},
+		{
+			name:    "a report URL without a host is rejected at startup",
+			url:     "http:///report",
+			wantErr: "url: host: required",
+		},
+		{
+			name: "an http report URL with a host is accepted at startup",
+			url:  srv.URL,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code, _ := run([]string{"--url", tt.url, "--dry-run"}, &stdout, &stderr)
+			if tt.wantErr != "" {
+				if code != exitError {
+					t.Errorf("exit code = %d, want %d", code, exitError)
+				}
+				if !strings.Contains(stderr.String(), tt.wantErr) {
+					t.Errorf("stderr %q does not contain %q", stderr.String(), tt.wantErr)
+				}
+				return
+			}
+			if code != exitOK {
+				t.Errorf("exit code = %d, want %d (stderr %q)", code, exitOK, stderr.String())
+			}
+		})
+	}
+}
+
 // TestRunFetchTimeoutFlag: the fetch timeout is configurable with
-// bandaid's default (10s).
+// bandaid's default (10s) and a one-second floor — a failing and a
+// passing case.
 func TestRunFetchTimeoutFlag(t *testing.T) {
 	srv := newPlainDocServer(t)
 	tests := []struct {
-		name  string
-		extra []string
-		want  time.Duration
+		name    string
+		extra   []string
+		want    time.Duration
+		wantErr string
 	}{
-		{"the fetch timeout defaults to bandaid's ten seconds", nil, 10 * time.Second},
-		{"the fetch timeout is configurable", []string{"--fetch-timeout", "2s"}, 2 * time.Second},
+		{name: "the fetch timeout defaults to bandaid's ten seconds", want: 10 * time.Second},
+		{name: "the fetch timeout is configurable", extra: []string{"--fetch-timeout", "2s"}, want: 2 * time.Second},
+		{
+			name:    "a fetch timeout below the one-second floor is rejected at startup",
+			extra:   []string{"--fetch-timeout", "500ms"},
+			wantErr: "fetch timeout: must not be shorter than 1 second",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			args := append(slices.Clone(tt.extra), "--url", srv.URL, "--dry-run")
 			code, opts := run(args, &stdout, &stderr)
+			if tt.wantErr != "" {
+				if code != exitError {
+					t.Errorf("exit code = %d, want %d", code, exitError)
+				}
+				if !strings.Contains(stderr.String(), tt.wantErr) {
+					t.Errorf("stderr %q does not contain %q", stderr.String(), tt.wantErr)
+				}
+				return
+			}
 			if code != exitOK {
 				t.Fatalf("exit code = %d, want %d (stderr %q)", code, exitOK, stderr.String())
 			}
 			if opts.fetchTimeout != tt.want {
 				t.Errorf("fetch timeout = %v, want %v", opts.fetchTimeout, tt.want)
+			}
+		})
+	}
+}
+
+// TestRunValidatesTheLogLevel: parseLevel's --log-level vocabulary —
+// one of the four level words — a failing and a passing case.
+func TestRunValidatesTheLogLevel(t *testing.T) {
+	srv := newPlainDocServer(t)
+
+	t.Run("an unknown log level is rejected at startup", func(t *testing.T) {
+		var stderr bytes.Buffer
+		code, _ := run([]string{"--url", srv.URL, "--log-level", "trace", "--dry-run"}, io.Discard, &stderr)
+		if code != exitError {
+			t.Errorf("exit code = %d, want %d", code, exitError)
+		}
+		if !strings.Contains(stderr.String(), "log level: must be debug, info, warn or error") {
+			t.Errorf("stderr %q does not reject the unknown log level", stderr.String())
+		}
+	})
+
+	for _, level := range []string{"debug", "info", "warn", "error"} {
+		t.Run("the "+level+" log level is accepted at startup", func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code, opts := run([]string{"--url", srv.URL, "--log-level", level, "--dry-run"}, &stdout, &stderr)
+			if code != exitOK {
+				t.Fatalf("exit code = %d, want %d (stderr %q)", code, exitOK, stderr.String())
+			}
+			if opts.logLevel != level {
+				t.Errorf("log level = %q, want %q", opts.logLevel, level)
 			}
 		})
 	}
