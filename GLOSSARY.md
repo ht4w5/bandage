@@ -83,14 +83,20 @@ _Avoid_: capped drop, drop, expiry
 ### Reports
 
 **Report**:
-The record that a rule matched for a target, carrying its tracker reading
-and sample, alive until expiry or deletion.
+The record that a rule matched for a target, carrying its tracker reading,
+sample, and penalty, alive until expiry or deletion.
 _Avoid_: finding, record, ban
 
 **Reason**:
 The machine-readable trigger code a report carries into downstream ban
 rules; distinct from the rule ID, which is internal.
 _Avoid_: blame, cause
+
+**Penalty**:
+The enforcement stance a report carries — drop, reject, or a limit at a
+packet, bandwidth, or request rate — declared by the rule's report action; advisory, a report consumer
+decides how to apply it.
+_Avoid_: sanction, remedy, enforcement action
 
 **Sample**:
 The most recent event that created a report.
@@ -99,4 +105,4 @@ _Avoid_: example, evidence
 **Ban rule**:
 An enforcement rule that downstream tooling derives from reports; bandage
 produces reports and never ban rules.
-_Avoid_: ban, penalty
+_Avoid_: ban
