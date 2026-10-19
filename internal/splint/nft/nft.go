@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"net/netip"
 
 	"github.com/google/nftables"
@@ -19,11 +20,14 @@ import (
 )
 
 // The wholly-owned nftables objects: one inet table per target
-// namespace, carrying the ingress chain at the configured hook.
-// (Ticket 04 adds the egress chain for bandwidth limits.)
+// namespace, carrying the ingress chain at the configured hook and the
+// egress chain behind the bandwidth limits. The chain names are the
+// ones splint.Stance.Chain() reports (the --dry-run mapping lines name
+// these chains).
 const (
 	tableName   = "splint"
-	ingressName = "ingress"
+	ingressName = string(splint.ChainIngress)
+	egressName  = string(splint.ChainEgress)
 )
 
 // Hook is the enforcement hook the ingress chain attaches to: input
@@ -96,8 +100,8 @@ func tableExists(conn *nftables.Conn, table *nftables.Table) (bool, error) {
 
 // Install rebuilds the owned table wholesale in one atomic batch:
 // a probe decides whether the delete joins the batch, then the table,
-// the ingress chain and one source-lookup rule per ban rule and
-// address family are buffered and flushed together. The table is
+// both chains and one lookup rule per ban rule and address family are
+// buffered and flushed together. The table is
 // never absent while the new one applies — there is no
 // delete-then-rebuild window.
 func (d *Driver) Install(rules []splint.BanRule) error {
@@ -116,9 +120,10 @@ func (d *Driver) Install(rules []splint.BanRule) error {
 		conn.DelTable(table)
 	}
 	table = conn.AddTable(table)
-	chain := conn.AddChain(d.ingress(table))
+	ingress := conn.AddChain(d.ingress(table))
+	egress := conn.AddChain(d.egress(table))
 	for i, r := range rules {
-		if err := addBanRule(conn, table, chain, i, r); err != nil {
+		if err := addBanRule(conn, table, ingress, egress, i, r); err != nil {
 			return fmt.Errorf("install: ban rule %d: %w", i, err)
 		}
 	}
@@ -160,15 +165,36 @@ func (d *Driver) ingress(table *nftables.Table) *nftables.Chain {
 	return c
 }
 
+// egress is the egress base chain carrying the bandwidth limits:
+// filter priority at output in input mode (locally generated
+// responses) and at forward in prerouting mode (transit responses) —
+// the response direction the limits' unit names.
+func (d *Driver) egress(table *nftables.Table) *nftables.Chain {
+	c := &nftables.Chain{
+		Name:  egressName,
+		Table: table,
+		Type:  nftables.ChainTypeFilter,
+	}
+	switch d.hook {
+	case HookPrerouting:
+		c.Hooknum, c.Priority = nftables.ChainHookForward, nftables.ChainPriorityFilter
+	default:
+		c.Hooknum, c.Priority = nftables.ChainHookOutput, nftables.ChainPriorityFilter
+	}
+	return c
+}
+
 // addrFamily is one address family a ban rule can cover; the source
-// offsets are fluxc's (IPv4 source at network-header offset 12, IPv6
-// at 8).
+// and destination offsets are fluxc's (IPv4 source at network-header
+// offset 12 and destination at 16, IPv6 source at 8 and destination at
+// 24). srcLen is the address length both loads share.
 type addrFamily struct {
 	name    string
 	proto   byte
 	keyType nftables.SetDatatype
 	srcOff  uint32
 	srcLen  uint32
+	dstOff  uint32
 	is      func(netip.Prefix) bool
 	setName func(i int) string
 }
@@ -182,6 +208,7 @@ var families = []addrFamily{
 		keyType: nftables.TypeIPAddr,
 		srcOff:  12,
 		srcLen:  4,
+		dstOff:  16,
 		is:      func(p netip.Prefix) bool { return p.Addr().Is4() },
 		setName: func(i int) string { return fmt.Sprintf("v4_%d", i) },
 	},
@@ -191,6 +218,7 @@ var families = []addrFamily{
 		keyType: nftables.TypeIP6Addr,
 		srcOff:  8,
 		srcLen:  16,
+		dstOff:  24,
 		is:      func(p netip.Prefix) bool { return !p.Addr().Is4() },
 		setName: func(i int) string { return fmt.Sprintf("v6_%d", i) },
 	},
@@ -199,13 +227,25 @@ var families = []addrFamily{
 // addBanRule buffers one ban rule's sets and kernel rules: every
 // address family with targets gets one interval set of the rule's
 // Target prefixes and one rule matching source ∈ set before the
-// stance's verdict. (Ticket 03 guards these matches with the service
-// prefilter; ticket 04 splits stances across the ingress chain and an
-// egress chain.)
-func addBanRule(conn *nftables.Conn, table *nftables.Table, chain *nftables.Chain, i int, r splint.BanRule) error {
-	verdict, err := verdictExprs(r.Stance)
+// stance's verdict — except the bandwidth stance, which meters the
+// response direction: its rules live on the egress chain matched on
+// destination ∈ set. (Ticket 03 guards these matches with the service
+// prefilter.)
+func addBanRule(conn *nftables.Conn, table *nftables.Table, ingress, egress *nftables.Chain, i int, r splint.BanRule) error {
+	verdict, err := verdictExprs(r)
 	if err != nil {
 		return err
+	}
+	// The direction split of the penalty mapping: bandwidth meters the
+	// response direction on the egress chain, matched on destination ∈
+	// Target; every other stance matches source on the ingress chain.
+	chain, matchOff := ingress, func(f addrFamily) uint32 { return f.srcOff }
+	switch r.Stance.Chain() {
+	case splint.ChainIngress:
+	case splint.ChainEgress:
+		chain, matchOff = egress, func(f addrFamily) uint32 { return f.dstOff }
+	default:
+		return fmt.Errorf("stance %q: not supported", r.Stance)
 	}
 	for _, fam := range families {
 		var prefixes []netip.Prefix
@@ -233,7 +273,7 @@ func addBanRule(conn *nftables.Conn, table *nftables.Table, chain *nftables.Chai
 				&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{fam.proto}},
 				&expr.Payload{DestRegister: 1, OperationType: expr.PayloadLoad,
-					Base: expr.PayloadBaseNetworkHeader, Offset: fam.srcOff, Len: fam.srcLen},
+					Base: expr.PayloadBaseNetworkHeader, Offset: matchOff(fam), Len: fam.srcLen},
 				&expr.Lookup{SourceRegister: 1, SetName: name},
 			}, verdict...),
 		})
@@ -241,16 +281,60 @@ func addBanRule(conn *nftables.Conn, table *nftables.Table, chain *nftables.Chai
 	return nil
 }
 
-// verdictExprs maps a stance onto its verdict expressions. Only the
-// drop stance exists today (the placeholder compiler emits drops);
-// ticket 04 maps reject and the limits here.
-func verdictExprs(st splint.Stance) ([]expr.Any, error) {
-	switch st {
+// verdictExprs maps a ban rule's stance onto its verdict expressions
+// — the stance switch of the contract's penalty mapping (unknown
+// stances error loudly). Reject is the inet family's icmpx
+// admin-prohibited: TCP peers get a reset automatically. A rate meter
+// matches only once its rate is exceeded (the nft "limit rate over …"
+// flag), so the drop applies to the excess while in-rate traffic falls
+// through to the next rule; its burst is one second's worth of the
+// rate, floored (burstFor). The kernel accepts reject at prerouting
+// only from ~5.9 — older kernels refuse the batch, the documented
+// floor for --hook prerouting (ticket 09 documents it).
+func verdictExprs(r splint.BanRule) ([]expr.Any, error) {
+	switch r.Stance {
 	case splint.StanceDrop:
 		return []expr.Any{&expr.Verdict{Kind: expr.VerdictDrop}}, nil
+	case splint.StanceReject:
+		return []expr.Any{&expr.Reject{
+			Type: unix.NFT_REJECT_ICMPX_UNREACH,
+			Code: unix.NFT_REJECT_ICMPX_ADMIN_PROHIBITED,
+		}}, nil
+	case splint.StanceLimitPktRate, splint.StanceLimitBandwidth:
+		if r.Rate == nil {
+			return nil, fmt.Errorf("stance %q: rate required", r.Stance)
+		}
+		if *r.Rate < 1 {
+			return nil, fmt.Errorf("stance %q: rate must be at least 1 (got %d)", r.Stance, *r.Rate)
+		}
+		limitType := expr.LimitTypePkts
+		if r.Stance == splint.StanceLimitBandwidth {
+			limitType = expr.LimitTypePktBytes
+		}
+		return []expr.Any{
+			&expr.Limit{
+				Type:  limitType,
+				Rate:  uint64(*r.Rate),
+				Over:  true,
+				Unit:  expr.LimitTimeSecond,
+				Burst: burstFor(*r.Rate),
+			},
+			&expr.Verdict{Kind: expr.VerdictDrop},
+		}, nil
 	default:
-		return nil, fmt.Errorf("stance %q: not supported", st)
+		return nil, fmt.Errorf("stance %q: not supported", r.Stance)
 	}
+}
+
+// burstFor derives a rate meter's burst: one second's worth of the
+// rate (Rate per second × 1s), floored to the kernel's 32-bit burst
+// field. The spec derives the burst — there is no burst flag in v0:
+// nft's tiny default burst would drop legitimate micro-bursts.
+func burstFor(rate int64) uint32 {
+	if rate > math.MaxUint32 {
+		return math.MaxUint32
+	}
+	return uint32(rate) // rate >= 1 where the compiler emits it
 }
 
 // intervalElements encodes masked Target prefixes as an interval set's

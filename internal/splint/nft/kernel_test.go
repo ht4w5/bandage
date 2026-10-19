@@ -50,15 +50,18 @@ func TestKernelInstallReadBackReset(t *testing.T) {
 		}
 	})
 
-	// One ban rule per shape the compiler can emit: a mixed v4 rule, a
-	// v6 rule, and a rule whose range reaches the top of the space
-	// (encoded with the null end).
+	// One ban rule per shape the compiler can emit: a mixed v4 drop, a
+	// v6 reject, a packet-rate meter, a bandwidth meter (the one egress
+	// rule, matched on destination), and a drop whose range reaches the
+	// top of the space (encoded with the null end).
 	rules := []splint.BanRule{
 		{Targets: []netip.Prefix{
 			netip.MustParsePrefix("203.0.113.0/24"),
 			netip.MustParsePrefix("198.51.100.7/32"),
 		}, Stance: splint.StanceDrop},
-		{Targets: []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")}, Stance: splint.StanceDrop},
+		{Targets: []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")}, Stance: splint.StanceReject},
+		{Targets: []netip.Prefix{netip.MustParsePrefix("198.51.100.9/32")}, Stance: splint.StanceLimitPktRate, Rate: ratePtr(250)},
+		{Targets: []netip.Prefix{netip.MustParsePrefix("203.0.113.9/32")}, Stance: splint.StanceLimitBandwidth, Rate: ratePtr(1000000)},
 		{Targets: []netip.Prefix{netip.MustParsePrefix("255.255.255.0/24")}, Stance: splint.StanceDrop},
 	}
 	input, err := New(HookInput)
@@ -97,11 +100,16 @@ func TestKernelInstallReadBackReset(t *testing.T) {
 	}
 }
 
+// ratePtr points at a ban rule rate fixture.
+func ratePtr(n int64) *int64 { return &n }
+
 // assertKernelState reads the owned table back from the kernel and
-// asserts the driver's encoding: table, ingress chain at hook, one
-// source-lookup drop rule per ban rule and family, and the interval
-// sets behind them. Expectations are hand-written from the test's
-// fixtures, never computed the way the implementation does.
+// asserts the driver's encoding: table, both chains at their hooks, one
+// match-lookup rule per ban rule and family (source-matched on the
+// ingress chain, the bandwidth meter destination-matched on the egress
+// chain) with the stance's verdict tail, and the interval sets behind
+// them. Expectations are hand-written from the test's fixtures, never
+// computed the way the implementation does.
 func assertKernelState(t *testing.T, conn *nftables.Conn, hook Hook) {
 	t.Helper()
 	table, err := conn.ListTableOfFamily(tableName, nftables.TableFamilyINet)
@@ -112,55 +120,67 @@ func assertKernelState(t *testing.T, conn *nftables.Conn, hook Hook) {
 		t.Errorf("table = (%q, %v), want (%q, inet)", table.Name, table.Family, tableName)
 	}
 
-	chain, err := conn.ListChain(table, ingressName)
-	if err != nil {
-		t.Fatalf("read ingress chain back: %v", err)
-	}
-	wantHook, wantPrio := nftables.ChainHookInput, nftables.ChainPriorityFilter
+	// Both chains, at their hooks: ingress at the configured hook, and
+	// egress at output (input mode) or forward (prerouting mode) — the
+	// response direction bandwidth limits meter.
+	ingressHook, ingressPrio := nftables.ChainHookInput, nftables.ChainPriorityFilter
+	egressHook := nftables.ChainHookOutput
 	if hook == HookPrerouting {
-		wantHook, wantPrio = nftables.ChainHookPrerouting, nftables.ChainPriorityRaw
+		ingressHook, ingressPrio = nftables.ChainHookPrerouting, nftables.ChainPriorityRaw
+		egressHook = nftables.ChainHookForward
 	}
-	if chain.Type != nftables.ChainTypeFilter {
-		t.Errorf("chain type = %q, want %q", chain.Type, nftables.ChainTypeFilter)
-	}
-	if chain.Hooknum == nil || *chain.Hooknum != *wantHook {
-		t.Errorf("chain hook = %v, want %v", chain.Hooknum, *wantHook)
-	}
-	if chain.Priority == nil || *chain.Priority != *wantPrio {
-		t.Errorf("chain priority = %v, want %v", chain.Priority, *wantPrio)
-	}
+	ingress := assertChain(t, conn, table, ingressName, ingressHook, ingressPrio)
+	egress := assertChain(t, conn, table, egressName, egressHook, nftables.ChainPriorityFilter)
 
-	// The kernel rules, in install order — one per ban rule and family
-	// with targets — and the interval sets behind them: every range is
-	// [start, end) with end the first address after it; the
-	// top-touching range gets the null end.
-	want := []struct {
+	// The kernel rules, in install order: one per ban rule and family
+	// with targets. The verdict tails are hand-written from the
+	// fixtures: the silent drop, the inet-family reject with icmpx
+	// admin-prohibited, the packet-rate meter over 250/second with its
+	// derived burst 250 then drop, and the byte-rate meter over
+	// 1000000 bytes/second with its derived burst 1000000 then drop.
+	type wantRule struct {
 		proto   byte
-		srcOff  uint32
-		srcLen  uint32
+		off     uint32
+		length  uint32
 		setName string
-	}{
-		{unix.NFPROTO_IPV4, 12, 4, "v4_0"}, // 203.0.113.0/24 + 198.51.100.7/32
-		{unix.NFPROTO_IPV6, 8, 16, "v6_1"}, // 2001:db8::/32
-		{unix.NFPROTO_IPV4, 12, 4, "v4_2"}, // 255.255.255.0/24
+		tail    tailCheck
 	}
+	ingressRules := []wantRule{
+		{unix.NFPROTO_IPV4, 12, 4, "v4_0", dropTail},                                // 203.0.113.0/24 + 198.51.100.7/32
+		{unix.NFPROTO_IPV6, 8, 16, "v6_1", rejectTail},                              // 2001:db8::/32
+		{unix.NFPROTO_IPV4, 12, 4, "v4_2", limitTail(expr.LimitTypePkts, 250, 250)}, // 198.51.100.9/32
+		{unix.NFPROTO_IPV4, 12, 4, "v4_4", dropTail},                                // 255.255.255.0/24
+	}
+	egressRules := []wantRule{
+		{unix.NFPROTO_IPV4, 16, 4, "v4_3", limitTail(expr.LimitTypePktBytes, 1000000, 1000000)}, // 203.0.113.9/32
+	}
+	assertRules := func(t *testing.T, chain *nftables.Chain, want []wantRule) {
+		t.Helper()
+		krules, err := conn.GetRules(table, chain)
+		if err != nil {
+			t.Fatalf("read %s rules back: %v", chain.Name, err)
+		}
+		if len(krules) != len(want) {
+			t.Fatalf("chain %s rules = %d, want %d: %v", chain.Name, len(krules), len(want), krules)
+		}
+		for i, w := range want {
+			tail := assertMatch(t, krules[i], w.proto, w.off, w.length, w.setName)
+			w.tail(t, tail)
+		}
+	}
+	assertRules(t, ingress, ingressRules)
+	assertRules(t, egress, egressRules)
+
+	// The interval sets behind the rules: every range is [start, end)
+	// with end the first address after it; the top-touching range gets
+	// the null end.
 	wantSets := map[string][]string{
 		"v4_0": {"end 198.51.100.8", "end 203.0.114.0", "start 198.51.100.7", "start 203.0.113.0"},
 		"v6_1": {"end 2001:db9::", "start 2001:db8::"},
-		"v4_2": {"end 0.0.0.0", "start 255.255.255.0"},
+		"v4_2": {"end 198.51.100.10", "start 198.51.100.9"},
+		"v4_3": {"end 203.0.113.10", "start 203.0.113.9"},
+		"v4_4": {"end 0.0.0.0", "start 255.255.255.0"},
 	}
-
-	krules, err := conn.GetRules(table, chain)
-	if err != nil {
-		t.Fatalf("read rules back: %v", err)
-	}
-	if len(krules) != len(want) {
-		t.Fatalf("kernel rules = %d, want %d", len(krules), len(want))
-	}
-	for i, w := range want {
-		assertDropRule(t, krules[i], w.proto, w.srcOff, w.srcLen, w.setName)
-	}
-
 	sets, err := conn.GetSets(table)
 	if err != nil {
 		t.Fatalf("read sets back: %v", err)
@@ -192,34 +212,102 @@ func assertKernelState(t *testing.T, conn *nftables.Conn, hook Hook) {
 	}
 }
 
-// assertDropRule asserts one kernel rule's encoding: the family gate,
-// the source-address lookup into setName and the drop verdict.
-func assertDropRule(t *testing.T, r *nftables.Rule, proto byte, srcOff, srcLen uint32, setName string) {
+// assertChain reads one base chain back and asserts its shape: filter
+// type at hook/prio.
+func assertChain(t *testing.T, conn *nftables.Conn, table *nftables.Table, name string, hook *nftables.ChainHook, prio *nftables.ChainPriority) *nftables.Chain {
 	t.Helper()
-	if len(r.Exprs) != 5 {
-		t.Fatalf("rule exprs = %d, want 5: %v", len(r.Exprs), r.Exprs)
+	chain, err := conn.ListChain(table, name)
+	if err != nil {
+		t.Fatalf("read %s chain back: %v", name, err)
 	}
-	meta, ok := r.Exprs[0].(*expr.Meta)
+	if chain.Type != nftables.ChainTypeFilter {
+		t.Errorf("chain %s type = %q, want %q", name, chain.Type, nftables.ChainTypeFilter)
+	}
+	if chain.Hooknum == nil || *chain.Hooknum != *hook {
+		t.Errorf("chain %s hook = %v, want %v", name, chain.Hooknum, *hook)
+	}
+	if chain.Priority == nil || *chain.Priority != *prio {
+		t.Errorf("chain %s priority = %v, want %v", name, chain.Priority, *prio)
+	}
+	return chain
+}
+
+// tailCheck asserts a kernel rule's verdict tail.
+type tailCheck func(t *testing.T, exprs []expr.Any)
+
+// assertMatch asserts the shared rule prefix — the family gate and the
+// address load at off:len into register 1 followed by the lookup of
+// setName — and returns the verdict tail for the caller.
+func assertMatch(t *testing.T, r *nftables.Rule, proto byte, off, length uint32, setName string) []expr.Any {
+	t.Helper()
+	exprs := r.Exprs
+	if len(exprs) < 5 {
+		t.Fatalf("rule exprs = %d, want at least 4 match + 1 verdict: %v", len(exprs), exprs)
+	}
+	meta, ok := exprs[0].(*expr.Meta)
 	if !ok || meta.Key != expr.MetaKeyNFPROTO || meta.Register != 1 {
-		t.Errorf("exprs[0] = %+v, want the NFPROTO meta load into register 1", r.Exprs[0])
+		t.Errorf("exprs[0] = %+v, want the NFPROTO meta load into register 1", exprs[0])
 	}
-	gate, ok := r.Exprs[1].(*expr.Cmp)
+	gate, ok := exprs[1].(*expr.Cmp)
 	if !ok || gate.Op != expr.CmpOpEq || gate.Register != 1 || !bytes.Equal(gate.Data, []byte{proto}) {
-		t.Errorf("exprs[1] = %+v, want the NFPROTO %d gate", r.Exprs[1], proto)
+		t.Errorf("exprs[1] = %+v, want the NFPROTO %d gate", exprs[1], proto)
 	}
-	payload, ok := r.Exprs[2].(*expr.Payload)
+	payload, ok := exprs[2].(*expr.Payload)
 	if !ok || payload.Base != expr.PayloadBaseNetworkHeader ||
-		payload.Offset != srcOff || payload.Len != srcLen ||
+		payload.Offset != off || payload.Len != length ||
 		payload.DestRegister != 1 || payload.OperationType != expr.PayloadLoad {
-		t.Errorf("exprs[2] = %+v, want the source-address load at %d:%d into register 1", r.Exprs[2], srcOff, srcLen)
+		t.Errorf("exprs[2] = %+v, want the address load at %d:%d into register 1", exprs[2], off, length)
 	}
-	lookup, ok := r.Exprs[3].(*expr.Lookup)
+	lookup, ok := exprs[3].(*expr.Lookup)
 	if !ok || lookup.SourceRegister != 1 || lookup.SetName != setName {
-		t.Errorf("exprs[3] = %+v, want the lookup of %q from register 1", r.Exprs[3], setName)
+		t.Errorf("exprs[3] = %+v, want the lookup of %q from register 1", exprs[3], setName)
 	}
-	verdict, ok := r.Exprs[4].(*expr.Verdict)
+	return exprs[4:]
+}
+
+// dropTail asserts the silent drop verdict.
+func dropTail(t *testing.T, exprs []expr.Any) {
+	t.Helper()
+	if len(exprs) != 1 {
+		t.Fatalf("verdict exprs = %d, want 1: %v", len(exprs), exprs)
+	}
+	verdict, ok := exprs[0].(*expr.Verdict)
 	if !ok || verdict.Kind != expr.VerdictDrop {
-		t.Errorf("exprs[4] = %+v, want the drop verdict", r.Exprs[4])
+		t.Errorf("verdict = %+v, want the drop verdict", exprs[0])
+	}
+}
+
+// rejectTail asserts the inet-family reject: icmpx admin-prohibited
+// (TCP peers get a reset automatically).
+func rejectTail(t *testing.T, exprs []expr.Any) {
+	t.Helper()
+	if len(exprs) != 1 {
+		t.Fatalf("verdict exprs = %d, want 1: %v", len(exprs), exprs)
+	}
+	rej, ok := exprs[0].(*expr.Reject)
+	if !ok || rej.Type != unix.NFT_REJECT_ICMPX_UNREACH || rej.Code != unix.NFT_REJECT_ICMPX_ADMIN_PROHIBITED {
+		t.Errorf("verdict = %+v, want reject with icmpx admin-prohibited", exprs[0])
+	}
+}
+
+// limitTail asserts a rate meter tail: the limit expression matching
+// once the rate is exceeded (type, rate per second, derived burst)
+// followed by the drop of the excess.
+func limitTail(limitType expr.LimitType, rate uint64, burst uint32) tailCheck {
+	return func(t *testing.T, exprs []expr.Any) {
+		t.Helper()
+		if len(exprs) != 2 {
+			t.Fatalf("verdict exprs = %d, want 2: %v", len(exprs), exprs)
+		}
+		lim, ok := exprs[0].(*expr.Limit)
+		if !ok || lim.Type != limitType || lim.Rate != rate || !lim.Over ||
+			lim.Unit != expr.LimitTimeSecond || lim.Burst != burst {
+			t.Errorf("meter = %+v, want limit rate over %d/second burst %d", exprs[0], rate, burst)
+		}
+		verdict, ok := exprs[1].(*expr.Verdict)
+		if !ok || verdict.Kind != expr.VerdictDrop {
+			t.Errorf("verdict = %+v, want the drop verdict", exprs[1])
+		}
 	}
 }
 
