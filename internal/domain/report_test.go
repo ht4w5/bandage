@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// The report document shape is the consumption contract (spec: Report
-// document, PLAN §6): RFC 3339 UTC timestamps at second precision.
+// TestReportMarshalJSON checks the document shape: RFC 3339 UTC
+// timestamps at second precision.
 func TestReportMarshalJSON(t *testing.T) {
 	rec := Report{
 		Rule:      "sustained-iso-egress",

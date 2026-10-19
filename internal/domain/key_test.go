@@ -2,8 +2,7 @@ package bandage
 
 import "testing"
 
-// The tracker-cache key convention round-trips: builders and splitter
-// are inverses (DECISIONS §9: replay keys are target + "\x00" + path).
+// TestTrackerKeyRoundTrip checks builders and splitter are inverses.
 func TestTrackerKeyRoundTrip(t *testing.T) {
 	tests := []struct {
 		name       string

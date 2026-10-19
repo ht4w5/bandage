@@ -4,9 +4,7 @@ import (
 	"testing"
 )
 
-// Tracker math scenarios follow the numeric contract verified against
-// .reference/flux/pkg/engine/bucket.go and its testdata/bucket.yaml
-// parameter sets (freq/byte buckets), authored fresh per DECISIONS §2.
+// Scenario values come from flux's bucket.yaml test vectors.
 
 func TestRecordAccumulate(t *testing.T) {
 	type step struct {
@@ -23,7 +21,7 @@ func TestRecordAccumulate(t *testing.T) {
 		steps  []step
 	}{
 		{
-			// bucket.yaml: FREQ-BUCKET leak=0, volume=2 → third request triggers.
+			// bucket.yaml: FREQ-BUCKET leak=0, volume=2 -> third request triggers.
 			name:   "rate burst overflows on third event",
 			leak:   0,
 			volume: 2,
@@ -51,9 +49,9 @@ func TestRecordAccumulate(t *testing.T) {
 			volume: 2048,
 			steps: []step{
 				{eventTime: 100, increment: 1000, wantValue: 1000, wantLast: 100},
-				{eventTime: 102, increment: 1000, wantValue: 976, wantLast: 102},  // 2000 − 512·2
+				{eventTime: 102, increment: 1000, wantValue: 976, wantLast: 102},  // 2000 - 512*2
 				{eventTime: 110, increment: 1000, wantValue: 0, wantLast: 110},    // floored at zero
-				{eventTime: 111, increment: 2500, wantValue: 1988, wantLast: 111}, // 2500 − 512
+				{eventTime: 111, increment: 2500, wantValue: 1988, wantLast: 111}, // 2500 - 512
 				{eventTime: 111, increment: 100, wantValue: 2088, wantLast: 111, wantOverflow: true},
 			},
 		},
@@ -64,7 +62,7 @@ func TestRecordAccumulate(t *testing.T) {
 			volume: 4,
 			steps: []step{
 				{eventTime: 100, increment: 1, wantValue: 1, wantLast: 100},
-				{eventTime: 101, increment: 1, wantValue: 1, wantLast: 101}, // 2 − 1
+				{eventTime: 101, increment: 1, wantValue: 1, wantLast: 101}, // 2 - 1
 				{eventTime: 102, increment: 1, wantValue: 1, wantLast: 102},
 			},
 		},
@@ -74,9 +72,9 @@ func TestRecordAccumulate(t *testing.T) {
 			volume: 100,
 			steps: []step{
 				{eventTime: 100, increment: 5, wantValue: 5, wantLast: 100},
-				{eventTime: 90, increment: 5, wantValue: 10, wantLast: 100}, // Δt ≤ 0: no decay
+				{eventTime: 90, increment: 5, wantValue: 10, wantLast: 100}, // dt <= 0: no decay
 				{eventTime: 100, increment: 5, wantValue: 15, wantLast: 100},
-				{eventTime: 105, increment: 5, wantValue: 15, wantLast: 105}, // 20 − 1·5
+				{eventTime: 105, increment: 5, wantValue: 15, wantLast: 105}, // 20 - 1*5
 			},
 		},
 		{
@@ -85,7 +83,7 @@ func TestRecordAccumulate(t *testing.T) {
 			volume: 100,
 			steps: []step{
 				{eventTime: 500, increment: 3, wantValue: 3, wantLast: 500},
-				{eventTime: 503, increment: 3, wantValue: 0, wantLast: 503}, // 6 − 2·3
+				{eventTime: 503, increment: 3, wantValue: 0, wantLast: 503}, // 6 - 2*3
 			},
 		},
 	}

@@ -5,11 +5,8 @@ import (
 	"strings"
 )
 
-// Level is the domain's log level enum: the log action's and log.level
-// config's four-word vocabulary (debug, info, warn, error). It replaces
-// the stdlib level type so the domain keeps its dependency rule (ADR
-// 0005): zerolog's fatal/panic are deliberately not representable — a
-// rule must never be able to exit the process.
+// Level is the domain's log level enum (debug, info, warn, error).
+// Fatal and panic are deliberately not representable (ADR 0005).
 type Level string
 
 const (
@@ -23,9 +20,7 @@ const (
 func (l Level) String() string { return string(l) }
 
 // ParseLevel parses one level argument ("debug", "info", "warn" or
-// "error", case-insensitive). It is the one level parser: the log
-// action's "level,message" shape and the log.level config key share
-// it.
+// "error"), case-insensitive.
 func ParseLevel(s string) (Level, error) {
 	switch strings.ToLower(s) {
 	case "debug":
