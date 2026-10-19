@@ -162,3 +162,61 @@ func TestRunHasNoInsecureMode(t *testing.T) {
 		t.Errorf("stderr %q does not reject the insecure flag", stderr.String())
 	}
 }
+
+// TestRunValidatesTheNamespacePaths: the repeatable --netns flag
+// selects target namespaces — every value must be a non-empty,
+// distinct nsfs path — and without the flag the current namespace is
+// the target.
+func TestRunValidatesTheNamespacePaths(t *testing.T) {
+	srv := newPlainDocServer(t)
+	tests := []struct {
+		name      string
+		extra     []string
+		wantCode  int
+		wantErr   string
+		wantNetNS []string
+	}{
+		{
+			name:     "an empty --netns value is rejected at startup",
+			extra:    []string{"--netns", ""},
+			wantCode: exitError,
+			wantErr:  "netns: namespace path must not be empty",
+		},
+		{
+			name:     "a duplicate --netns value is rejected at startup",
+			extra:    []string{"--netns", "/var/run/netns/a", "--netns", "/var/run/netns/a"},
+			wantCode: exitError,
+			wantErr:  `netns: duplicate namespace path "/var/run/netns/a"`,
+		},
+		{
+			name:      "distinct --netns values are accepted at startup",
+			extra:     []string{"--netns", "/var/run/netns/a", "--netns", "/var/run/netns/b"},
+			wantCode:  exitOK,
+			wantNetNS: []string{"/var/run/netns/a", "/var/run/netns/b"},
+		},
+		{
+			name:      "without --netns the current namespace is the target",
+			wantCode:  exitOK,
+			wantNetNS: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			args := append(slices.Clone(tt.extra), "--url", srv.URL, "--dry-run")
+			code, opts := run(args, &stdout, &stderr)
+			if code != tt.wantCode {
+				t.Fatalf("exit code = %d, want %d (stderr %q)", code, tt.wantCode, stderr.String())
+			}
+			if tt.wantErr != "" {
+				if !strings.Contains(stderr.String(), tt.wantErr) {
+					t.Errorf("stderr %q does not contain %q", stderr.String(), tt.wantErr)
+				}
+				return
+			}
+			if !slices.Equal(opts.netns, tt.wantNetNS) {
+				t.Errorf("netns = %v, want %v", opts.netns, tt.wantNetNS)
+			}
+		})
+	}
+}

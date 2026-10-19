@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/netip"
+	"os"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/expr"
@@ -53,26 +54,60 @@ func (h Hook) valid() bool {
 
 // Driver is the nftables implementation of the splint.Driver port.
 // It owns nothing but one table per target namespace: Install
-// rebuilds that table wholesale, Reset removes it.
+// rebuilds that table wholesale, Reset removes it. One Driver targets
+// one namespace: netns is its nsfs handle path, "" the current
+// namespace.
 type Driver struct {
-	hook Hook
+	hook  Hook
+	netns string
 }
 
 var _ splint.Driver = (*Driver)(nil)
 
-// New builds a driver whose ingress chain attaches at hook.
+// New builds a driver whose ingress chain attaches at hook in the
+// current namespace.
 func New(hook Hook) (*Driver, error) {
+	return NewNetNS(hook, "")
+}
+
+// NewNetNS builds a driver targeting the network namespace at the
+// nsfs handle path ("" is the current namespace). The handle is
+// re-opened on every install and reset — a recreated container is
+// picked up through its stable handle.
+func NewNetNS(hook Hook, netnsPath string) (*Driver, error) {
 	if !hook.valid() {
 		return nil, fmt.Errorf("hook: must be input or prerouting (got %q)", hook)
 	}
-	return &Driver{hook: hook}, nil
+	return &Driver{hook: hook, netns: netnsPath}, nil
 }
 
-// connect opens the netlink connection to the target namespace — the
-// current one for now. Ticket 07 reopens a per-namespace connection
-// here every cycle.
-func connect() (*nftables.Conn, error) {
-	return nftables.New()
+// connect opens the netlink connection to this driver's target
+// namespace — the current one for an empty path. The per-namespace
+// connection is created through the library's namespace-fd option
+// (no setns, no thread locking in application code), and the nsfs
+// handle is re-opened on every call and kept open until the
+// connection's Flush returns: the library dials lazily at flush time
+// and the open handle is what keeps the namespace alive meanwhile. A
+// handle that cannot be opened is a vanished namespace: it wraps
+// splint.ErrUnreachable, which the update cycle warns and skips.
+func (d *Driver) connect() (*nftables.Conn, *os.File, error) {
+	if d.netns == "" {
+		conn, err := nftables.New()
+		if err != nil {
+			return nil, nil, fmt.Errorf("connect: %w", err)
+		}
+		return conn, nil, nil
+	}
+	nsFile, err := os.Open(d.netns)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: open netns %s: %w", splint.ErrUnreachable, d.netns, err)
+	}
+	conn, err := nftables.New(nftables.WithNetNSFd(int(nsFile.Fd())))
+	if err != nil {
+		nsFile.Close()
+		return nil, nil, fmt.Errorf("%w: connect netns %s: %w", splint.ErrUnreachable, d.netns, err)
+	}
+	return conn, nsFile, nil
 }
 
 // ownedTable is the wholly-owned table both Install and Reset address.
@@ -101,9 +136,13 @@ func tableExists(conn *nftables.Conn, table *nftables.Table) (bool, error) {
 // never absent while the new one applies — there is no
 // delete-then-rebuild window.
 func (d *Driver) Install(rules []splint.BanRule) error {
-	conn, err := connect()
+	conn, nsFile, err := d.connect()
 	if err != nil {
 		return fmt.Errorf("install: %w", err)
+	}
+	if nsFile != nil {
+		// The handle stays open through Flush (see connect).
+		defer nsFile.Close()
 	}
 	table := ownedTable()
 	exists, err := tableExists(conn, table)
@@ -131,9 +170,13 @@ func (d *Driver) Install(rules []splint.BanRule) error {
 // Reset removes the owned table with everything in it, tolerating the
 // table being already absent.
 func (d *Driver) Reset() error {
-	conn, err := connect()
+	conn, nsFile, err := d.connect()
 	if err != nil {
 		return fmt.Errorf("reset: %w", err)
+	}
+	if nsFile != nil {
+		// The handle stays open through Flush (see connect).
+		defer nsFile.Close()
 	}
 	conn.DelTable(ownedTable())
 	if err := conn.Flush(); err != nil && !errors.Is(err, fs.ErrNotExist) {

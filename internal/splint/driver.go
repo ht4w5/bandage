@@ -1,14 +1,25 @@
 package splint
 
 import (
+	"errors"
 	"slices"
 	"sync"
 )
 
+// ErrUnreachable marks a driver failure caused by the target namespace
+// being unreachable: its nsfs handle cannot be opened. The update
+// cycle warns and skips such a namespace for the cycle (the others
+// still install) and tolerates it on reset, so one dead container
+// cannot halt enforcement everywhere or spoil a clean shutdown. A
+// failure past the open — netlink privileges, a rejected batch — is a
+// real error and stays loud.
+var ErrUnreachable = errors.New("namespace unreachable")
+
 // Driver is the firewall-driver port: Install replaces the
 // wholly-owned ruleset with rules, Reset removes it. The port is the
 // update cycle's seam: Stub below and the nftables driver
-// (internal/splint/nft) implement it.
+// (internal/splint/nft) implement it. A driver per target namespace
+// may wrap ErrUnreachable when that namespace cannot be reached.
 type Driver interface {
 	Install(rules []BanRule) error
 	Reset() error
@@ -20,6 +31,9 @@ type Driver interface {
 type Stub struct {
 	// InstallErr, when set before use, makes Install fail.
 	InstallErr error
+
+	// ResetErr, when set before use, makes Reset fail.
+	ResetErr error
 
 	mu       sync.Mutex
 	installs [][]BanRule
@@ -37,12 +51,12 @@ func (s *Stub) Install(rules []BanRule) error {
 	return nil
 }
 
-// Reset records the call.
+// Reset records the call and returns ResetErr.
 func (s *Stub) Reset() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.resets++
-	return nil
+	return s.ResetErr
 }
 
 // InstallCalls returns the rulesets passed to Install, in order.

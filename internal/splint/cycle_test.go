@@ -31,9 +31,10 @@ import (
 // fixed before the loop starts.
 type docServer struct {
 	*httptest.Server
-	mu  sync.Mutex
-	res []docResponse
-	i   int
+	mu   sync.Mutex
+	res  []docResponse
+	i    int
+	hits int
 }
 
 type docResponse struct {
@@ -55,6 +56,7 @@ func newDocServerTLS(t *testing.T, tlsCfg *tls.Config) *docServer {
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		s.hits++
 		r := docResponse{status: http.StatusInternalServerError}
 		if len(s.res) > 0 {
 			j := min(s.i, len(s.res)-1)
@@ -81,6 +83,13 @@ func (s *docServer) serve(status int, body string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.res = append(s.res, docResponse{status, body})
+}
+
+// Hits returns how many requests the endpoint has answered.
+func (s *docServer) Hits() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hits
 }
 
 // logCapture is the concurrency-safe sink the seam's logs land in.

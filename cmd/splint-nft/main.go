@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
@@ -41,6 +42,7 @@ const progName = "splint-nft"
 type options struct {
 	url          string
 	hook         string
+	netns        []string
 	caFile       string
 	certFile     string
 	keyFile      string
@@ -65,6 +67,13 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	fs.SetOutput(stdout)
 	url := fs.StringP("url", "u", "", "URL of the bandage report document")
 	hookFlag := fs.String("hook", "input", "enforcement hook: input or prerouting")
+	// --netns is repeatable so one instance can enforce the same ban
+	// rules across several containers (and the host, addressed by its
+	// own nsfs path); the default target is the current namespace.
+	// Values are literal nsfs paths, never comma lists — hence
+	// StringArray, which unlike StringSlice keeps an empty value
+	// visible to the validation below.
+	netnsFlag := fs.StringArray("netns", nil, "target network namespace nsfs path (repeatable; default: the current namespace)")
 	// The certificate surface is bandaid's flag for flag, so the
 	// operator's PKI runbook applies unchanged.
 	caFile := fs.String("cacert", "", "CA certificate file")
@@ -91,6 +100,7 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	opts := options{
 		url:          *url,
 		hook:         *hookFlag,
+		netns:        *netnsFlag,
 		caFile:       *caFile,
 		certFile:     *certFile,
 		keyFile:      *keyFile,
@@ -98,6 +108,14 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 		interval:     *interval,
 		dryRun:       *dryRun,
 		logLevel:     *logLevel,
+	}
+	for i, path := range opts.netns {
+		if path == "" {
+			return fail(stderr, fmt.Errorf("netns: namespace path must not be empty (value %d)", i+1)), opts
+		}
+		if slices.Contains(opts.netns[:i], path) {
+			return fail(stderr, fmt.Errorf("netns: duplicate namespace path %q", path)), opts
+		}
 	}
 	logger, err := newLogger(stderr, opts.logLevel)
 	if err != nil {
@@ -114,11 +132,24 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	if err != nil {
 		return fail(stderr, err), opts
 	}
-	driver, err := nft.New(hook)
+	// One driver per target namespace; without --netns the single
+	// target is the current namespace.
+	paths := opts.netns
+	if len(paths) == 0 {
+		paths = []string{""}
+	}
+	namespaces := make([]splint.Namespace, 0, len(paths))
+	for _, path := range paths {
+		driver, err := nft.NewNetNS(hook, path)
+		if err != nil {
+			return fail(stderr, err), opts
+		}
+		namespaces = append(namespaces, splint.Namespace{Path: path, Driver: driver})
+	}
+	u, err := splint.NewForNamespaces(fetcher, namespaces, opts.interval, logger)
 	if err != nil {
 		return fail(stderr, err), opts
 	}
-	u := splint.New(fetcher, driver, opts.interval, logger)
 
 	// SIGINT/SIGTERM end the update loop, which resets the installed
 	// ruleset before returning.
