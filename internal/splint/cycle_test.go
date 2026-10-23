@@ -1130,7 +1130,7 @@ func permutations(specs []reportSpec) [][]reportSpec {
 }
 
 // TestUpdateCycleSubtractsExclusions: excluded prefixes are
-// subtracted from every ban set, overriding every report — a fully
+// subtracted from every report's Target, overriding every report — a fully
 // covered Target produces no ban rule, a partially covered one keeps
 // only its residual prefixes.
 func TestUpdateCycleSubtractsExclusions(t *testing.T) {
@@ -1443,7 +1443,7 @@ func TestUpdateCycleLogsTheBanRuleHits(t *testing.T) {
 		t.Fatalf("first Update: %v", err)
 	}
 	logText := logs.String()
-	if !strings.Contains(logText, "ban rule hit") {
+	if !strings.Contains(logText, "ban rule hit in the replaced ruleset") {
 		t.Errorf("the install logs no ban rule hit: %s", logText)
 	}
 	if !strings.Contains(logText, `"rule":0`) || !strings.Contains(logText, `"packets":5`) || !strings.Contains(logText, `"bytes":100`) {
@@ -1459,7 +1459,7 @@ func TestUpdateCycleLogsTheBanRuleHits(t *testing.T) {
 	if !strings.Contains(logs.String(), "ban rules unchanged") {
 		t.Errorf("the skipped install is not logged: %s", logs.String())
 	}
-	if n := strings.Count(logs.String(), "ban rule hit"); n != 1 {
+	if n := strings.Count(logs.String(), "ban rule hit in the replaced ruleset"); n != 1 {
 		t.Errorf("logged %d ban rule hits, want 1 (a skipped cycle logs no hits): %s", n, logs.String())
 	}
 }

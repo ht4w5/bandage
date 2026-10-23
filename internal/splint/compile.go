@@ -68,7 +68,7 @@ func Compile(doc Document, p Policy) ([]firewall.BanRule, []Skip) {
 
 // entry is one compiling report record's contribution to the merge:
 // the masked Target that fixes the report's specificity, the penalty's
-// stance and rate, and the ban-set prefixes the record draws — its
+// stance and rate, and the Target prefixes the record draws — its
 // Target's residual prefixes after the policy's exclusions subtract.
 // The residuals may split the Target into mixed-length prefixes; the
 // merge resolves them per prefix against the unsplit Target's
@@ -109,7 +109,7 @@ func compileReport(r Report, p Policy) (entry, string) {
 // merge resolves the entries' disagreements per Target address and
 // groups the winning stances into ban rules.
 //
-// The values a ban set draws from are the distinct residual prefixes
+// The values a ban rule's Target set draws from are the distinct residual prefixes
 // across the entries. Each value goes to the reports whose Target
 // covers it, most specific Target first: the deepest covering reports
 // win, ties among them resolved by strictest — so a weaker /32
@@ -156,7 +156,7 @@ func merge(entries []entry) []firewall.BanRule {
 	return rules
 }
 
-// resolve returns the winning stances over one ban-set prefix: the
+// resolve returns the winning stances over one residual prefix: the
 // most specific Targets covering it win — a narrower report overrides a
 // broader one whatever the stances — and ties among the deepest
 // covering reports resolve to the strictest Penalty.

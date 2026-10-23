@@ -11,10 +11,10 @@ import (
 
 // TestModulesDependOnlyOnTheSeam enforces the module shape's dependency
 // rule (the spec's Module shape): the engine (internal/splint) and the
-// adapters (the firewall seam's subpackages — the nftables driver and
+// drivers (the firewall seam's subpackages — the nftables driver and
 // the recording stub) both depend on the seam and never on each other —
-// the engine never imports an adapter. Test files are outside the rule:
-// the engine's update-cycle suite drives the recording stub adapter by
+// the engine never imports a driver. Test files are outside the rule:
+// the engine's update-cycle suite drives the recording stub by
 // design (the spec's seam-1 test surface).
 func TestModulesDependOnlyOnTheSeam(t *testing.T) {
 	const (
@@ -34,7 +34,7 @@ func TestModulesDependOnlyOnTheSeam(t *testing.T) {
 		case rel == "splint" || strings.HasPrefix(rel, "splint/"):
 			kind = "engine"
 		case strings.HasPrefix(rel, "firewall/nft/") || strings.HasPrefix(rel, "firewall/firewalltest/"):
-			kind = "adapter"
+			kind = "driver"
 		default:
 			return nil
 		}
@@ -49,11 +49,11 @@ func TestModulesDependOnlyOnTheSeam(t *testing.T) {
 			switch kind {
 			case "engine":
 				if p != seam && (strings.HasPrefix(p, seam+"/") || strings.HasPrefix(p, engine+"/")) {
-					t.Errorf("%s imports adapter %s (the engine imports the seam %s only, never an adapter)", path, p, seam)
+					t.Errorf("%s imports the driver package %s (the engine imports the seam %s only, never a driver package)", path, p, seam)
 				}
-			case "adapter":
+			case "driver":
 				if p == engine || strings.HasPrefix(p, engine+"/") {
-					t.Errorf("%s imports the engine %s (adapters depend on the seam %s only)", path, p, seam)
+					t.Errorf("%s imports the engine %s (drivers depend on the seam %s only)", path, p, seam)
 				}
 			}
 		}

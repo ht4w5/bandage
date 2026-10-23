@@ -1,7 +1,7 @@
-// Package firewalltest holds the recording adapters the update-cycle
-// seam observes: test doubles on the firewall-driver port that never
-// touch an enforcement surface, so lifecycle behaviour stays testable
-// without privileges.
+// Package firewalltest holds the recording test doubles the
+// update-cycle seam observes: doubles on the firewall-driver port
+// that never touch an enforcement surface, so lifecycle behaviour
+// stays testable without privileges.
 package firewalltest
 
 import (
@@ -36,7 +36,7 @@ type Stub struct {
 	// logs.
 	ApplyHits []firewall.Hit
 
-	// ApplyDeclines, when set before use, are the ban-rule features
+	// ApplyDeclined, when set before use, are the ban-rule features
 	// Plan and Apply report declined — the declines the update cycle
 	// logs and counts. A declined ban rule is not effective.
 	ApplyDeclined []firewall.Decline

@@ -23,9 +23,10 @@ type Point struct {
 }
 
 // Hit is one ban rule's nonzero counter reading at the install that
-// replaces it: Rule is the ban rule's index in the ruleset handed to
-// the driver (its --dry-run JSON order), Packets and Bytes the
-// counter's reading over the period since the last change.
+// replaces it: Rule is the ban rule's index in the ruleset the driver
+// replaced — the previous apply's input rules, in their --dry-run JSON
+// order — Packets and Bytes the counter's reading over the period
+// since the last change.
 type Hit struct {
 	Rule    int
 	Packets uint64
@@ -33,11 +34,12 @@ type Hit struct {
 }
 
 // Decline is one ban-rule feature a firewall driver declines: Rule is
-// the ban rule's index in the ruleset handed to the driver, Feature the
-// Penalty action it cannot honour (e.g. "limit-req-rate"), and Reason
-// why its enforcement surface cannot apply it. A decline is a
-// first-class outcome — the engine logs and counts every one, so lost
-// enforcement is never silent.
+// the ban rule's index in the ruleset handed to the driver, Feature
+// names the declined feature (e.g. the limit-req-rate stance — a
+// string because a decline is per rule and per feature, not only per
+// stance), and Reason why its enforcement surface cannot apply it. A
+// decline is a first-class outcome — the engine logs and counts every
+// one, so lost enforcement is never silent.
 type Decline struct {
 	Rule    int
 	Feature string

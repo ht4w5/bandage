@@ -98,7 +98,7 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	interval := fs.DurationP("update-interval", "i", splint.DefaultInterval, "report document update interval (clamped to a 1m floor)")
 	// The exclusion surface is one repeatable flag: it subsumes
 	// bandaid's whitelist and fluxc's exclude-prefix surfaces.
-	excludePrefix := fs.StringSliceP("exclude-prefix", "x", nil, "prefix excluded from every ban set (repeatable)")
+	excludePrefix := fs.StringSliceP("exclude-prefix", "x", nil, "prefix subtracted from every ban rule's Target set (repeatable)")
 	excludePrivate := fs.BoolP("exclude-private", "p", true, "exclude RFC1918 and ULA targets")
 	dryRun := fs.BoolP("dry-run", "d", false, "fetch and print the compiled ban rules once without installing")
 	logLevel := fs.StringP("log-level", "l", "info", "log level: debug, info, warn or error")
@@ -146,7 +146,7 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	if err != nil {
 		return fail(stderr, err), opts
 	}
-	exclude, err := parsePrefixes("exclude prefix", opts.excludePrefix)
+	exclude, err := parsePrefixes(opts.excludePrefix)
 	if err != nil {
 		return fail(stderr, err), opts
 	}
@@ -190,12 +190,12 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 
 // parsePrefixes parses the engine's exclusion-prefix flag values
 // (--exclude-prefix) with the seam's shared prefix-value parser.
-func parsePrefixes(what string, values []string) ([]netip.Prefix, error) {
+func parsePrefixes(values []string) ([]netip.Prefix, error) {
 	prefixes := make([]netip.Prefix, 0, len(values))
 	for _, v := range values {
 		p, err := firewall.ParsePrefixOrAddr(v)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", what, err)
+			return nil, fmt.Errorf("exclude prefix: %w", err)
 		}
 		prefixes = append(prefixes, p)
 	}

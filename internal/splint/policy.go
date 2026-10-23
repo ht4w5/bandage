@@ -5,10 +5,10 @@ import (
 	"slices"
 )
 
-// Policy is the compilation policy the ban sets are compiled under:
-// the exclusion prefixes subtracted from every ban set, overriding
-// every report. Enforcement scope is deliberately not here — it is
-// driver configuration, not engine policy (ADR 0012). NewPolicy
+// Policy is the compilation policy the ban rules are compiled under:
+// the exclusion prefixes subtracted from every report's Target,
+// overriding every report. Enforcement scope is deliberately not here
+// — it is driver configuration, not engine policy (ADR 0012). NewPolicy
 // assembles it from the operator's flags; the zero Policy keeps the
 // always-on safety exclusions.
 type Policy struct {

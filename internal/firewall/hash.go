@@ -6,9 +6,10 @@ import (
 	"net/netip"
 )
 
-// The ruleset hash — bandaid's rolling-hash construction
-// (internal/model/model.go), the shared helpers every firewall driver
-// folds its own effective rules with: seed 114514, and one fresh
+// The ruleset hash — bandaid's rolling-hash construction (in the
+// reference checkout: .reference/bandaid/internal/model/model.go),
+// the shared helpers every firewall driver folds its own effective
+// rules with: seed 114514, and one fresh
 // FNV-1a 32-bit step per effective rule, each step fed the previous
 // hash big-endian first, then the rule's own fields with a 0x00
 // delimiter after every one of them (bandaid's boundary discipline:

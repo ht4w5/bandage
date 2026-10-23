@@ -66,7 +66,7 @@ engine options:
       --cacert string              CA certificate file
       --cert string                client certificate file
   -d, --dry-run                    fetch and print the compiled ban rules once without installing
-  -x, --exclude-prefix strings     prefix excluded from every ban set (repeatable)
+  -x, --exclude-prefix strings     prefix subtracted from every ban rule's Target set (repeatable)
   -p, --exclude-private            exclude RFC1918 and ULA targets (default true)
   -t, --fetch-timeout duration     set fetch HTTP timeout (default 10s)
       --firewall string            firewall driver: nftables (default "nftables")
@@ -92,7 +92,7 @@ nftables driver options:
 | `--key` | — | Client key file. Must be given together with `--cert`. |
 | `--fetch-timeout`, `-t` | `10s` | HTTP timeout for fetching the report document. Values below 1s are refused at startup. |
 | `--update-interval`, `-i` | `5m` | How often the report document is refetched and the ruleset rebuilt. Values below 1m are clamped up to the 1m floor (with a warning). |
-| `--exclude-prefix`, `-x` | — | Prefix excluded from every ban set, repeatable. A bare address counts as its host prefix. |
+| `--exclude-prefix`, `-x` | — | Prefix subtracted from every ban rule's Target set, repeatable. A bare address counts as its host prefix. |
 | `--exclude-private`, `-p` | `true` | Also exclude RFC1918 and ULA Targets. `--exclude-private=false` opts out. |
 | `--dry-run`, `-d` | `false` | Fetch once, print the compiled ban rules, the driver's plan and its hash, exit — no enforcement surface touched, no privileges. |
 | `--log-level`, `-l` | `info` | Log level: `debug`, `info`, `warn` or `error`. |
@@ -136,7 +136,7 @@ document's Reports.
 
 ## Exclusions
 
-Exclusions are subtracted from every ban set before the merge —
+Exclusions are subtracted from every Target before the merge —
 engine-side, before any driver sees the rules — overriding every
 Report:
 
@@ -218,7 +218,7 @@ INF compiled ban rules reports=3 rules=2 skipped=1
 
 Reading the output:
 
-- **`targets`** are the ban set's prefixes after exclusion subtraction;
+- **`targets`** are the ban rule's Target prefixes after exclusion subtraction;
   targeting and enforcement scope are driver configuration, not part of
   the ban rule — they shape the plan's effective rules and the hash.
 - **`stance` and `rate`** name the compiled Penalty; the plan line's
@@ -451,10 +451,11 @@ cannot reset — see the caveats.)
 ### The cycle logs
 
 A full session as captured against a scratch endpoint (timestamps
-omitted; the document held a `drop` Report and a `limit-req-rate`
-Report, ten packets arrived from the banned Target between installs,
-the endpoint went down before one cycle and came back with one more
-`drop` Report, and SIGTERM ended the run):
+omitted; the hash and counter values are that run's — yours follow
+your own document and traffic; the document held a `drop` Report and
+a `limit-req-rate` Report, ten packets arrived from the ban rule's
+Target between installs, the endpoint went down before one cycle and
+came back with one more `drop` Report, and SIGTERM ended the run):
 
 ```text
 INF compiled ban rules reports=2 rules=2 skipped=0
@@ -463,7 +464,7 @@ WRN declined ban rule feature feature=limit-req-rate point=current reason="appli
 INF startup test install ok
 ERR update failed; keeping last installed rules error="fetch: Get \"http://127.0.0.1:18090/reports\": dial tcp 127.0.0.1:18090: connect: connection refused"
 INF compiled ban rules reports=3 rules=2 skipped=0
-INF ban rule hit bytes=2280 packets=10 point=current rule=0
+INF ban rule hit in the replaced ruleset bytes=2280 packets=10 point=current rule=0
 INF installed ban rules declined=1 hash=6d303a1c point=current rules=2
 WRN declined ban rule feature feature=limit-req-rate point=current reason="application-layer intent; never faked at the packet layer" rule=1
 INF compiled ban rules reports=3 rules=2 skipped=0
@@ -476,8 +477,10 @@ INF reset and exit
 group into one ban rule, hence `reports=3 rules=2`); `installed ban
 rules` a changed install with its ruleset hash and its `declined`
 count; `declined ban rule feature` the lost enforcement of every
-declined feature, logged each cycle; `ban rule hit` the nonzero
-counters of the rules just replaced — the ten packets the ban rule
+declined feature, logged each cycle; `ban rule hit in the replaced
+ruleset` the nonzero counters of the rules the install replaced —
+`rule=` indexes that replaced ruleset (the previous install's ban
+rules), not the ruleset just installed — the ten packets the ban rule
 dropped since the last change; `update failed; keeping last installed
 rules` a failed fetch (the `error` field carries the cause);
 `ban rules unchanged; skipping install` the skip-if-unchanged path;

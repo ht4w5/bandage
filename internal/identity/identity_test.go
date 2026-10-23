@@ -76,8 +76,8 @@ func TestForParsesTheDirtyFlag(t *testing.T) {
 func TestForRendersEachProgramFromTheSameStamps(t *testing.T) {
 	stampLinker(t, "0.1.0", "abc1234", "2025-06-01T00:00:00Z", "false")
 
-	if got := For("splint-nft").String(); !strings.HasPrefix(got, "splint-nft 0.1.0 abc1234 2025-06-01T00:00:00Z (") {
-		t.Errorf("splint-nft String() = %q, want the named stamped prefix", got)
+	if got := For("splint").String(); !strings.HasPrefix(got, "splint 0.1.0 abc1234 2025-06-01T00:00:00Z (") {
+		t.Errorf("splint String() = %q, want the named stamped prefix", got)
 	}
 }
 
@@ -131,8 +131,8 @@ func TestBuildStringRendersTheSummary(t *testing.T) {
 		},
 		{
 			name:  "second program name",
-			build: stamped("splint-nft", "0.1.0", "abc1234", "2025-06-01T00:00:00Z", false),
-			want:  "splint-nft 0.1.0 abc1234 2025-06-01T00:00:00Z (go1.27.3 linux/amd64)",
+			build: stamped("splint", "0.1.0", "abc1234", "2025-06-01T00:00:00Z", false),
+			want:  "splint 0.1.0 abc1234 2025-06-01T00:00:00Z (go1.27.3 linux/amd64)",
 		},
 	}
 	for _, tt := range tests {
@@ -164,8 +164,8 @@ func TestBuildHeaderRendersTheShortIdentity(t *testing.T) {
 		},
 		{
 			name:  "second program name",
-			build: stamped("splint-nft", "0.1.0", "abc1234", "2025-06-01T00:00:00Z", false),
-			want:  "splint-nft 0.1.0 (abc1234)",
+			build: stamped("splint", "0.1.0", "abc1234", "2025-06-01T00:00:00Z", false),
+			want:  "splint 0.1.0 (abc1234)",
 		},
 	}
 	for _, tt := range tests {

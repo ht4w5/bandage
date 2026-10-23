@@ -347,8 +347,8 @@ func checkRate(r firewall.BanRule) error {
 // before the verdict — are buffered and flushed together. The table is
 // never absent while the new one applies — there is no
 // delete-then-rebuild window. A declined ban rule keeps its input
-// index (the correlation the decline and the counter read-back share)
-// and installs nothing.
+// index (declines index the input rules; the counter read-back
+// indexes the replaced ruleset) and installs nothing.
 func (d *Driver) Apply(rules []firewall.BanRule) (firewall.Outcome, error) {
 	plan, err := d.Plan(rules)
 	if err != nil {

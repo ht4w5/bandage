@@ -100,8 +100,7 @@ func (u *Updater) applyAll(rules []firewall.BanRule) error {
 		name := point.Label
 		out, err := point.Driver.Apply(rules)
 		switch {
-		case errors.Is(err, firewall.ErrUnreachable):
-			u.log.Warn().Err(err).Str("point", name).Msg("enforcement point unreachable; skipping for the cycle")
+		case u.skipUnreachable(err, name, "enforcement point unreachable; skipping for the cycle"):
 			continue
 		case err != nil:
 			failed = append(failed, fmt.Errorf("point %s: %w", name, err))
@@ -112,15 +111,17 @@ func (u *Updater) applyAll(rules []firewall.BanRule) error {
 			// A skipped cycle logs the skip and no hits.
 			u.log.Info().Str("point", name).Str("hash", hash).Msg("ban rules unchanged; skipping install")
 		} else {
-			// The nonzero counters of the rules just replaced — what the
-			// enforcement did since the last change.
+			// The nonzero counters of the rules just replaced — the
+			// replaced ruleset's indices (the previous apply's input
+			// rules), covering what the enforcement did since the last
+			// change.
 			for _, h := range out.Hits {
 				u.log.Info().
 					Str("point", name).
 					Int("rule", h.Rule).
 					Uint64("packets", h.Packets).
 					Uint64("bytes", h.Bytes).
-					Msg("ban rule hit")
+					Msg("ban rule hit in the replaced ruleset")
 			}
 			u.log.Info().Str("point", name).Int("rules", len(rules)).Int("declined", len(out.Declined)).Str("hash", hash).Msg("installed ban rules")
 		}
@@ -138,6 +139,21 @@ func (u *Updater) applyAll(rules []firewall.BanRule) error {
 	return errors.Join(failed...)
 }
 
+// skipUnreachable classifies one enforcement point's failure: an
+// unreachable one (firewall.ErrUnreachable — its handle cannot be
+// opened) is warned with msg and swallowed, so the point is skipped
+// for the cycle or tolerated at reset and one dead container cannot
+// halt enforcement everywhere or spoil a clean shutdown. Any other
+// failure is left to the caller's loud path. It reports whether the
+// failure was swallowed.
+func (u *Updater) skipUnreachable(err error, name, msg string) bool {
+	if !errors.Is(err, firewall.ErrUnreachable) {
+		return false
+	}
+	u.log.Warn().Err(err).Str("point", name).Msg(msg)
+	return true
+}
+
 // resetAll removes the installed ruleset from every enforcement point,
 // tolerating points that vanished meanwhile: an unreachable one is
 // warned and skipped at exit too, so a dead container cannot spoil a
@@ -150,8 +166,7 @@ func (u *Updater) resetAll() error {
 		if err == nil {
 			continue
 		}
-		if errors.Is(err, firewall.ErrUnreachable) {
-			u.log.Warn().Err(err).Str("point", point.Label).Msg("enforcement point unreachable at reset; tolerating")
+		if u.skipUnreachable(err, point.Label, "enforcement point unreachable at reset; tolerating") {
 			continue
 		}
 		failed = append(failed, fmt.Errorf("point %s: %w", point.Label, err))
