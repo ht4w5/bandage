@@ -19,7 +19,7 @@ forwarded traffic.
 - [x] `--dry-run` shows each ban rule's effective sets after exclusion subtraction
 - [x] Seam tests cover the subtraction, the prefilter construction, and the empty-set outcomes, with a failing and a passing case per validation
 
-Implemented on integration branch `feat/splint-nft` (merge commit `1645c5a`; cross-ticket code-review fixes through `1879da4`). Exclusions subtract compiler-side (`internal/splint/policy.go`); the service prefilter leads every kernel ban rule.
+Implemented on integration branch `feat/splint-nft` (merge commit `1645c5a`; cross-ticket code-review fixes through `1879da4`). Exclusions subtract compiler-side (`splint/internal/app/policy.go`); the service prefilter leads every kernel ban rule.
 
 Context: spec `../spec.md` (Compilation model: exclusions, service
 prefilter).

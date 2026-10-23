@@ -34,7 +34,7 @@ of losing the detection. (Semantics of record: GLOSSARY **Trigger**, ADR
 A Trigger now empties the matched rule's tracker record for the match's
 key, once the report write completes without error. Changed:
 
-- `internal/bandage/evaluation/evaluation.go`: `trigger` (the report
+- `bandage/internal/domain/evaluation/evaluation.go`: `trigger` (the report
   action) clears the record after `ReportSink.Trigger` returns nil —
   the one traversal change (matching, action dispatch and terminality
   untouched). Key derivation is unified in `matchKey` (Target; per
@@ -45,12 +45,12 @@ key, once the report write completes without error. Changed:
   captured before dispatch.
 - The `TrackerCache` port gains `Clear(ctx, ns, key)` beside `Update`
   (documented as the Trigger reset, no-op for absent records),
-  implemented in `internal/infra/cache/memory` atomically under the
+  implemented in `bandage/internal/infra/cache/memory` atomically under the
   shard lock; a clear is not a get/set and never an eviction.
 - Tests: eval seam (reset cadence incl. replay per-(Target, path),
   failed-write retry, no-report matches, tracker-less rules, pre-reset
   action reading); memory-store `Clear` contract; daemon seam
-  (`internal/app/trigger_test.go`: once per volume of traffic vs per
+  (`bandage/internal/app/trigger_test.go`: once per volume of traffic vs per
   event; 24 concurrent overflowing events under 4 workers leaving a
   cleared bucket — the probe of exactly the volume cannot overflow over
   a cleared bucket, per ADR 0007). Tests encoding the old

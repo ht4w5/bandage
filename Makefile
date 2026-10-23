@@ -1,9 +1,9 @@
-MODULE      := github.com/HT4w5/bandage
+MODULE      := github.com/HT4w5/webmedkit
 PKG_INFO    := $(MODULE)/internal/identity
 BIN_DIR     := bin
-CMD         := ./cmd/bandage
+CMD         := ./bandage/cmd/bandage
 BIN         := $(BIN_DIR)/bandage
-CMD_SPLINT  := ./cmd/splint
+CMD_SPLINT  := ./splint/cmd/splint
 BIN_SPLINT  := $(BIN_DIR)/splint
 
 GO          ?= go
@@ -50,9 +50,9 @@ bench:
 	$(GO) test -run=^$$ -bench=. -benchmem ./...
 
 # bench-pkg runs one package's benchmarks:
-#   make bench-pkg PKG=./internal/infra/parse/nginx
+#   make bench-pkg PKG=./bandage/internal/infra/parse/nginx
 bench-pkg:
-	@test -n "$(PKG)" || { echo "usage: make bench-pkg PKG=./internal/infra/parse/nginx" >&2; exit 2; }
+	@test -n "$(PKG)" || { echo "usage: make bench-pkg PKG=./bandage/internal/infra/parse/nginx" >&2; exit 2; }
 	$(GO) test -run=^$$ -bench=. -benchmem $(PKG)
 
 clean:

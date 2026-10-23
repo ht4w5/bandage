@@ -39,7 +39,7 @@ While a report for (rule, Target) is alive its write is suppressed — one
 write per (rule, Target) per report lifetime — and deleting or expiring
 the report re-arms writing. Changed:
 
-- `internal/bandage/report/report.go`: the Service owns the live-report
+- `bandage/internal/domain/report/report.go`: the Service owns the live-report
   set (in-memory map keyed (rule, Target) → expiry; the report table is
   the correctness source). `Trigger` suppresses the write while the
   report is alive and returns nil — the report action completed, so the
@@ -54,18 +54,18 @@ the report re-arms writing. Changed:
   `Delete`/`DeleteExpired` drop the matching keys (re-arm, stories 9/10);
   `Rebuild(ctx, now)` supplants the set from `List` at startup (story
   13).
-- `internal/app/daemon.go`: `Start` rebuilds before the workers start.
-- `internal/app/rules.go`: tracker-less `report` actions are legal (the
+- `bandage/internal/app/daemon.go`: `Start` rebuilds before the workers start.
+- `bandage/internal/app/rules.go`: tracker-less `report` actions are legal (the
   "report requires a tracker" gate removed — the spec decides tracker-
   less rules stay legal, stories 12/29); suppression alone bounds their
   writes. The evaluation traversal is untouched beyond this.
-- `internal/infra/httpapi/httpapi.go`: the delete-promise doc names the
+- `bandage/internal/infra/httpapi/httpapi.go`: the delete-promise doc names the
   re-arm nuance. The report document shape is unchanged.
 
-Tests: `internal/bandage/report/report_test.go` (suppression and re-arm
+Tests: `bandage/internal/domain/report/report_test.go` (suppression and re-arm
 rules over the stub repository: per-(rule, Target) grain, expiry, the
 delete/expiry re-arms, failed-write retry, Rebuild derivation);
-`internal/app/suppress_test.go` (daemon seam: frozen Sample/update time
+`bandage/internal/app/suppress_test.go` (daemon seam: frozen Sample/update time
 while actions keep running, tracker emptied on suppressed Triggers,
 tracker-less tripwire per Target, per-rule grain with reasons accruing,
 delete/expiry re-arm, expiry alone re-arming pre-sweep, restart rebuild

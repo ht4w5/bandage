@@ -1,4 +1,4 @@
-module github.com/HT4w5/bandage
+module github.com/HT4w5/webmedkit
 
 go 1.27.0
 

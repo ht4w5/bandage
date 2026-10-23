@@ -25,7 +25,7 @@ Penalty.
 - [x] nftables enforcement for drop, reject, packet-rate and bandwidth Penalties is unchanged; exclusions still subtract engine-side before the seam
 - [x] Seam tests cover the merge matrix over five values and the decline reporting, with a failing and a passing case per validation
 
-Implemented on integration branch `feat/firewall-drivers` (commits `8614d78`, `ad7295b`; merge `8722793`). The firewall seam package (`internal/firewall`) holds the vocabulary and a dependency-rule test; `limit-req-rate` survives compilation and is declined with a reason by the nftables driver, reported per rule and feature and logged and counted by the engine. The prefilter rode along as transitional engine-configured input and left the ban rule entirely in 05, as this ticket planned.
+Implemented on integration branch `feat/firewall-drivers` (commits `8614d78`, `ad7295b`; merge `8722793`). The firewall seam package (`splint/internal/firewall`) holds the vocabulary and a dependency-rule test; `limit-req-rate` survives compilation and is declined with a reason by the nftables driver, reported per rule and feature and logged and counted by the engine. The prefilter rode along as transitional engine-configured input and left the ban rule entirely in 05, as this ticket planned.
 
 Context: spec `../spec.md` (merge policy, faithfulness); ADR 0012
 narrows ADR 0011: `limit-req-rate` non-application is the nftables

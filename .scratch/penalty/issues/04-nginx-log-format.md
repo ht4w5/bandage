@@ -15,5 +15,5 @@
 Implemented on integration branch `feat/penalty` (merge commit
 `0ee47ff`; cross-ticket code-review fixes through `ef0e6d9`, incl. the
 PLAN.md log-format mentions). Context: spec `../spec.md`; artifact
-`configs/nginx/bandage_log.conf`; pins `internal/infra/parse/nginx/nginx_test.go`
-and `internal/app/shippedformat_test.go`.
+`configs/nginx/bandage_log.conf`; pins `bandage/internal/infra/parse/nginx/nginx_test.go`
+and `bandage/internal/app/shippedformat_test.go`.

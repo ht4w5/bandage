@@ -18,4 +18,4 @@ Implemented on integration branch `feat/penalty` (merge commit
 re-captured example timeline: the pinned scenario's sample event times
 now sit seconds before their report's wall-clock write). Context: spec
 `../spec.md`; contract `docs/reports.md` (its first json fence is the
-pinned example); byte pin `internal/app/reportdoc_test.go`.
+pinned example); byte pin `bandage/internal/app/reportdoc_test.go`.

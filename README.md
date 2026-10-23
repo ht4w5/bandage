@@ -1,8 +1,9 @@
-# bandage
+# webmedkit
 
-Realtime web log analysis: bandage consumes access-log events, maintains
-leaky-bucket trackers per target, and publishes reports that downstream
-tooling turns into ban rules.
+Realtime web log analysis, in two binaries: `bandage` consumes access-log
+events, maintains leaky-bucket trackers per target, and publishes
+reports; `splint`, the companion binary, turns those reports into ban
+rules.
 
 ## Operator documentation
 

@@ -6,7 +6,7 @@ Status: ready-for-agent
 
 bandage is a realtime pipeline: every access-log line goes through ingest,
 parsing, enrichment, evaluation and (on match) report persistence
-(`internal/app/daemon.go` `runPipeline`). We have no performance numbers —
+(`bandage/internal/app/daemon.go` `runPipeline`). We have no performance numbers —
 no benchmarks, no profiles, no throughput baseline — yet the service is
 expected to keep up with busy web servers and its per-line path contains
 several plausible costs: JSON parsing into a generic map, string-built cache
@@ -29,29 +29,29 @@ written from the findings.
 
 Per raw line, in order (`daemon.go` `runPipeline`, N workers):
 
-1. **Ingest** — `internal/infra/ingest/syslog`: one forwarding worker over
+1. **Ingest** — `bandage/internal/infra/ingest/syslog`: one forwarding worker over
    go-syslog, `parts` buffered at 256, forwarding onto `d.lines`
    (unbuffered `chan string`).
-2. **Parse** — `internal/infra/parse/nginx` `Parser.Parse`:
+2. **Parse** — `bandage/internal/infra/parse/nginx` `Parser.Parse`:
    `json.Unmarshal` into `map[string]json.RawMessage`, then per-field
    re-parsing (time, IP, method, path, status, sent, agent).
-3. **Enrich** — `internal/bandage/enrichment` `FilesizeEnricher.Enrich` →
-   `internal/infra/cache/memory` `Store.Update` (shared tracker store,
+3. **Enrich** — `bandage/internal/domain/enrichment` `FilesizeEnricher.Enrich` →
+   `bandage/internal/infra/cache/memory` `Store.Update` (shared tracker store,
    filesize namespace): key concat, `fnv.New32a()` hashing, shard mutex,
    LRU list ops.
-4. **Evaluate** — `internal/bandage/evaluation` `Service.Evaluate`: every
+4. **Evaluate** — `bandage/internal/domain/evaluation` `Service.Evaluate`: every
    rule of every chain runs `Filter.Match` (interface tree over
-   `internal/bandage/filter`), then for filter-matching rules with a
+   `bandage/internal/domain/filter`), then for filter-matching rules with a
    tracker, `TargetString` + `TrackerKey` string building and another
    `Store.Update` (leaky-bucket `Record.Accumulate` under the shard lock).
-5. **Report write (on match)** — `internal/bandage/report` `Trigger` →
-   `internal/infra/persistence/sqlite` `Upsert`: explicit transaction
+5. **Report write (on match)** — `bandage/internal/domain/report` `Trigger` →
+   `bandage/internal/infra/persistence/sqlite` `Upsert`: explicit transaction
    (SELECT created_at + upsert) + JSON body marshal, on a single
    connection (`SetMaxOpenConns(1)`, ADR 0007).
 6. **Per-line bookkeeping** — `d.received`/`d.parsed`/`d.dropped` atomics
    and `progress.bump()`: a global mutex plus `close(ch)`/`make(chan)` per
    processed line, across all workers.
-7. **Read path (secondary)** — `internal/infra/httpapi` `GET /reports`
+7. **Read path (secondary)** — `bandage/internal/infra/httpapi` `GET /reports`
    (JSON body decode per row) and the minute cadence of `SweepExpired` /
    `DeleteExpired` / `Statistics()`.
 

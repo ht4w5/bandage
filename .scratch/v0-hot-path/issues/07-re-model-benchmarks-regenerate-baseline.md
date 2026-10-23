@@ -43,11 +43,11 @@ upserts, WAL, split read path), 05 (Parser rewrite on encoding/json/v2)
   survives only at `domain/evaluation`, **renamed to what it now
   measures** (`Evaluate/trigger-every` — the Trigger path at one-event
   episodes, its write suppressed above that seam). Files:
-  `internal/app/evaluate_bench_test.go` (memRepo + writeLedger +
+  `bandage/internal/app/evaluate_bench_test.go` (memRepo + writeLedger +
   countingSink + episodeOracle + the episode scenarios),
-  `internal/app/throughput_bench_test.go` (scenario matrix, re-arm at
+  `bandage/internal/app/throughput_bench_test.go` (scenario matrix, re-arm at
   drain boundaries, `writes/op` metric),
-  `internal/bandage/evaluation/evaluation_bench_test.go` (rename).
+  `bandage/internal/domain/evaluation/evaluation_bench_test.go` (rename).
 - **Scenario contracts pinned by correctness tests** in the suite's
   style: `TestEvaluateBenchScenarios` and
   `TestBenchPipelineScenariosMatchTheirNames` compare the run against
@@ -108,9 +108,9 @@ effort's conventions — GOMAXPROCS=22, go1.27.0 linux/amd64)
 
 **Context pointers**
 
-- Benchmarks + pins: `internal/app/evaluate_bench_test.go`,
-  `internal/app/throughput_bench_test.go`,
-  `internal/bandage/evaluation/evaluation_bench_test.go`
+- Benchmarks + pins: `bandage/internal/app/evaluate_bench_test.go`,
+  `bandage/internal/app/throughput_bench_test.go`,
+  `bandage/internal/domain/evaluation/evaluation_bench_test.go`
 - Record + method + provenance: `.scratch/v0-benchmarks/findings.md`
   §"Addendum — v0-hot-path" and §"Baseline for future regression
   comparison"; regenerated baseline at

@@ -32,8 +32,8 @@ queries never queue behind upserts.
 
 ## Answer
 
-**What changed** (`34dc1ee`, `internal/infra/persistence/sqlite/sqlite.go`
-rewritten; tests in `sqlite_test.go`, `internal/app/readpath_test.go`):
+**What changed** (`34dc1ee`, `bandage/internal/infra/persistence/sqlite/sqlite.go`
+rewritten; tests in `sqlite_test.go`, `bandage/internal/app/readpath_test.go`):
 
 - **Cheap upserts**: `Upsert` is now one prepared statement
   (`upsertSQL`, prepared once in `Open`, reused via `*sql.Stmt`) — the
@@ -76,7 +76,7 @@ read path itself and is unchanged in shape, as expected.
 **Key facts**
 
 - Read/write non-interference at the daemon seam (test-harness.md
-  `blockingStore` prior art): `internal/app/readpath_test.go`
+  `blockingStore` prior art): `bandage/internal/app/readpath_test.go`
   `TestQueryDuringInflightWriteDoesNotWait` (write wedged at the store,
   `GET /reports` answers before it lands) and
   `TestWriteDuringInflightQueryDoesNotWait` (query wedged at the store,

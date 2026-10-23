@@ -24,7 +24,7 @@ oracle for the rewrite.
 
 ## Answer
 
-Done. `internal/infra/parse/nginx/nginx.go` decodes on
+Done. `bandage/internal/infra/parse/nginx/nginx.go` decodes on
 `encoding/json/v2` (+ `encoding/json/jsontext`); go.mod/go.sum untouched
 (stdlib only). `nginx_test.go` (the fixture oracle) is byte-identical;
 all fixtures pass.
@@ -73,7 +73,7 @@ same lines drop for the same reason — story 26's letter holds.
 Field-level error strings are byte-identical.
 
 **Allocations** (`go test -run=^$ -bench=BenchmarkParse -benchmem
--count=10 ./internal/infra/parse/nginx/`, go1.27.0 linux/amd64,
+-count=10 ./bandage/internal/infra/parse/nginx/`, go1.27.0 linux/amd64,
 Intel Core Ultra 9 185H; before = base commit 3adc43b, after = 1d290b4):
 
 | shape | B/op before→after | allocs/op before→after | ns/op before→after |
@@ -96,4 +96,4 @@ detector (`make test`).
 Implemented on integration branch `feat/v0-hot-path` (merge commit
 `3948600`; cross-ticket code-review fixes through `78386ca`, including
 byte-identical malformed-line error text). Context: spec `../spec.md`,
-oracle the `internal/infra/parse/nginx` fixture tests.
+oracle the `bandage/internal/infra/parse/nginx` fixture tests.

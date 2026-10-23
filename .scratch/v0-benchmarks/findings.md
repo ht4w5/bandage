@@ -25,7 +25,7 @@ the pprof profiles collected here (extracts committed under
   the same run: `baseline/benchstat.txt`. All "±" below are benchstat's
   spread over the 10 runs.
 - **Profiles** (one benchmark selected per run with anchored `-bench`
-  patterns, `./internal/app`):
+  patterns, `./bandage/internal/app`):
   - CPU + mem (low overhead): `-benchtime=5s -cpuprofile cpu.out
     -memprofile mem.out`.
   - mutex + block (separate runs, full-rate instrumentation distorts
@@ -62,20 +62,20 @@ Explicit spec → benchmark mapping (code-review pass). (The v0-hot-path
 round re-modeled the evaluate and throughput scenarios and added the
 `writes/op` metric — see § "Addendum — v0-hot-path" for the old → new
 name mapping.) The domain
-import lint (`internal/bandage/deps_test.go`: domain modules import
+import lint (`bandage/internal/domain/deps_test.go`: domain modules import
 only the domain core and stdlib) forces the domain/app split marked
 below: the in-domain variants run over stub ports, the real
-store/sink variants live in `internal/app`.
+store/sink variants live in `bandage/internal/app`.
 
 | spec Phase 1 row | actual benchmark (package) | notes |
 |---|---|---|
-| `BenchmarkParse` | `BenchmarkParse/{minimal,full}` (`internal/infra/parse/nginx`) | one per line shape |
-| `BenchmarkFilterMatch` | `BenchmarkFilterMatch/leaf/…`, `/chain/{1,10,100}-rules/{match,no-match}` (`internal/bandage/filter`) | zero-alloc leaves and chains |
-| `BenchmarkStoreUpdate`, `BenchmarkStoreUpdateParallel` | same names (`internal/infra/cache/memory`) | `{uniform,zipf,hot,evicting}` key distributions |
-| `BenchmarkEvaluate` | **lint split**: `BenchmarkEvaluate/{match-every,match-never}` (`internal/bandage/evaluation`, stub TrackerCache/ReportSink ports) + `BenchmarkEvaluateMemory/…` (`internal/app`, real memory store + in-mem sink) + `BenchmarkEvaluateSQLite/…` (`internal/app`, real memory store + sqlite sink) | spec asked for memory-store and sqlite variants; the lint bars those adapters from the domain package |
-| `BenchmarkReportUpsert` | `BenchmarkReportUpsert/{memory,file}/{insert,update}` (`internal/infra/persistence/sqlite`) | |
-| `BenchmarkReportsList` | `BenchmarkReportsList/{10-rows,1k-rows,10k-rows}` (`internal/infra/httpapi`) | read path |
-| `BenchmarkProgressBump` | `BenchmarkProgressBump/{serial,parallel}` (`internal/app`) | |
+| `BenchmarkParse` | `BenchmarkParse/{minimal,full}` (`bandage/internal/infra/parse/nginx`) | one per line shape |
+| `BenchmarkFilterMatch` | `BenchmarkFilterMatch/leaf/…`, `/chain/{1,10,100}-rules/{match,no-match}` (`bandage/internal/domain/filter`) | zero-alloc leaves and chains |
+| `BenchmarkStoreUpdate`, `BenchmarkStoreUpdateParallel` | same names (`bandage/internal/infra/cache/memory`) | `{uniform,zipf,hot,evicting}` key distributions |
+| `BenchmarkEvaluate` | **lint split**: `BenchmarkEvaluate/{match-every,match-never}` (`bandage/internal/domain/evaluation`, stub TrackerCache/ReportSink ports) + `BenchmarkEvaluateMemory/…` (`bandage/internal/app`, real memory store + in-mem sink) + `BenchmarkEvaluateSQLite/…` (`bandage/internal/app`, real memory store + sqlite sink) | spec asked for memory-store and sqlite variants; the lint bars those adapters from the domain package |
+| `BenchmarkReportUpsert` | `BenchmarkReportUpsert/{memory,file}/{insert,update}` (`bandage/internal/infra/persistence/sqlite`) | |
+| `BenchmarkReportsList` | `BenchmarkReportsList/{10-rows,1k-rows,10k-rows}` (`bandage/internal/infra/httpapi`) | read path |
+| `BenchmarkProgressBump` | `BenchmarkProgressBump/{serial,parallel}` (`bandage/internal/app`) | |
 
 Success criterion 1 asks per-stage coverage (hot-path inventory);
 `BenchmarkPipeline*` covers the assembled chain, and the code-review
@@ -85,13 +85,13 @@ the committed `-count=10` baseline carries them too):
 
 | inventory stage | benchmark (package) | ns/op | B/op | allocs/op |
 |---|---|---|---|---|
-| 1 Ingest (Source run loop, no evaluation) | `BenchmarkIngestForward/{tcp,unixgram}` (`internal/infra/ingest/syslog`) | 1600 / 1847 | 3205 / 1909 | 17 / 14 |
+| 1 Ingest (Source run loop, no evaluation) | `BenchmarkIngestForward/{tcp,unixgram}` (`bandage/internal/infra/ingest/syslog`) | 1600 / 1847 | 3205 / 1909 | 17 / 14 |
 | 2 Parse | `BenchmarkParse` (above) | 1,804 / 3,019 | 696 / 1.51Ki | 23 / 32 |
-| 3 Enrich (FilesizeEnricher.Enrich) | **lint split**: `BenchmarkEnrich` (`internal/bandage/enrichment`, stub cache) + `BenchmarkEnrichMemory` (`internal/app`, real memory store); the store's own call is `BenchmarkStoreUpdate` | 74.8 / 180 | 168 / 200 | 3 / 4 |
+| 3 Enrich (FilesizeEnricher.Enrich) | **lint split**: `BenchmarkEnrich` (`bandage/internal/domain/enrichment`, stub cache) + `BenchmarkEnrichMemory` (`bandage/internal/app`, real memory store); the store's own call is `BenchmarkStoreUpdate` | 74.8 / 180 | 168 / 200 | 3 / 4 |
 | 4 Evaluate | `BenchmarkEvaluate{,Memory,SQLite}` (above) | 396–114,536 | — | — |
 | 5 Report write (on match) | `BenchmarkReportUpsert` + `BenchmarkEvaluateSQLite/match-every` (above) | 31,370 (`:memory:`) | 2.73Ki | 53–54 |
 | 6 Bookkeeping | `BenchmarkProgressBump` (above) | 48.4 / 107.5 | 112 | 1 |
-| 7 Read path + sweep cadence | `BenchmarkReportsList` (above) + `BenchmarkStoreSweepExpired/{live,expiring}`, `BenchmarkStoreStatistics`, `BenchmarkReportDeleteExpired/{live,expiring}` (`internal/infra/cache/memory`, `internal/infra/persistence/sqlite`) | 2,453/2,751 (sweep), 1,950 (stats), 3,241/63,435 (delete) | 0 / 0 / 136 | 0 / 0 / 6 |
+| 7 Read path + sweep cadence | `BenchmarkReportsList` (above) + `BenchmarkStoreSweepExpired/{live,expiring}`, `BenchmarkStoreStatistics`, `BenchmarkReportDeleteExpired/{live,expiring}` (`bandage/internal/infra/cache/memory`, `bandage/internal/infra/persistence/sqlite`) | 2,453/2,751 (sweep), 1,950 (stats), 3,241/63,435 (delete) | 0 / 0 / 136 | 0 / 0 / 6 |
 
 ## Pipeline baselines (benchstat medians of 10)
 
@@ -358,12 +358,12 @@ allocs/row), worth revisiting only with row-count requirements.
 ```sh
 # CPU + mem (per selection; sel ∈ {mn1,mn8,me1,me8,tcpmn8}, pattern per selection)
 GOMAXPROCS=22 go test -run=^$ -bench='^BenchmarkPipeline$/^match-never$/^workers=8$' \
-  -benchmem -benchtime=5s -cpuprofile=cpu.out -memprofile=mem.out ./internal/app
+  -benchmem -benchtime=5s -cpuprofile=cpu.out -memprofile=mem.out ./bandage/internal/app
 
 # mutex + block (separate run: full-rate instrumentation distorts timing)
 GOMAXPROCS=22 go test -run=^$ -bench='^BenchmarkPipeline$/^match-never$/^workers=8$' \
   -benchmem -benchtime=2s -mutexprofile=mutex.out -mutexprofilefraction=1 \
-  -blockprofile=block.out -blockprofilerate=1 ./internal/app
+  -blockprofile=block.out -blockprofilerate=1 ./bandage/internal/app
 
 go tool pprof -top -cum -nodecount=25 cpu.out
 go tool pprof -sample_index=alloc_objects -top mem.out

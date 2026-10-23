@@ -17,6 +17,6 @@
 
 Implemented on integration branch `feat/penalty` (merge commit
 `df4850f`; cross-ticket code-review fixes through `ef0e6d9`, incl. the
-closed vocabulary single-sourced in `bandage.PenaltyActions`).
+closed vocabulary single-sourced in `domain.PenaltyActions`).
 Context: spec `../spec.md`, ADR 0010; wire side `02-penalty-in-report-document.md`;
 PLAN.md contract references `03-canonical-report-document.md`.

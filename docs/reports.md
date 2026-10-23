@@ -6,7 +6,7 @@ the code. This document defines version 0 — the envelope, every record
 field including the penalty, the timestamp rules, the canonical
 serialization, and the evolution policy. Its example is reproduced
 byte-for-byte by the daemon and pinned by a test
-(`internal/app/reportdoc_test.go`), so this contract and the
+(`bandage/internal/app/reportdoc_test.go`), so this contract and the
 implementation cannot drift.
 
 ## Envelope

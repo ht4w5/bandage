@@ -30,7 +30,7 @@ session reshaped targeting and enforcement scope as driver-owned — see
 | Build identity | `identity.Name` const + `String()`/`Header()` for bandage; `Summary(name)` for splint | one `identity.For(name)` value both commands use equally |
 | Compiled artifact | `splint.BanRule{Targets, Prefilter, Stance, Rate}`; `mapPenalty` drops `limit-req-rate` at compile time | `firewall.BanRule` carrying the merged **penalty as stated** (all five actions) |
 | Merge policy | `splint/compile.go` (`merge`/`resolve`/`strictest`) | unchanged location (engine), vocabulary grows to five actions |
-| nftables encoding | `internal/splint/nft` implements `splint.Driver` | `internal/firewall/nft` implements `firewall.Driver` |
+| nftables encoding | `splint/internal/app/nft` implements `splint.Driver` | `splint/internal/firewall/nft` implements `firewall.Driver` |
 | Rolling hash | `splint/hash.go`, engine hashes `[]BanRule`, per-namespace `nsState` in `updater.go` | inside the driver: it hashes its **effective** rules; skip state = per driver instance |
 | Skip probe | `Driver.TableExists()` on the port, engine decides | inside the driver's `Apply` |
 | Counters | driver reads, engine maps/logs | driver reads and reports in its result |
@@ -58,7 +58,7 @@ func (b Build) Name() string
   stamps are unchanged; both binaries already share `BUILD_FLAGS`).
 - `const Name`, package-level `String()`/`Header()`/`Summary(name)` go away;
   `cmd/bandage` and `cmd/splint` each call `identity.For(...)` with their own
-  name. Daemon call sites (`internal/app` uses `Header()` for `--test`/`-h`)
+  name. Daemon call sites (`bandage/internal/app` uses `Header()` for `--test`/`-h`)
   change mechanically; the **rendered output for bandage must not change**
   (existing identity tests pin it).
 - Format stays byte-identical to today (`buildSummary`/`buildHeader` logic,
@@ -66,10 +66,10 @@ func (b Build) Name() string
 
 ### 2. The firewall module: a deep driver seam
 
-New package **`internal/firewall`** — the port. Adapters:
-**`internal/firewall/nft`** (the nftables implementation) and
-**`internal/firewall/firewalltest`** (the recording stub, test surface of the
-engine). Dependency direction: the engine (`internal/splint`) and every
+New package **`splint/internal/firewall`** — the port. Adapters:
+**`splint/internal/firewall/nft`** (the nftables implementation) and
+**`splint/internal/firewall/firewalltest`** (the recording stub, test surface of the
+engine). Dependency direction: the engine (`splint/internal/app`) and every
 adapter import `firewall`; the engine never imports an adapter; only
 `cmd/splint` wires them together (extend `deps_test.go` with an
 "engine imports no adapter" rule).
@@ -234,7 +234,7 @@ a fake kernel, while the existing root-gated kernel test keeps verifying real
 encoding (install → read back → reset). This is replace-don't-layer: the fake
 stands in for the kernel, it doesn't wrap the real one.
 
-## Engine (`internal/splint`) after the refactor
+## Engine (`splint/internal/app`) after the refactor
 
 - `wire`, `policy` (exclusions + prefilter), `compile` (parse tolerance +
   merge), `fetch`, `updater` (lifecycle) stay; `compile`'s output type moves
@@ -287,9 +287,9 @@ no compatibility shim; the sample unit and docs ship renamed.
 
 1. **Identity refactor** — `identity.For(name)` API, both commands equal;
    output for bandage byte-identical (pinned tests). Independent, small.
-2. **Firewall port + type move** — `internal/firewall` with `BanRule`/
+2. **Firewall port + type move** — `splint/internal/firewall` with `BanRule`/
    `Penalty`/`Target`/`Driver`; engine produces `firewall.BanRule`;
-   `internal/firewall/nft` + `firewalltest.Stub` moved behind the port;
+   `splint/internal/firewall/nft` + `firewalltest.Stub` moved behind the port;
    `deps_test.go` rule. Behaviour unchanged (hash still engine-side here or
    moved in 3 — prefer doing 2 and 3 as one ticket if the diff stays
    reviewable).

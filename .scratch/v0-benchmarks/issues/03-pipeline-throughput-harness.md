@@ -28,7 +28,7 @@ where it saturates.
 
 ## Answer
 
-Built `internal/app/throughput_bench_test.go` (in-package, stdlib-only,
+Built `bandage/internal/app/throughput_bench_test.go` (in-package, stdlib-only,
 benchmarks do not run under `make test`):
 
 - **Harness** — `startBenchPipeline` assembles the real daemon
@@ -245,7 +245,7 @@ Pipeline-only runs (fixed corpus, frozen clock): spread (max−min)/mean
   does. Verdict left to ticket 04.
 
 Reproduce: `go test -run '^$' -bench 'BenchmarkPipeline' -benchmem
--count=3 ./internal/app` (or `make bench-pkg PKG=./internal/app` for
+-count=3 ./bandage/internal/app` (or `make bench-pkg PKG=./bandage/internal/app` for
 the whole package including ticket 02's microbenchmarks).
 
 Implemented on integration branch `feat/v0-benchmarks` (merge commit

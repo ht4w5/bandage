@@ -1,4 +1,4 @@
-# bandage
+# webmedkit
 
 ## Agent skills
 

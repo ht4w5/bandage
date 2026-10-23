@@ -1,4 +1,4 @@
-# bandage
+# webmedkit
 
 Realtime web log analysis: bandage consumes access-log events, maintains
 leaky-bucket trackers per target, and publishes reports that downstream

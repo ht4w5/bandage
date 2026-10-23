@@ -38,8 +38,8 @@ All Phase 1 benchmarks ship beside their code as `*_bench_test.go`
 files. Per the domain lint, the in-package `BenchmarkEvaluate`
 (`domain/evaluation`) runs over its own stub TrackerCache/ReportSink
 ports, and the variants with the real memory store and the sqlite sink
-live in `internal/app/evaluate_bench_test.go`; `BenchmarkProgressBump`
-is in `internal/app/bookkeeping_bench_test.go`. Fixture decisions
+live in `bandage/internal/app/evaluate_bench_test.go`; `BenchmarkProgressBump`
+is in `bandage/internal/app/bookkeeping_bench_test.go`. Fixture decisions
 affecting interpretation: fixed wall clock everywhere, zerolog.Nop()
 for the store (eviction log rendering excluded), evaluation event times
 advance one second per op (cycled timestamps freeze the leaky bucket's

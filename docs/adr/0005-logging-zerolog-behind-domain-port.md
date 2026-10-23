@@ -1,10 +1,10 @@
 # Logging: zerolog behind a domain Logger port
 
-The logging implementation is zerolog, but `internal/bandage*` keeps its
-dependency rule (stdlib + `internal/bandage` only): the domain defines its
+The logging implementation is zerolog, but `bandage/internal/domain*` keeps its
+dependency rule (stdlib + `bandage/internal/domain` only): the domain defines its
 own `Level` enum (the `log` action's vocabulary stays `debug` | `info` |
 `warn` | `error`) and a tiny `Logger` port declared beside its one
-consumer (`internal/bandage/evaluation`'s `log` action). zerolog is the
+consumer (`bandage/internal/domain/evaluation`'s `log` action). zerolog is the
 sole implementation of that port, built from the `log.level` config key
 and adapted outside the domain. zerolog's `fatal`/`panic` levels are
 deliberately unreachable from the rules DSL — `Logger.Fatal` calls

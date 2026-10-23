@@ -19,7 +19,7 @@
 Implemented on integration branch `feat/v0-followups` (merge commit
 `d4f38d5`; cross-ticket code-review fixes through `a69fb58`). zerolog
 console text on stderr from one program-wide logger
-(`internal/app/logging.go`), `log.level` config key with `-l` precedence,
+(`bandage/internal/app/logging.go`), `log.level` config key with `-l` precedence,
 domain `Level` enum + `Logger` port beside its one consumer (ADR 0005),
 the log-capture seam reworked at the same injection point, and the
 "capped drop" → *eviction* sweep.

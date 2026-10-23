@@ -27,16 +27,16 @@ then make the easy change").
 
 **Done:** report mutation now has one funnel — `report.Service` exposes
 `Trigger`, `List`, `Delete(ctx, Query) (int, error)` and
-`DeleteExpired(ctx, now) (int, error)` (`internal/bandage/report/report.go`),
+`DeleteExpired(ctx, now) (int, error)` (`bandage/internal/domain/report/report.go`),
 and every production mutation goes through it:
 
 - Trigger write: unchanged (`evaluation → ReportSink.Trigger →
   Service.Trigger`), still the only write path.
 - API delete-by-filter: `Daemon.New` passes the service, not the raw
-  repository, to `httpapi.New` (`internal/app/daemon.go`); the API's
+  repository, to `httpapi.New` (`bandage/internal/app/daemon.go`); the API's
   reads and deletes go through `Service.List`/`Service.Delete`.
 - Sweeper: `Daemon.sweepOnce` calls `Service.DeleteExpired`
-  (`internal/app/daemon.go`), keeping its `(int, error)` shape so the
+  (`bandage/internal/app/daemon.go`), keeping its `(int, error)` shape so the
   e2e tests' direct `d.sweepOnce(ctx)` driving is untouched.
 
 Key facts:
@@ -56,7 +56,7 @@ Key facts:
   so nothing outside the repository's own tests mutates rows around the
   service.
 - New prior art the notes flagged as missing (test-harness.md §3):
-  `internal/bandage/report/report_test.go` — the report service over a
+  `bandage/internal/domain/report/report_test.go` — the report service over a
   plain stub repository (table tests, no framework), pinning the
   delegation contract ticket 03's re-arm hooks hang on.
 - Zero operator-visible change: report document, deletion counts,

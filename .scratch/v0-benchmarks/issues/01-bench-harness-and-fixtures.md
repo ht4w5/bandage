@@ -9,7 +9,7 @@ Build the shared scaffolding every benchmark in this effort stands on.
 
 - Deterministic nginx-JSON line corpus as `_test.go` fixtures (shared
   helper file per package that needs it, or one small exported-in-test
-  helper set in `internal/app`):
+  helper set in `bandage/internal/app`):
   - line shapes: minimal (required fields only) vs. full (agent, host,
     server, unknown fields present);
   - key distributions: uniform, Zipfian paths and client IPs, and a
@@ -29,12 +29,12 @@ Build the shared scaffolding every benchmark in this effort stands on.
 
 ## Answer
 
-Built the shared benchmark harness in `internal/bench` (imported only
+Built the shared benchmark harness in `bandage/internal/bench` (imported only
 by tests/benchmarks, never by production code):
 
-- **Fixture corpus** (`internal/bench/corpus.go`): `bench.NewCorpus(seed,
+- **Fixture corpus** (`bandage/internal/bench/corpus.go`): `bench.NewCorpus(seed,
   shape, dist, n)` pre-generates `n` raw nginx-JSON access-log lines and
-  the `bandage.Event`s they parse to. Line shapes: `ShapeMinimal`
+  the `domain.Event`s they parse to. Line shapes: `ShapeMinimal`
   (required fields only; event has no agent) vs `ShapeFull` (agent,
   host, server, duration plus an unknown field). Key distributions over
   256-entry path and client-IP pools: `DistUniform`, `DistZipf` (weight
@@ -50,12 +50,12 @@ by tests/benchmarks, never by production code):
   `nginx.Parser.Parse(Line(i)) == Event(i)` for every shape ×
   distribution, so no fixture line can drop and the two renderings
   cannot drift.
-- **Bench helpers** (`internal/bench/helpers.go`): fixed `bench.Seed`;
+- **Bench helpers** (`bandage/internal/bench/helpers.go`): fixed `bench.Seed`;
   `Line`/`Event` cycle any non-negative index so benchmarks build the
   corpus once before their `b.Loop()` loop and never rebuild fixtures
   inside the timed region; `bench.ReportLinesPerSec(b, lines)` reports
   `lines/s` through `b.ReportMetric` (where one op = one raw line).
-- **Correctness tests** (`internal/bench/*_test.go`): splitmix64
+- **Correctness tests** (`bandage/internal/bench/*_test.go`): splitmix64
   reference vectors, determinism per seed (and divergence across
   seeds), index cycling, minimal/full JSON key sets, documented
   uniform/Zipf/hot distribution behavior, hot-pair → single tracker
