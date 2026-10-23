@@ -1,8 +1,10 @@
 // Package firewall is splint's firewall seam: the shared vocabulary the
 // engine compiles to and every firewall driver enforces — ban rules
-// carrying the Penalty as stated — plus the driver port. The engine and
-// the adapters both depend on this seam; the engine never imports an
-// adapter (deps_test.go enforces the module shape's dependency rule).
+// carrying the Penalty as stated — plus the driver port and the
+// factory shape a driver registry registers (its name, its flags, its
+// validation, its enforcement points). The engine and the adapters
+// both depend on this seam; the engine never imports an adapter
+// (deps_test.go enforces the module shape's dependency rule).
 package firewall
 
 import "net/netip"
