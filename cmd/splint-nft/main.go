@@ -107,7 +107,7 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 		return exitUsage, options{}
 	}
 	if *showVersion {
-		fmt.Fprintln(stdout, identity.Summary(progName))
+		fmt.Fprintln(stdout, identity.For(progName).String())
 		return exitOK, options{}
 	}
 	opts := options{

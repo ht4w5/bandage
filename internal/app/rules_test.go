@@ -571,6 +571,30 @@ chains:
 	}
 }
 
+// TestPlanBannerFollowsThePassedBuild: the plan banner carries the
+// header of the build the caller passed — the command constructs the
+// per-name build; the plan never names the program itself.
+func TestPlanBannerFollowsThePassedBuild(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "bandage.yml")
+	rulesPath := filepath.Join(dir, "rules.yml")
+	if err := os.WriteFile(cfgPath, []byte(validConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rulesPath, []byte(validRules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	build := identity.For("bandage-canary")
+	plan, err := Test(cfgPath, rulesPath, build)
+	if err != nil {
+		t.Fatalf("Test error: %v", err)
+	}
+	if !strings.HasPrefix(plan, build.Header()+"\n") {
+		t.Errorf("plan does not open with the passed build's header %q:\n%s", build.Header(), plan)
+	}
+}
+
 func TestPrintsValidatedPlan(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "bandage.yml")
@@ -582,13 +606,15 @@ func TestPrintsValidatedPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plan, err := Test(cfgPath, rulesPath)
+	build := identity.For("bandage")
+	plan, err := Test(cfgPath, rulesPath, build)
 	if err != nil {
 		t.Fatalf("Test error: %v", err)
 	}
-	// The --test plan output opens with the build identity header.
-	if !strings.HasPrefix(plan, identity.Header()+"\n") {
-		t.Errorf("plan does not open with the identity header %q:\n%s", identity.Header(), plan)
+	// The --test plan output opens with the build identity header,
+	// byte for byte.
+	if !strings.HasPrefix(plan, build.Header()+"\n") {
+		t.Errorf("plan does not open with the identity header %q:\n%s", build.Header(), plan)
 	}
 	for _, want := range []string{
 		"ingest syslog/nginx unixgram /run/bandage/log.sock",
@@ -621,7 +647,7 @@ func TestFailsOnBadRules(t *testing.T) {
 	if err := os.WriteFile(rulesPath, []byte("version: 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Test(cfgPath, rulesPath); err == nil {
+	if _, err := Test(cfgPath, rulesPath, identity.For("bandage")); err == nil {
 		t.Fatal("Test succeeded, want error")
 	}
 }
@@ -638,7 +664,7 @@ func TestShowsActionsInPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plan, err := Test(cfgPath, rulesPath)
+	plan, err := Test(cfgPath, rulesPath, identity.For("bandage"))
 	if err != nil {
 		t.Fatalf("Test error: %v", err)
 	}
@@ -729,7 +755,7 @@ chains:
 			if err := os.WriteFile(rulesPath, []byte(tt.rules), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			_, err := Test(cfgPath, rulesPath)
+			_, err := Test(cfgPath, rulesPath, identity.For("bandage"))
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("Test error: %v", err)
@@ -866,7 +892,7 @@ chains:
 		t.Fatal(err)
 	}
 
-	plan, err := Test(cfgPath, rulesPath)
+	plan, err := Test(cfgPath, rulesPath, identity.For("bandage"))
 	if err != nil {
 		t.Fatalf("Test error: %v", err)
 	}
@@ -901,7 +927,7 @@ chains:
 		t.Fatal(err)
 	}
 
-	_, err := Test(cfgPath, rulesPath)
+	_, err := Test(cfgPath, rulesPath, identity.For("bandage"))
 	if err == nil {
 		t.Fatal("Test succeeded, want error")
 	}
@@ -1195,7 +1221,7 @@ chains:
 		t.Fatal(err)
 	}
 
-	plan, err := Test(cfgPath, rulesPath)
+	plan, err := Test(cfgPath, rulesPath, identity.For("bandage"))
 	if err != nil {
 		t.Fatalf("Test error: %v", err)
 	}

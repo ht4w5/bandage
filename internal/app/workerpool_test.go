@@ -14,6 +14,7 @@ import (
 
 	bandage "github.com/HT4w5/bandage/internal/domain"
 	"github.com/HT4w5/bandage/internal/domain/report"
+	"github.com/HT4w5/bandage/internal/identity"
 	"github.com/HT4w5/bandage/internal/infra/persistence/sqlite"
 )
 
@@ -48,7 +49,7 @@ func TestNewRejectsNonPositiveWorkerCount(t *testing.T) {
 		Pipeline: Pipeline{Workers: 0},
 		API:      API{Listen: "127.0.0.1:0"},
 	}
-	if _, err := New(cfg, chains); err == nil {
+	if _, err := New(cfg, chains, identity.For("bandage")); err == nil {
 		t.Fatal("New(workers 0) succeeded, want an error")
 	} else if !strings.Contains(err.Error(), "pipeline.workers") {
 		t.Errorf("error %q does not name pipeline.workers", err)
@@ -265,7 +266,7 @@ func startWedgeDaemon(t *testing.T, clock *testClock, workers int) *wedgeDaemon 
 	if err != nil {
 		t.Fatalf("ParseRules error: %v", err)
 	}
-	d, err := New(cfg, chains, WithClock(clock.Now), withStore(store))
+	d, err := New(cfg, chains, identity.For("bandage"), WithClock(clock.Now), withStore(store))
 	if err != nil {
 		t.Fatalf("New error: %v", err)
 	}

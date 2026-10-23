@@ -26,6 +26,10 @@ import (
 // Primary seam: the assembled daemon driven by raw nginx-JSON syslog messages
 // at a real ingest listener, asserted through GET /reports JSON.
 
+// testBuild is the build identity the test daemons are assembled with;
+// the pins below assert the daemon mirrors it exactly.
+var testBuild = identity.For("bandage")
+
 // testClock is the injected wall clock every seam runs on (never sleep);
 // reads are atomic because the clock also sits in measured benchmark paths.
 type testClock struct {
@@ -207,7 +211,7 @@ func startTestDaemonCfg(t *testing.T, clock *testClock, network, dbPath, rulesYA
 	}
 	logs := &logCapture{}
 	opts := append([]Option{WithClock(clock.Now), WithLogger(zerolog.New(logs))}, extra...)
-	d, err := New(cfg, chains, opts...)
+	d, err := New(cfg, chains, testBuild, opts...)
 	if err != nil {
 		t.Fatalf("New error: %v", err)
 	}
@@ -756,6 +760,52 @@ chains:
 	}
 }
 
+// TestStatsBuildMirrorsThePassedBuild: the daemon renders the build
+// identity it was assembled with — the command constructs the per-name
+// build; the daemon only mirrors it.
+func TestStatsBuildMirrorsThePassedBuild(t *testing.T) {
+	chains, err := ParseRules([]byte(bandwidthRules))
+	if err != nil {
+		t.Fatalf("ParseRules error: %v", err)
+	}
+	build := identity.For("bandage-canary")
+	d, err := New(Config{
+		Ingest: Ingest{
+			Driver: "syslog",
+			Parser: "nginx",
+			Syslog: Syslog{Network: "unixgram", Listen: filepath.Join(t.TempDir(), "log.sock")},
+		},
+		DB:       DB{Driver: "sqlite", SQLite: SQLite{Path: ":memory:"}},
+		Cache:    Cache{MaxEntries: 65536},
+		Pipeline: Pipeline{Workers: 1},
+		API:      API{Listen: "127.0.0.1:0"},
+	}, chains, build, WithLogger(zerolog.Nop()))
+	if err != nil {
+		t.Fatalf("New error: %v", err)
+	}
+
+	got := d.Stats().Build
+	for _, f := range []struct {
+		field string
+		got   string
+		want  string
+	}{
+		{"name", got.Name, build.Name()},
+		{"version", got.Version, build.Version()},
+		{"commit", got.Commit, build.Commit()},
+		{"build_date", got.BuildDate, build.BuildDate()},
+		{"go_version", got.GoVersion, build.GoVersion()},
+		{"platform", got.Platform, build.Platform()},
+	} {
+		if f.got != f.want {
+			t.Errorf("build.%s = %q, want %q", f.field, f.got, f.want)
+		}
+	}
+	if got.Dirty != build.Dirty() {
+		t.Errorf("build.dirty = %v, want %v", got.Dirty, build.Dirty())
+	}
+}
+
 // TestE2EStatsBuildAndCumulativeCounters: /stats answers with the build
 // identity and cumulative counters, as human-facing indented JSON.
 func TestE2EStatsBuildAndCumulativeCounters(t *testing.T) {
@@ -784,22 +834,23 @@ func TestE2EStatsBuildAndCumulativeCounters(t *testing.T) {
 		t.Errorf("uptime = %v, want %q", got, "1m30s")
 	}
 
-	// The build block mirrors the identity module (the test binary is
-	// not linker-injected, so the values are the identity defaults).
+	// The build block mirrors the build identity the daemon was
+	// assembled with (the test binary is not linker-injected, so the
+	// values are the identity defaults).
 	for _, f := range []struct{ field, want string }{
-		{"name", identity.Name},
-		{"version", identity.Version()},
-		{"commit", identity.Commit()},
-		{"build_date", identity.BuildDate()},
-		{"go_version", identity.GoVersion()},
-		{"platform", identity.Platform()},
+		{"name", testBuild.Name()},
+		{"version", testBuild.Version()},
+		{"commit", testBuild.Commit()},
+		{"build_date", testBuild.BuildDate()},
+		{"go_version", testBuild.GoVersion()},
+		{"platform", testBuild.Platform()},
 	} {
 		if got := statsStr(t, doc, "build", f.field); got != f.want {
 			t.Errorf("build.%s = %q, want %q", f.field, got, f.want)
 		}
 	}
-	if got := statsBool(t, doc, "build", "dirty"); got != identity.Dirty() {
-		t.Errorf("build.dirty = %v, want %v", got, identity.Dirty())
+	if got := statsBool(t, doc, "build", "dirty"); got != testBuild.Dirty() {
+		t.Errorf("build.dirty = %v, want %v", got, testBuild.Dirty())
 	}
 
 	// The pipeline block: the resolved worker count and exact line
@@ -2065,16 +2116,16 @@ func TestStartupLogCarriesBuildIdentity(t *testing.T) {
 		t.Fatalf("starting records = %d, want 1", len(recs))
 	}
 	attrs := recs[0].Attrs
-	if attrs["name"] != identity.Name {
-		t.Errorf("name = %v, want %q", attrs["name"], identity.Name)
+	if attrs["name"] != testBuild.Name() {
+		t.Errorf("name = %v, want %q", attrs["name"], testBuild.Name())
 	}
-	if attrs["version"] != identity.Version() {
-		t.Errorf("version = %v, want %q", attrs["version"], identity.Version())
+	if attrs["version"] != testBuild.Version() {
+		t.Errorf("version = %v, want %q", attrs["version"], testBuild.Version())
 	}
-	if attrs["commit"] != identity.Commit() {
-		t.Errorf("commit = %v, want %q", attrs["commit"], identity.Commit())
+	if attrs["commit"] != testBuild.Commit() {
+		t.Errorf("commit = %v, want %q", attrs["commit"], testBuild.Commit())
 	}
-	if attrs["build_date"] != identity.BuildDate() {
-		t.Errorf("build_date = %v, want %q", attrs["build_date"], identity.BuildDate())
+	if attrs["build_date"] != testBuild.BuildDate() {
+		t.Errorf("build_date = %v, want %q", attrs["build_date"], testBuild.BuildDate())
 	}
 }

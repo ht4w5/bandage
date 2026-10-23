@@ -10,8 +10,9 @@ import (
 )
 
 // Test validates the config and rules files and returns the validated
-// plan (bandage --test). It opens no sockets.
-func Test(configPath, rulesPath string) (string, error) {
+// plan (bandage --test). It opens no sockets. The plan banner carries
+// the passed build identity.
+func Test(configPath, rulesPath string, build identity.Build) (string, error) {
 	cfg, err := LoadConfig(configPath)
 	if err != nil {
 		return "", err
@@ -20,12 +21,12 @@ func Test(configPath, rulesPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return planText(cfg, chains), nil
+	return planText(cfg, chains, build), nil
 }
 
-func planText(cfg Config, chains []bandage.Chain) string {
+func planText(cfg Config, chains []bandage.Chain, build identity.Build) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n", identity.Header())
+	fmt.Fprintf(&b, "%s\n", build.Header())
 	fmt.Fprintf(&b, "config: ingest syslog/%s %s %s\n", cfg.Ingest.Parser, cfg.Ingest.Syslog.Network, cfg.Ingest.Syslog.Listen)
 	fmt.Fprintf(&b, "config: db %s %s\n", cfg.DB.Driver, cfg.DB.SQLite.Path)
 	fmt.Fprintf(&b, "config: api %s\n", cfg.API.Listen)

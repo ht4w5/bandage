@@ -33,6 +33,10 @@ const (
 // shutdownTimeout bounds the graceful drain, even if a store call hangs.
 const shutdownTimeout = 10 * time.Second
 
+// progName is the program name in the build identity; the version,
+// commit and build date come from the linker-injected stamps.
+const progName = "bandage"
+
 // options is the resolved command line: paths, mode and the per-run
 // overrides (flag over config; the defaults belong to config.go).
 type options struct {
@@ -52,7 +56,7 @@ func main() {
 // errors and usage to stderr; it returns the exit code and the resolved
 // options.
 func run(args []string, stdout, stderr io.Writer) (int, options) {
-	fs := flag.NewFlagSet("bandage", flag.ContinueOnError)
+	fs := flag.NewFlagSet(progName, flag.ContinueOnError)
 	// pflag renders the usage itself; only the streams and exit codes
 	// are decided here. Help goes to stdout, errors to stderr below.
 	fs.SetOutput(stdout)
@@ -71,8 +75,9 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 		printUsage(fs, stderr)
 		return exitUsage, options{}
 	}
+	build := identity.For(progName)
 	if *showVersion {
-		fmt.Fprintln(stdout, identity.String())
+		fmt.Fprintln(stdout, build.String())
 		return exitOK, options{}
 	}
 
@@ -101,7 +106,7 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	logger := app.NewLogger(stderr, opts.logLevel)
 
 	if opts.test {
-		plan, err := app.Test(opts.configPath, opts.rulesPath)
+		plan, err := app.Test(opts.configPath, opts.rulesPath, build)
 		if err != nil {
 			return fail(stderr, err), opts
 		}
@@ -113,7 +118,7 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	if err != nil {
 		return fail(stderr, err), opts
 	}
-	d, err := app.New(cfg, chains, app.WithLogger(logger))
+	d, err := app.New(cfg, chains, build, app.WithLogger(logger))
 	if err != nil {
 		return fail(stderr, err), opts
 	}

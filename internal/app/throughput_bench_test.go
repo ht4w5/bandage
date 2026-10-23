@@ -13,6 +13,7 @@ import (
 
 	"github.com/HT4w5/bandage/internal/bench"
 	"github.com/HT4w5/bandage/internal/domain/report"
+	"github.com/HT4w5/bandage/internal/identity"
 	"github.com/HT4w5/bandage/internal/infra/persistence/sqlite"
 )
 
@@ -126,7 +127,7 @@ func newBenchDaemon(tb testing.TB, p benchParams) *Daemon {
 	if err != nil {
 		tb.Fatalf("sqlite.Open: %v", err)
 	}
-	d, err := New(benchConfig(p), chains,
+	d, err := New(benchConfig(p), chains, identity.For("bandage"),
 		WithClock(benchNow), WithLogger(zerolog.Nop()),
 		withStore(&writeLedger{reportStore: repo}))
 	if err != nil {

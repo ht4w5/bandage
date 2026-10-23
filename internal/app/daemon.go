@@ -86,6 +86,7 @@ func withStore(s reportStore) Option {
 type Daemon struct {
 	cfg     Config
 	chains  []bandage.Chain
+	build   identity.Build
 	now     func() time.Time
 	logger  zerolog.Logger
 	parser  EventParser
@@ -121,8 +122,9 @@ type Daemon struct {
 }
 
 // New assembles the daemon from validated config; Pipeline.Workers must
-// be at least 1.
-func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
+// be at least 1. The daemon renders the passed build identity in its
+// startup log and /stats.
+func New(cfg Config, chains []bandage.Chain, build identity.Build, opts ...Option) (*Daemon, error) {
 	if cfg.Pipeline.Workers < 1 {
 		return nil, fmt.Errorf("app: pipeline.workers must be at least 1 (got %d)", cfg.Pipeline.Workers)
 	}
@@ -151,6 +153,7 @@ func New(cfg Config, chains []bandage.Chain, opts ...Option) (*Daemon, error) {
 	d := &Daemon{
 		cfg:       cfg,
 		chains:    chains,
+		build:     build,
 		now:       o.now,
 		logger:    o.logger,
 		parser:    nginxparser.New(),
@@ -179,10 +182,10 @@ func (d *Daemon) Start(lifetime context.Context) error {
 		return fmt.Errorf("reports: rebuild live-report set: %w", err)
 	}
 	d.logger.Info().
-		Str("name", identity.Name).
-		Str("version", identity.Version()).
-		Str("commit", identity.Commit()).
-		Str("build_date", identity.BuildDate()).
+		Str("name", d.build.Name()).
+		Str("version", d.build.Version()).
+		Str("commit", d.build.Commit()).
+		Str("build_date", d.build.BuildDate()).
 		Msg("starting")
 	d.src = syslog.New(d.cfg.Ingest.Syslog.Network, d.cfg.Ingest.Syslog.Listen, d.lines, d.logger)
 	if err := d.src.Start(); err != nil {
@@ -342,13 +345,13 @@ func (d *Daemon) Stats() httpapi.Stats {
 	return httpapi.Stats{
 		StartedAt: d.startedAt,
 		Build: httpapi.Build{
-			Name:      identity.Name,
-			Version:   identity.Version(),
-			Commit:    identity.Commit(),
-			BuildDate: identity.BuildDate(),
-			Dirty:     identity.Dirty(),
-			GoVersion: identity.GoVersion(),
-			Platform:  identity.Platform(),
+			Name:      d.build.Name(),
+			Version:   d.build.Version(),
+			Commit:    d.build.Commit(),
+			BuildDate: d.build.BuildDate(),
+			Dirty:     d.build.Dirty(),
+			GoVersion: d.build.GoVersion(),
+			Platform:  d.build.Platform(),
 		},
 		Pipeline: httpapi.Pipeline{
 			Workers:  d.workers,
