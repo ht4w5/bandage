@@ -30,8 +30,8 @@ other chains.
 _Avoid_: stage, pipeline
 
 **Rule**:
-A named condition-action pairing: a filter, at most one tracker, and an
-ordered list of actions.
+A named condition-action pairing: a filter, at most one tracker, and one
+ordered action list — or an escalation ladder of them.
 _Avoid_: detector, query
 
 **Action**:
@@ -39,17 +39,19 @@ A step executed when a rule matches: report, log, goto, jump, or stop.
 _Avoid_: statement, command
 
 **Match**:
-When a rule's filter accepts an event and its tracker (if any) overflows;
-the rule's actions then run.
+When a rule's filter accepts an event and its tracker (if any) stands
+above volume; the actions of the rule — or of every exceeded escalation,
+lowest first — then run.
 _Avoid_: fire, hit
 
 **Trigger**:
-A match that ran the rule's report action; when it writes, its event
-becomes the report's sample and its wall-clock time stamps the report.
-While that report is alive, further Triggers for the Target write nothing
-(the rule's other actions still run), and each Trigger empties the rule's
-tracker for the Target. A failed write is not a Trigger outcome: the
-tracker record stays intact and the next matching event retries the
+A match that ran a report action; when it writes, its event becomes the
+report's sample and its wall-clock time stamps the report. While the
+report for (rule, Target) is alive, further Triggers write nothing (the
+rule's other actions still run) — except one from a higher escalation,
+which overrides the report in place: reason, penalty, sample and expiry
+move to the higher rung's. A Trigger never empties the tracker; a failed
+write is not a Trigger outcome: the next matching event retries the
 report.
 _Avoid_: firing, hit
 
@@ -62,8 +64,14 @@ configured leak.
 _Avoid_: bucket, counter, analyzer
 
 **Overflow**:
-When a tracker's accumulated value exceeds its configured volume.
+When a tracker's accumulated value stands above a volume: the rule's
+volume, or an escalation's threshold.
 _Avoid_: exceed, breach
+
+**Escalation**:
+A rung on one tracker's ladder: a volume threshold in the tracker's
+quantity paired with its own ordered action list.
+_Avoid_: tier, stage, level
 
 **Target**:
 The aggregated source prefix that a tracker keys on and a report is about.
@@ -88,18 +96,20 @@ sample, and penalty, alive until expiry or deletion.
 _Avoid_: finding, record, ban
 
 **Reason**:
-The machine-readable trigger code a report carries into downstream ban
-rules; distinct from the rule ID, which is internal.
+The machine-readable trigger code a report currently carries into
+downstream ban rules — the code of the escalation that last wrote it;
+distinct from the rule ID, which is internal.
 _Avoid_: blame, cause
 
 **Penalty**:
 The enforcement stance a report carries — drop, reject, or a limit at a
-packet, bandwidth, or request rate — declared by the rule's report action; advisory, a report consumer
+packet, bandwidth, or request rate — declared by the report action that
+wrote it; advisory, a report consumer
 decides how to apply it.
 _Avoid_: sanction, remedy, enforcement action
 
 **Sample**:
-The most recent event that created a report.
+The event that justified the report's current stance.
 _Avoid_: example, evidence
 
 ### Enforcement
