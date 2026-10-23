@@ -9,13 +9,10 @@ import (
 	"testing"
 )
 
-// TestModulesDependOnlyOnTheSeam enforces the module shape's dependency
-// rule (the spec's Module shape): the engine (internal/splint) and the
-// drivers (the firewall seam's subpackages — the nftables driver and
-// the recording stub) both depend on the seam and never on each other —
-// the engine never imports a driver. Test files are outside the rule:
-// the engine's update-cycle suite drives the recording stub by
-// design (the spec's seam-1 test surface).
+// TestModulesDependOnlyOnTheSeam enforces the module shape's
+// dependency rule: the engine and the firewall drivers depend on the
+// seam, never on each other. Test files are outside the rule — the
+// engine's suite drives the recording stub by design.
 func TestModulesDependOnlyOnTheSeam(t *testing.T) {
 	const (
 		engine = "github.com/HT4w5/bandage/internal/splint"
@@ -29,7 +26,7 @@ func TestModulesDependOnlyOnTheSeam(t *testing.T) {
 			return nil
 		}
 		rel := filepath.ToSlash(strings.TrimPrefix(filepath.ToSlash(path), "../"))
-		kind := "" // "" = not part of the module shape's rule
+		kind := ""
 		switch {
 		case rel == "splint" || strings.HasPrefix(rel, "splint/"):
 			kind = "engine"

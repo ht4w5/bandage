@@ -15,17 +15,9 @@ import (
 	"github.com/HT4w5/bandage/internal/firewall/firewalltest"
 )
 
-// Primary seam: the update cycle's enforcement-point fan-out,
-// observed at the same firewall-driver boundary as cycle_test.go — one
-// stub driver per enforcement point. Which point installs what and
-// when: one fetch-compile serves every point, an unreachable point is
-// warned and skipped while the others still install, each point's
-// outcome is logged on its own, and reset on exit tolerates vanished
-// points.
+// Primary seam: the update cycle's enforcement-point fan-out at the
+// firewall-driver boundary (cycle_test.go's), one stub driver per point.
 
-// newTestPoints wires the seam over one stub driver per enforcement
-// point label (the labels are opaque to the engine — the nftables
-// factory labels its points with their nsfs paths).
 func newTestPoints(t *testing.T, srv *docServer, labels ...string) (*Updater, []*firewalltest.Stub, *logCapture) {
 	t.Helper()
 	fetcher, err := NewFetcher(srv.URL)
@@ -47,16 +39,12 @@ func newTestPoints(t *testing.T, srv *docServer, labels ...string) (*Updater, []
 	return u, stubs, logs
 }
 
-// unreachable is the driver error a vanished enforcement point
-// surfaces: its handle cannot be opened (internal/firewall/nft wraps
-// open failures exactly so).
+// unreachable is the error a vanished enforcement point surfaces;
+// internal/firewall/nft wraps open failures exactly so.
 func unreachable(point string) error {
 	return fmt.Errorf("%w: open %s: no such file or directory", firewall.ErrUnreachable, point)
 }
 
-// TestUpdateCycleInstallsAtEveryEnforcementPoint: one fetch-compile
-// cycle serves all points — the same ban rules install at every
-// enforcement point, and the report endpoint is fetched exactly once.
 func TestUpdateCycleInstallsAtEveryEnforcementPoint(t *testing.T) {
 	srv := newDocServer(t)
 	srv.serve(http.StatusOK, canonicalDoc(t))
@@ -73,11 +61,6 @@ func TestUpdateCycleInstallsAtEveryEnforcementPoint(t *testing.T) {
 	}
 }
 
-// TestUpdateCycleSkipsAnUnreachablePoint: a point whose handle is gone
-// is warned and skipped for the cycle while the other points still
-// install — one dead container cannot halt enforcement everywhere —
-// and a real install failure stays loud after the others have
-// installed.
 func TestUpdateCycleSkipsAnUnreachablePoint(t *testing.T) {
 	t.Run("an unreachable point is warned and skipped while the others still install", func(t *testing.T) {
 		srv := newDocServer(t)
@@ -110,17 +93,11 @@ func TestUpdateCycleSkipsAnUnreachablePoint(t *testing.T) {
 	})
 }
 
-// TestUpdateCycleReportsEachPointsOutcome: skip-if-unchanged is each
-// driver's own (the skip state follows the driver instance), and the
-// engine logs every point's report independently — one point's
-// unchanged-skip never silences another's install, and a point that
-// failed is handed the ruleset again next cycle.
 func TestUpdateCycleReportsEachPointsOutcome(t *testing.T) {
 	t.Run("one point's skip does not change another's install", func(t *testing.T) {
 		srv := newDocServer(t)
 		srv.serve(http.StatusOK, canonicalDoc(t))
 		u, stubs, logs := newTestPoints(t, srv, "/a", "/b")
-		// /a's driver reports the unchanged ruleset; /b's installs.
 		stubs[0].Skip = true
 
 		if _, err := u.Update(context.Background()); err != nil {
@@ -147,9 +124,8 @@ func TestUpdateCycleReportsEachPointsOutcome(t *testing.T) {
 		if _, err := u.Update(context.Background()); err != nil {
 			t.Fatalf("first Update: %v", err)
 		}
-		// /b comes back with the very same document: the engine hands
-		// both drivers the ruleset again — its own skip state is each
-		// driver's to keep.
+		// The same document is handed to both drivers again; skip state
+		// is each driver's own.
 		stubs[1].ApplyErr = nil
 		if _, err := u.Update(context.Background()); err != nil {
 			t.Fatalf("second Update: %v", err)
@@ -166,9 +142,6 @@ func TestUpdateCycleReportsEachPointsOutcome(t *testing.T) {
 	})
 }
 
-// TestRunResetToleratesVanishedPoints: reset on exit tolerates points
-// that vanished meanwhile — the clean exit stays clean — while a real
-// reset failure is still loud after every point has been tried.
 func TestRunResetToleratesVanishedPoints(t *testing.T) {
 	t.Run("a vanished point at reset does not spoil the clean exit", func(t *testing.T) {
 		srv := newDocServer(t)
@@ -182,7 +155,7 @@ func TestRunResetToleratesVanishedPoints(t *testing.T) {
 		runDone := make(chan error, 1)
 		go func() { runDone <- u.Run(ctx) }()
 
-		sendTick(t, ticks, runDone) // proves the startup test install succeeded
+		sendTick(t, ticks, runDone)
 		cancel()
 		if err := <-runDone; err != nil {
 			t.Fatalf("Run: %v", err)
@@ -219,8 +192,6 @@ func TestRunResetToleratesVanishedPoints(t *testing.T) {
 	})
 }
 
-// TestNewValidatesThePointList: the constructor's one validation, a
-// failing and a passing case.
 func TestNewValidatesThePointList(t *testing.T) {
 	srv := newDocServer(t)
 	fetcher, err := NewFetcher(srv.URL)

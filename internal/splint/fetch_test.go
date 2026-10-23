@@ -6,15 +6,6 @@ import (
 	"time"
 )
 
-// Primary seam: the fetcher's construction — the operator's fetch
-// options validated at the module that owns them (bandaid's fetch
-// surface): the report URL, the fetch timeout and the client
-// certificate pair. One failing and one passing case per validation.
-
-// TestNewFetcherValidatesTheClientCertificatePair: the client
-// certificate and key are provided together or not at all — a
-// certificate without its key (or a key without its certificate) is
-// refused at construction, and the pair is accepted together.
 func TestNewFetcherValidatesTheClientCertificatePair(t *testing.T) {
 	pki := newTestPKI(t)
 	tests := []struct {
@@ -63,9 +54,6 @@ func TestNewFetcherValidatesTheClientCertificatePair(t *testing.T) {
 	}
 }
 
-// TestNewFetcherValidatesTheFetchTimeout: the fetch timeout —
-// bandaid's 10s default, configurable, with a one-second floor — a
-// failing and a passing case per validation.
 func TestNewFetcherValidatesTheFetchTimeout(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -110,9 +98,6 @@ func TestNewFetcherValidatesTheFetchTimeout(t *testing.T) {
 	}
 }
 
-// TestNewFetcherValidatesTheReportURL: the report URL — required, an
-// http or https URL with a host — a failing and a passing case per
-// validation.
 func TestNewFetcherValidatesTheReportURL(t *testing.T) {
 	tests := []struct {
 		name    string

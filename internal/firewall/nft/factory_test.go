@@ -11,15 +11,12 @@ import (
 	"github.com/HT4w5/bandage/internal/firewall"
 )
 
-// Primary seam: the nftables driver factory — its own flag group, its
-// startup validation and the opening of its enforcement points. The
-// command run seam is deliberately untested; what would be asserted
-// through the command is verified here, at the module that owns it
-// (the spec's Testing Decisions): namespace-path and service
-// port/address validations keep a failing and a passing pair each.
+// The command run seam is deliberately untested: what would be
+// asserted through the command is verified here, at the module that
+// owns it.
 
-// newTestFactory binds the factory's flag group and parses args the
-// way the command does.
+// newTestFactory parses args through the factory's flag group the way
+// the command does.
 func newTestFactory(t *testing.T, args ...string) *Factory {
 	t.Helper()
 	f := NewFactory()
@@ -31,8 +28,6 @@ func newTestFactory(t *testing.T, args ...string) *Factory {
 	return f
 }
 
-// TestFactoryValidations drives the factory's startup validation, one
-// failing and one passing case per validation.
 func TestFactoryValidations(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -105,11 +100,6 @@ func TestFactoryValidations(t *testing.T) {
 	}
 }
 
-// TestFactoryOpensItsEnforcementPoints: the factory expands its
-// repeatable namespace-path flag into one driver instance per
-// enforcement point — defaulting to the current namespace when none is
-// given — each labeled with its path for the engine's logs. Opening is
-// lazy: no I/O and no privileges, so --dry-run works anywhere.
 func TestFactoryOpensItsEnforcementPoints(t *testing.T) {
 	t.Run("one driver instance per namespace path, labeled with its path", func(t *testing.T) {
 		f := newTestFactory(t, "--nft-netns", "/var/run/netns/a", "--nft-netns", "/run/netns/b")
@@ -144,9 +134,8 @@ func TestFactoryOpensItsEnforcementPoints(t *testing.T) {
 	})
 
 	t.Run("each instance enforces at its own target handle", func(t *testing.T) {
-		// A handle that cannot be opened surfaces as the unreachable
-		// enforcement point the update cycle warns and skips — the
-		// error names the path the instance is bound to.
+		// A vanished target surfaces as firewall.ErrUnreachable (the
+		// update cycle warns and skips it), naming the instance's path.
 		points, err := newTestFactory(t, "--nft-netns", "/nonexistent/splint-test/netns").Open()
 		if err != nil {
 			t.Fatalf("Open: %v", err)
@@ -161,11 +150,6 @@ func TestFactoryOpensItsEnforcementPoints(t *testing.T) {
 	})
 }
 
-// TestFactoryFlagGroup: the nftables driver's flag group is complete
-// — the enforcement hook, the repeatable namespace targeting and the
-// service prefilter's ports and addresses — and every flag in it is
-// the driver's own --nft-* group: the hook is a driver flag, never an
-// engine flag (the spec's Command surface).
 func TestFactoryFlagGroup(t *testing.T) {
 	f := NewFactory()
 	fs := pflag.NewFlagSet("splint", pflag.ContinueOnError)
@@ -178,7 +162,6 @@ func TestFactoryFlagGroup(t *testing.T) {
 	}
 }
 
-// TestFactoryName: the registry name the --firewall value selects.
 func TestFactoryName(t *testing.T) {
 	if got := NewFactory().Name(); got != "nftables" {
 		t.Errorf("Name() = %q, want %q", got, "nftables")

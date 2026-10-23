@@ -9,37 +9,28 @@ import (
 
 // Registry is the firewall-driver registry --firewall selects from:
 // the factories registered for this binary plus the selection
-// semantics of the command surface — the known driver names, the one
-// driver that serves a whole run, and the refusal of an explicitly set
-// flag that belongs to an unselected driver (pflag's Changed
-// semantics: a mistyped combination fails loudly instead of silently
-// not applying). The usage output groups flags by owner from the same
-// ownership this registry records at Bind. There is no per-point
-// driver mixing: Select returns the one factory whose Open expands
-// into the run's every enforcement point.
+// semantics of the command surface (see Select) and the
+// flag-ownership grouping the usage output renders (see Groups). One
+// firewall driver serves a whole run — no per-point driver mixing.
 type Registry struct {
 	factories []Factory
 	groups    []Group // flag ownership in registration order, recorded by Bind
 }
 
-// Group is one flag owner's group — a driver's registry name and the
-// flag names its BindFlags bound. The usage output groups flags by
-// owner: the engine's flags (those in no group) first, then each
-// driver group.
+// Group is one flag owner's group: a driver's registry name and the
+// flag names its BindFlags bound. Engine flags are those in no group.
 type Group struct {
 	Owner string
 	Flags []string
 }
 
-// NewRegistry returns the registry holding factories in registration
-// order — the order the usage output lists the driver groups in.
+// NewRegistry returns a registry holding factories in registration
+// order.
 func NewRegistry(factories ...Factory) *Registry {
 	return &Registry{factories: factories}
 }
 
-// Names returns the known driver names — the accepted --firewall
-// values, in registration order. An unknown --firewall value fails
-// with these listed.
+// Names returns the accepted --firewall values, in registration order.
 func (r *Registry) Names() []string {
 	names := make([]string, 0, len(r.factories))
 	for _, f := range r.factories {
@@ -50,9 +41,7 @@ func (r *Registry) Names() []string {
 
 // Bind binds every factory's flag group to fs and records which flag
 // names each factory owns — the grouping the usage output renders and
-// the ownership Select refuses unselected-driver flags by. Each
-// factory binds its own prefixed group; the engine's flags are those
-// outside every group.
+// the ownership Select refuses unselected-driver flags by.
 func (r *Registry) Bind(fs *pflag.FlagSet) {
 	r.groups = nil
 	owned := make(map[string]bool)
@@ -70,17 +59,13 @@ func (r *Registry) Bind(fs *pflag.FlagSet) {
 	}
 }
 
-// Groups returns the flag groups by owner, in registration order: one
-// per registered driver, each with the flag names its factory bound.
-// The usage output groups flags by owner from this.
+// Groups returns the flag groups by owner, in registration order.
 func (r *Registry) Groups() []Group { return r.groups }
 
 // Select returns the factory the --firewall value names — the one
-// driver that serves the whole run — refusing an unknown value with
-// the known drivers listed, and refusing an explicitly set flag that
-// belongs to any unselected driver (pflag's Changed semantics: a
-// mistyped combination fails loudly instead of silently not
-// applying).
+// driver serving the whole run — refusing an unknown value with the
+// known drivers listed, and refusing an explicitly set flag belonging
+// to an unselected driver (pflag's Changed semantics).
 func (r *Registry) Select(name string, fs *pflag.FlagSet) (Factory, error) {
 	var selected Factory
 	for _, f := range r.factories {

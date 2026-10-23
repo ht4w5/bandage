@@ -26,14 +26,10 @@ import (
 )
 
 // Primary seam: the update cycle driven against a fake report endpoint
-// (httptest) and observed at the firewall-driver boundary (the firewalltest.Stub):
-// given a report document, which ban rules are installed and when.
-// The report document's canonical example is the base fixture; every
-// validation gets a failing and a passing case.
+// (httptest), observed at the firewall-driver boundary (the firewalltest.Stub).
 
-// docServer is the fake report endpoint: it serves the scripted
-// responses in order (the last one sticks), so every cycle's answer is
-// fixed before the loop starts.
+// docServer is the fake report endpoint serving scripted responses;
+// the last scripted response sticks for every later request.
 type docServer struct {
 	*httptest.Server
 	mu   sync.Mutex
@@ -52,9 +48,8 @@ func newDocServer(t *testing.T) *docServer {
 	return newDocServerTLS(t, nil)
 }
 
-// newDocServerTLS starts the fake report endpoint as HTTPS with tlsCfg
-// (mutual TLS when it requires client certificates); a nil config keeps
-// the plain-HTTP endpoint.
+// newDocServerTLS starts the endpoint as HTTPS with tlsCfg (mutual TLS
+// when it requires client certificates); nil keeps the plain-HTTP one.
 func newDocServerTLS(t *testing.T, tlsCfg *tls.Config) *docServer {
 	t.Helper()
 	s := &docServer{}
@@ -82,15 +77,12 @@ func newDocServerTLS(t *testing.T, tlsCfg *tls.Config) *docServer {
 	return s
 }
 
-// serve scripts the next response; the last scripted response sticks
-// for every later request.
 func (s *docServer) serve(status int, body string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.res = append(s.res, docResponse{status, body})
 }
 
-// Hits returns how many requests the endpoint has answered.
 func (s *docServer) Hits() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -115,9 +107,8 @@ func (c *logCapture) String() string {
 	return c.buf.String()
 }
 
-// canonicalDoc extracts the report document's canonical example from
-// docs/reports.md (its first fenced ```json block), so the published
-// contract and its consumer cannot drift.
+// canonicalDoc extracts the canonical example from docs/reports.md
+// (its first fenced json block) so the contract and consumer cannot drift.
 func canonicalDoc(t *testing.T) string {
 	t.Helper()
 	data, err := os.ReadFile("../../docs/reports.md")
@@ -137,9 +128,8 @@ func canonicalDoc(t *testing.T) string {
 	return string(rest[:j])
 }
 
-// fixture builds a document body from the canonical example: it decodes
-// the example into a generic form, lets mutate change it and re-encodes.
-// Every fixture therefore descends from the published example.
+// fixture builds a document body from the canonical example via a
+// generic decode/mutate/encode — every fixture descends from it.
 func fixture(t *testing.T, mutate func(t *testing.T, doc map[string]any)) string {
 	t.Helper()
 	doc := decodeFixture(t, canonicalDoc(t))
@@ -169,7 +159,6 @@ func encodeFixture(t *testing.T, doc map[string]any) string {
 	return string(data)
 }
 
-// report returns the i-th report record of a decoded fixture document.
 func report(t *testing.T, doc map[string]any, i int) map[string]any {
 	t.Helper()
 	reports, ok := doc["reports"].([]any)
@@ -183,7 +172,6 @@ func report(t *testing.T, doc map[string]any, i int) map[string]any {
 	return rec
 }
 
-// penalty returns the penalty object of a decoded fixture record.
 func penalty(t *testing.T, rec map[string]any) map[string]any {
 	t.Helper()
 	p, ok := rec["penalty"].(map[string]any)
@@ -193,23 +181,19 @@ func penalty(t *testing.T, rec map[string]any) map[string]any {
 	return p
 }
 
-// cloneReport deep-copies a decoded fixture record via a JSON round trip.
 func cloneReport(t *testing.T, rec map[string]any) map[string]any {
 	t.Helper()
 	return decodeFixture(t, encodeFixture(t, rec))
 }
 
-// reportSpec identifies one fixture report record: the Target it is
-// about and the penalty it advises.
 type reportSpec struct {
 	target string
 	action PenaltyAction
 	rate   any // json.Number for a limit; nil deletes the rate
 }
 
-// setReports replaces the fixture document's reports with one record
-// per spec, each cloned from the canonical example's record and
-// retargeted with the spec's penalty.
+// setReports replaces the reports with one record per spec, each cloned
+// from the canonical example's record and retargeted.
 func setReports(t *testing.T, doc map[string]any, specs []reportSpec) {
 	t.Helper()
 	var reports []any
@@ -228,8 +212,6 @@ func setReports(t *testing.T, doc map[string]any, specs []reportSpec) {
 	doc["reports"] = reports
 }
 
-// banRule is a compiled ban rule expectation: the stance, its rate
-// (nil for stances that carry none) over the given Targets.
 func banRule(stance firewall.Stance, rate *int64, targets ...string) firewall.BanRule {
 	r := firewall.BanRule{Stance: stance, Rate: rate}
 	for _, target := range targets {
@@ -238,15 +220,12 @@ func banRule(stance firewall.Stance, rate *int64, targets ...string) firewall.Ba
 	return r
 }
 
-// ratePtr points at a penalty rate fixture.
 func ratePtr(n int64) *int64 { return &n }
 
-// dropRule is the silent-drop ban rule.
 func dropRule(targets ...string) firewall.BanRule {
 	return banRule(firewall.StanceDrop, nil, targets...)
 }
 
-// mustPrefixes parses prefix literals for test policies.
 func mustPrefixes(t *testing.T, prefixes ...string) []netip.Prefix {
 	t.Helper()
 	out := make([]netip.Prefix, 0, len(prefixes))
@@ -256,16 +235,11 @@ func mustPrefixes(t *testing.T, prefixes ...string) []netip.Prefix {
 	return out
 }
 
-// newTestUpdater wires the seam under the default compilation policy:
-// a real fetcher against the fake report endpoint, the recording stub
-// driver and a capturing logger.
 func newTestUpdater(t *testing.T, srv *docServer) (*Updater, *firewalltest.Stub, *logCapture) {
 	t.Helper()
 	return newTestUpdaterCfg(t, srv, defaultPolicy())
 }
 
-// newTestUpdaterCfg wires the seam under a specific compilation
-// policy, for the cases that configure exclusions.
 func newTestUpdaterCfg(t *testing.T, srv *docServer, p Policy) (*Updater, *firewalltest.Stub, *logCapture) {
 	t.Helper()
 	fetcher, err := NewFetcher(srv.URL)
@@ -281,16 +255,14 @@ func newTestUpdaterCfg(t *testing.T, srv *docServer, p Policy) (*Updater, *firew
 	return u, stub, logs
 }
 
-// The default compilation policy: the safety exclusions with the
-// RFC1918 and ULA tier on (the shipped --exclude-private default).
+// defaultPolicy is the shipped default: the safety exclusions with the
+// RFC1918 and ULA tier on (the --exclude-private default).
 func defaultPolicy() Policy {
 	return NewPolicy(nil, true)
 }
 
-// assertApplies checks which ban rules the stub driver was handed to
-// apply: want is the ruleset of exactly one apply call; a refused
-// cycle passes nil and asserts nothing reached the driver. want may be
-// an empty (non-nil) slice for a cycle that applies an empty ruleset.
+// assertApplies asserts the ruleset of exactly one apply call; nil
+// means nothing reached the driver, an empty slice an empty ruleset.
 func assertApplies(t *testing.T, stub *firewalltest.Stub, want []firewall.BanRule) {
 	t.Helper()
 	calls := stub.ApplyCalls()
@@ -322,8 +294,6 @@ func equalRules(got, want []firewall.BanRule) bool {
 	return true
 }
 
-// equalRate compares two penalty rates: both absent or both present
-// with the same value.
 func equalRate(got, want *int64) bool {
 	if got == nil || want == nil {
 		return got == want
@@ -331,9 +301,6 @@ func equalRate(got, want *int64) bool {
 	return *got == *want
 }
 
-// TestUpdateCycleCompilesTheCanonicalExample: the base fixture — the
-// report document's canonical example — maps its one report's penalty
-// (limit-bandwidth, rate 1000000) onto the bandwidth ban rule.
 func TestUpdateCycleCompilesTheCanonicalExample(t *testing.T) {
 	srv := newDocServer(t)
 	srv.serve(http.StatusOK, canonicalDoc(t))
@@ -349,11 +316,8 @@ func TestUpdateCycleCompilesTheCanonicalExample(t *testing.T) {
 	assertApplies(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 }
 
-// TestUpdateCycleValidations drives one update cycle per fixture
-// document, derived from the canonical example: every validation gets a
-// failing and a passing case. A non-empty wantErr refuses the cycle
-// (nothing installs); otherwise one ruleset installs and wantSkipped
-// records are counted out.
+// Each case drives one update cycle: a non-empty wantErr refuses it,
+// otherwise wantRules installs and wantSkipped records are counted out.
 func TestUpdateCycleValidations(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -542,12 +506,6 @@ func TestUpdateCycleValidations(t *testing.T) {
 	}
 }
 
-// TestUpdateCyclePenaltyMapping: every penalty action maps onto the
-// stance the contract defines — the mapping is total over the closed
-// vocabulary — with a failing and a passing case per action. Every
-// ban rule carries the Penalty as stated, limit-req-rate included: the
-// compiler never drops a penalty a driver has not yet seen (the
-// nftables driver then declines request rates, ADR 0012).
 func TestUpdateCyclePenaltyMapping(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -653,9 +611,6 @@ func TestUpdateCyclePenaltyMapping(t *testing.T) {
 	}
 }
 
-// TestUpdateCycleLogsAndCountsSkippedReports: every skipped report is
-// logged with its identity and reason, and the cycle's summary counts
-// the skips.
 func TestUpdateCycleLogsAndCountsSkippedReports(t *testing.T) {
 	srv := newDocServer(t)
 	srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
@@ -692,11 +647,7 @@ func TestUpdateCycleLogsAndCountsSkippedReports(t *testing.T) {
 	}
 }
 
-// TestUpdateCycleLogsAndCountsDeclinedFeatures: every ban-rule feature
-// a firewall driver declines is logged with the ban rule it belongs to
-// (by index), its feature and its reason, and counted in the install
-// summary — lost enforcement is never silent. A cycle whose install
-// declines nothing logs none of it.
+// Declines reference their ban rule by index.
 func TestUpdateCycleLogsAndCountsDeclinedFeatures(t *testing.T) {
 	doc := fixture(t, func(t *testing.T, doc map[string]any) {
 		setReports(t, doc, []reportSpec{
@@ -746,13 +697,8 @@ func TestUpdateCycleLogsAndCountsDeclinedFeatures(t *testing.T) {
 	})
 }
 
-// TestUpdateCycleMergePolicy: reports that disagree about overlapping
-// Targets resolve as the spec's merge policy states — the most
-// specific Target wins in both directions, ties on specificity go to
-// the strictest Penalty and tied limits of different actions combine.
-// Each policy rule gets a failing and a passing case; every case
-// asserts the whole installed ruleset, so the losing report's absence
-// is asserted beside the winner's presence.
+// Every case asserts the whole installed ruleset, so the losing
+// report's absence is asserted beside the winner's presence.
 func TestUpdateCycleMergePolicy(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -1016,11 +962,6 @@ func TestUpdateCycleMergePolicy(t *testing.T) {
 	}
 }
 
-// TestUpdateCycleMergePolicyIsOrderIndependent: permuting the input
-// document's report order produces an identical compiled ruleset — the
-// canonical compile ticket 06's rolling hash folds. Every ordering of
-// a document exercising exceptions, ties and combined limits installs
-// exactly the same ban rules in the same order.
 func TestUpdateCycleMergePolicyIsOrderIndependent(t *testing.T) {
 	reports := []reportSpec{
 		{target: "203.0.0.0/16", action: PenaltyDrop},
@@ -1052,11 +993,6 @@ func TestUpdateCycleMergePolicyIsOrderIndependent(t *testing.T) {
 	}
 }
 
-// TestUpdateCycleMergePolicyWithExclusions: the merge policy and the
-// exclusion subtraction compose — exclusions subtract from every ban
-// set, overriding every report, and a split Target keeps its report's
-// specificity, so an exclusion can never demote a narrower report's
-// stance to the broader report's.
 func TestUpdateCycleMergePolicyWithExclusions(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1114,7 +1050,6 @@ func TestUpdateCycleMergePolicyWithExclusions(t *testing.T) {
 	}
 }
 
-// permutations returns every ordering of specs.
 func permutations(specs []reportSpec) [][]reportSpec {
 	if len(specs) <= 1 {
 		return [][]reportSpec{specs}
@@ -1129,10 +1064,6 @@ func permutations(specs []reportSpec) [][]reportSpec {
 	return out
 }
 
-// TestUpdateCycleSubtractsExclusions: excluded prefixes are
-// subtracted from every report's Target, overriding every report — a fully
-// covered Target produces no ban rule, a partially covered one keeps
-// only its residual prefixes.
 func TestUpdateCycleSubtractsExclusions(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1173,9 +1104,8 @@ func TestUpdateCycleSubtractsExclusions(t *testing.T) {
 			wantRules: []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "2001:db8:8000::/33")},
 		},
 		{
-			// The residual prefixes split across prefix lengths; the
-			// grouping keeps one equal-length set per ban rule, so the
-			// split compiles to one rule per length (same coverage).
+			// The split compiles to one rule per prefix length — one
+			// equal-length set per ban rule (same coverage).
 			name:    "an exclusion inside the Target splits it into residual prefixes",
 			exclude: []string{"203.0.113.64/26"},
 			target:  "203.0.113.0/24",
@@ -1205,10 +1135,6 @@ func TestUpdateCycleSubtractsExclusions(t *testing.T) {
 	}
 }
 
-// TestUpdateCycleSafetyExclusions: the safety exclusions — loopback
-// and link-local are always excluded and cannot be re-included, and
-// RFC1918 and ULA are excluded by default behind the --exclude-private
-// opt-out, for hosts whose clients live in private space.
 func TestUpdateCycleSafetyExclusions(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1252,11 +1178,6 @@ func TestUpdateCycleSafetyExclusions(t *testing.T) {
 	}
 }
 
-// TestUpdateCycleLogsTheDriversSkip: skip-if-unchanged is the
-// driver's own — the skip matrix lives at the nftables driver's fake
-// kernel — and the engine carries no hash, probe or skip logic: every
-// cycle hands the ruleset to the driver and logs what it reports. A
-// skipped cycle is logged as the unchanged-skip with the hash.
 func TestUpdateCycleLogsTheDriversSkip(t *testing.T) {
 	t.Run("every cycle hands the ruleset to the driver", func(t *testing.T) {
 		srv := newDocServer(t)
@@ -1297,12 +1218,6 @@ func TestUpdateCycleLogsTheDriversSkip(t *testing.T) {
 	})
 }
 
-// TestUpdateCycleLogsTheRulesetHash: the ruleset hash the driver
-// reports is logged every cycle and is deterministic — the same
-// document hashes identically in every run, so installs can be
-// correlated across runs, and a changed ruleset hashes differently.
-// The hash's value is public output; its construction is never pinned
-// in tests.
 func TestUpdateCycleLogsTheRulesetHash(t *testing.T) {
 	t.Run("every cycle logs the hash, identical across runs", func(t *testing.T) {
 		srv := newDocServer(t)
@@ -1323,8 +1238,6 @@ func TestUpdateCycleLogsTheRulesetHash(t *testing.T) {
 			}
 		}
 
-		// A fresh run over the same document logs the same hash — the
-		// cross-run correlation the hash exists for.
 		srv2 := newDocServer(t)
 		srv2.serve(http.StatusOK, canonicalDoc(t))
 		u2, _, logs2 := newTestUpdater(t, srv2)
@@ -1361,9 +1274,6 @@ func TestUpdateCycleLogsTheRulesetHash(t *testing.T) {
 	})
 }
 
-// TestDryRunPrintsTheRulesetHash: --dry-run prints the ruleset hash
-// alongside the compiled ban rules; the same document prints the same
-// hash every run, a changed ruleset a different one.
 func TestDryRunPrintsTheRulesetHash(t *testing.T) {
 	printHash := func(t *testing.T, body string) string {
 		t.Helper()
@@ -1389,12 +1299,10 @@ func TestDryRunPrintsTheRulesetHash(t *testing.T) {
 	}
 }
 
-// hashPattern matches one logged ruleset hash. Values are compared to
-// each other only — never pinned — so the rolling-hash construction
-// stays refactorable.
+// Hash values are compared to each other only — never pinned — so the
+// rolling-hash construction stays refactorable.
 var hashPattern = regexp.MustCompile(`"hash":"([0-9a-f]+)"`)
 
-// loggedHashes returns the ruleset hashes logged in text.
 func loggedHashes(text string) []string {
 	var out []string
 	for _, m := range hashPattern.FindAllStringSubmatch(text, -1) {
@@ -1404,9 +1312,7 @@ func loggedHashes(text string) []string {
 }
 
 // splitDryRunHash splits the dry-run output into its body and its
-// ruleset-hash line ("hash=<hex>"). The hash is public output, but its
-// value follows the rolling-hash construction and is checked for
-// shape only.
+// ruleset-hash line ("hash=<hex>"); the hash is checked for shape only.
 func splitDryRunHash(t *testing.T, out string) (body, hash string) {
 	t.Helper()
 	var lines []string
@@ -1429,10 +1335,6 @@ func splitDryRunHash(t *testing.T, out string) (body, hash string) {
 	return strings.Join(lines, "\n"), hash
 }
 
-// TestUpdateCycleLogsTheBanRuleHits: every install logs the nonzero
-// packet/byte counters of the rules it replaces — the hits covering
-// the period since the last change — while a skipped cycle logs the
-// skip and no hits.
 func TestUpdateCycleLogsTheBanRuleHits(t *testing.T) {
 	srv := newDocServer(t)
 	srv.serve(http.StatusOK, canonicalDoc(t))
@@ -1450,8 +1352,6 @@ func TestUpdateCycleLogsTheBanRuleHits(t *testing.T) {
 		t.Errorf("the ban rule hit does not carry its rule, packets and bytes: %s", logText)
 	}
 
-	// A skipped cycle — the driver reports the unchanged-skip — logs
-	// the skip and no hits.
 	stub.Skip = true
 	if _, err := u.Update(context.Background()); err != nil {
 		t.Fatalf("second Update: %v", err)
@@ -1464,8 +1364,6 @@ func TestUpdateCycleLogsTheBanRuleHits(t *testing.T) {
 	}
 }
 
-// TestUpdateKeepsTheLastInstalledRules: a failed cycle installs nothing
-// and leaves the last installed rules in place.
 func TestUpdateKeepsTheLastInstalledRules(t *testing.T) {
 	keepLast := func(t *testing.T, status int, body string) {
 		t.Helper()
@@ -1495,10 +1393,6 @@ func TestUpdateKeepsTheLastInstalledRules(t *testing.T) {
 	})
 }
 
-// TestUpdateFailsLoudlyWhenTheDriverRefusesTheInstall: an install
-// failure is a loud cycle error — the surface a
-// missing-netlink-privileges install takes — and fatal at the startup
-// test install, all stub-driven and unprivileged.
 func TestUpdateFailsLoudlyWhenTheDriverRefusesTheInstall(t *testing.T) {
 	t.Run("a refused install fails the cycle", func(t *testing.T) {
 		srv := newDocServer(t)
@@ -1528,10 +1422,6 @@ func TestUpdateFailsLoudlyWhenTheDriverRefusesTheInstall(t *testing.T) {
 	})
 }
 
-// TestUpdaterRun drives the update loop's lifecycle at the same seam:
-// a failed startup test install is fatal, later failures keep the last
-// rules with a loud log and the loop goes on, and cancelling the
-// context resets the driver before exit.
 func TestUpdaterRun(t *testing.T) {
 	t.Run("a failed startup test install exits with an error", func(t *testing.T) {
 		srv := newDocServer(t)
@@ -1564,9 +1454,9 @@ func TestUpdaterRun(t *testing.T) {
 		runDone := make(chan error, 1)
 		go func() { runDone <- u.Run(ctx) }()
 
-		sendTick(t, ticks, runDone) // cycle: failed fetch
-		sendTick(t, ticks, runDone) // cycle: new rules install
-		sendTick(t, ticks, runDone) // completes the previous cycle; starts one that fails either way
+		sendTick(t, ticks, runDone)
+		sendTick(t, ticks, runDone)
+		sendTick(t, ticks, runDone) // starts a cycle that fails either way
 		cancel()
 		if err := <-runDone; err != nil {
 			t.Fatalf("Run: %v", err)
@@ -1607,7 +1497,6 @@ func TestUpdaterRun(t *testing.T) {
 		runDone := make(chan error, 1)
 		go func() { runDone <- u.Run(ctx) }()
 
-		// The tick proves the startup test install succeeded.
 		sendTick(t, ticks, runDone)
 		cancel()
 		if err := <-runDone; err != nil {
@@ -1620,9 +1509,8 @@ func TestUpdaterRun(t *testing.T) {
 }
 
 // sendTick delivers one tick to the update loop, failing the test if
-// the loop exits instead. A send completes only once Run picks the tick
-// up, so each send also proves the startup test install succeeded and
-// every earlier cycle has finished.
+// the loop exits instead; a send completes only once Run picks the
+// tick up, so each send also proves every earlier cycle has finished.
 func sendTick(t *testing.T, ticks chan<- time.Time, runDone <-chan error) {
 	t.Helper()
 	select {
@@ -1632,12 +1520,6 @@ func sendTick(t *testing.T, ticks chan<- time.Time, runDone <-chan error) {
 	}
 }
 
-// TestDryRunPrintsTheDriverPlan: --dry-run prints the engine's
-// compiled ban rules and the selected driver's plan — the effective
-// rules with their placement and rate lines, the declines with
-// reasons, and the ruleset hash — from the pure planning step only,
-// and installs nothing: no enforcement surface is touched, no netlink,
-// no privileges.
 func TestDryRunPrintsTheDriverPlan(t *testing.T) {
 	t.Run("the canonical example prints its ban rule and one placement line", func(t *testing.T) {
 		srv := newDocServer(t)
@@ -1741,8 +1623,6 @@ stance=limit-bandwidth rate=1000000 placement=test
 	})
 }
 
-// TestDryRunShowsTheEffectiveSets: --dry-run shows each ban rule's
-// effective sets after exclusion subtraction.
 func TestDryRunShowsTheEffectiveSets(t *testing.T) {
 	srv := newDocServer(t)
 	srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
@@ -1775,8 +1655,6 @@ stance=limit-bandwidth rate=1000000 placement=test
 	assertApplies(t, stub, nil)
 }
 
-// TestClampInterval: the update interval's one-minute floor, failing
-// and passing case per validation.
 func TestClampInterval(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1798,8 +1676,6 @@ func TestClampInterval(t *testing.T) {
 	}
 }
 
-// TestNewClampsTheIntervalLoudly: clamping warns the operator; a
-// conforming interval is accepted silently.
 func TestNewClampsTheIntervalLoudly(t *testing.T) {
 	tests := []struct {
 		name      string

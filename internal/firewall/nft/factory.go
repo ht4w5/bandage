@@ -11,15 +11,10 @@ import (
 )
 
 // Factory is the nftables firewall driver's registration: its name,
-// its own --nft-* flag group, its startup validation, and the opening
-// of its enforcement points. The flag group carries everything that
-// differs between enforcement surfaces for this driver — where to
-// enforce (the repeatable nsfs targeting) and what to police (the
-// service prefilter's destination ports and addresses) — because
-// targeting and enforcement scope are driver configuration, not engine
-// flags (ADR 0012). The registry that selects one factory per run
-// (firewall.Registry) is wired by the command; this factory binds and
-// opens its own surface.
+// its --nft-* flag group, its startup validation, and the opening of
+// its enforcement points. Targeting and enforcement scope are driver
+// configuration, not engine flags (ADR 0012), so this factory binds
+// and opens its own surface.
 type Factory struct {
 	// The bound flag values, resolved by Validate.
 	hook      string
@@ -34,7 +29,6 @@ type Factory struct {
 
 var _ firewall.Factory = (*Factory)(nil)
 
-// NewFactory returns the nftables factory with its flag defaults.
 func NewFactory() *Factory {
 	return &Factory{hook: string(HookInput)}
 }
@@ -43,23 +37,15 @@ func NewFactory() *Factory {
 // selects it.
 func (f *Factory) Name() string { return "nftables" }
 
-// BindFlags binds the nftables driver's own flag group: the hook, the
-// repeatable nsfs targeting, and the service prefilter's destination
-// ports and addresses.
 func (f *Factory) BindFlags(fs *flag.FlagSet) {
 	fs.StringVar(&f.hook, "nft-hook", string(HookInput), "enforcement hook: input or prerouting")
-	// Namespace values are literal nsfs paths, never comma lists —
-	// hence StringArray, which unlike StringSlice keeps an empty value
-	// visible to the validation below.
+	// StringArray, not StringSlice: nsfs paths are never comma lists,
+	// and an empty value stays visible to the validation below.
 	fs.StringArrayVar(&f.netns, "nft-netns", nil, "target network namespace nsfs path (repeatable; default: the current namespace)")
 	fs.UintSliceVar(&f.ports, "nft-service-port", nil, "service destination port the ban prefilter matches (repeatable)")
 	fs.StringSliceVar(&f.addresses, "nft-service-address", nil, "service destination address or prefix the ban prefilter matches (repeatable)")
 }
 
-// Validate resolves and checks every bound flag value at startup — the
-// hook, the namespace paths, the service ports and the service
-// addresses — refusing a broken configuration loudly; the resolved
-// hook and scope are what Open builds its drivers with.
 func (f *Factory) Validate() error {
 	hook, err := ParseHook(f.hook)
 	if err != nil {
@@ -94,11 +80,8 @@ func (f *Factory) Validate() error {
 
 // Open expands the configured targeting into one driver instance per
 // enforcement point — one per nsfs path, the current namespace when
-// none is configured — each labeled with its path ("current" for the
-// default target) and each carrying the configured enforcement scope.
-// Opening is lazy: no I/O happens until a driver method runs, so
-// --dry-run needs no privileges, and every apply re-opens its target
-// so a recreated container is picked up through its stable handle.
+// none is configured. Opening is lazy: no I/O happens until a driver
+// method runs, so --dry-run needs no privileges.
 func (f *Factory) Open() ([]firewall.Point, error) {
 	if err := f.Validate(); err != nil {
 		return nil, err

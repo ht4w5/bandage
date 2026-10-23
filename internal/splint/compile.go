@@ -17,41 +17,10 @@ type Skip struct {
 }
 
 // Compile maps a version-0 report document's live reports to ban rules
-// under policy p and the spec's merge policy.
-//
-// Every report with a valid Penalty and a parseable Target compiles
-// through the contract's penalty mapping (mapPenalty — total over the
-// closed vocabulary): every action becomes its ban rule's stance with
-// the rate travelling along, limit-req-rate included — the Penalty as
-// stated reaches the firewall driver, which decides what its
-// enforcement surface can honour and reports the rest as declines
-// (ADR 0012). The compiler drops no penalty before a driver sees it.
-//
-// Reports that disagree about overlapping Targets then resolve by the
-// merge policy (merge): the most specific Target wins even with a
-// weaker stance, so a fine-grained report carves an exception under a
-// broader ban and a fine-grained report tightens under a broader one;
-// ties on specificity go to the strictest Penalty (drop, then reject,
-// then the limits — smallest rate within one action), and tied limits
-// of different actions combine instead — one meter per dimension
-// (packet rate, bandwidth, request rate), all enforced, with no
-// strictness ordering invented between them (ADR 0011). The winning
-// stances group by (family, prefix length, penalty) into one ban rule
-// per group with an equal-length prefix set, ordered by prefix length
-// descending, then strictness — so nftables first-match reproduces the
-// merge policy. The result is canonical: permuting the document's
-// report order compiles to an identical ruleset.
-//
-// Exclusions are subtracted compiler-side before the merge, overriding
-// every report: the driver installs Targets verbatim, and a record
-// whose Target is fully excluded compiles to no ban rule at all.
-// Enforcement scope and targeting never reach the compiler: the ban
-// rule is Target prefixes plus the Penalty as stated, and scope is
-// driver configuration (ADR 0012).
-//
-// Records with a missing or unknown Penalty, an unparseable Target or
-// a fully excluded Target are skipped and reported in the returned
-// skips; the remaining records still compile.
+// under policy p. The Penalty as stated reaches the firewall driver —
+// the compiler drops none — and records with an invalid Penalty or
+// Target or a fully excluded Target land in the returned skips; the
+// remaining records still compile.
 func Compile(doc Document, p Policy) ([]firewall.BanRule, []Skip) {
 	var entries []entry
 	var skips []Skip
@@ -66,13 +35,9 @@ func Compile(doc Document, p Policy) ([]firewall.BanRule, []Skip) {
 	return merge(entries), skips
 }
 
-// entry is one compiling report record's contribution to the merge:
-// the masked Target that fixes the report's specificity, the penalty's
-// stance and rate, and the Target prefixes the record draws — its
-// Target's residual prefixes after the policy's exclusions subtract.
-// The residuals may split the Target into mixed-length prefixes; the
-// merge resolves them per prefix against the unsplit Target's
-// specificity, so an exclusion can never demote a report's stance.
+// entry is one report record's merge contribution. The residuals
+// resolve against the unsplit Target's specificity, so an exclusion
+// can never demote a report's stance.
 type entry struct {
 	target    netip.Prefix
 	residuals []netip.Prefix
@@ -80,11 +45,6 @@ type entry struct {
 	rate      *int64
 }
 
-// compileReport maps one report record onto its merge entry: the
-// record validation (parseReport), the penalty mapping (mapPenalty)
-// and the policy's exclusion subtraction, which leaves the record's
-// residual Targets — a fully excluded Target contributes nothing and
-// is skipped. The reason is "" exactly when the record compiles.
 func compileReport(r Report, p Policy) (entry, string) {
 	target, reason := parseReport(r)
 	if reason != "" {
@@ -106,18 +66,11 @@ func compileReport(r Report, p Policy) (entry, string) {
 	}, ""
 }
 
-// merge resolves the entries' disagreements per Target address and
-// groups the winning stances into ban rules.
-//
-// The values a ban rule's Target set draws from are the distinct residual prefixes
-// across the entries. Each value goes to the reports whose Target
-// covers it, most specific Target first: the deepest covering reports
-// win, ties among them resolved by strictest — so a weaker /32
-// exceptions a stronger /16 and a stronger /32 tightens under a weaker
-// /16 alike. The winners group by (family, prefix length, penalty)
-// into one ban rule per group, and the rules order by prefix length
-// descending, then strictness — nftables first-match over the ordered
-// equal-length sets reproduces the per-address resolution.
+// merge resolves each residual prefix to the deepest covering reports
+// (specificity ties go to the strictest Penalty) and groups the winners
+// by (family, prefix length, penalty). The rules order by prefix length
+// descending, then strictness — nftables first-match reproduces the
+// resolution — and the result is canonical across report orderings.
 func merge(entries []entry) []firewall.BanRule {
 	var values []netip.Prefix
 	seen := map[netip.Prefix]bool{}
@@ -157,9 +110,7 @@ func merge(entries []entry) []firewall.BanRule {
 }
 
 // resolve returns the winning stances over one residual prefix: the
-// most specific Targets covering it win — a narrower report overrides a
-// broader one whatever the stances — and ties among the deepest
-// covering reports resolve to the strictest Penalty.
+// deepest covering reports win, ties resolved to the strictest Penalty.
 func resolve(entries []entry, v netip.Prefix) []stanceRate {
 	best := -1
 	var atLevel []entry
@@ -177,26 +128,21 @@ func resolve(entries []entry, v netip.Prefix) []stanceRate {
 	return strictest(atLevel)
 }
 
-// covers reports whether target contains the whole prefix v.
 func covers(target, v netip.Prefix) bool {
 	return target.Bits() <= v.Bits() && target.Contains(v.Addr())
 }
 
-// stanceRate is one winning stance over a prefix: the stance and its
-// rate (nil for stances that carry none).
+// stanceRate is one winning stance over a prefix; rate is nil when it
+// carries none.
 type stanceRate struct {
 	stance firewall.Stance
 	rate   *int64
 }
 
-// strictest resolves a specificity tie — several reports on one Target
-// — to the strictest Penalty: drop beats reject beats the limits, and
-// within one limit action the smallest rate is the strictest. Limits
-// of different actions are dimensionally incomparable and combine
-// instead of ordering — one meter per dimension (the ingress
-// packet-rate meter, the egress bandwidth meter and the request-rate
-// limit), all enforced. No strictness ordering is invented between
-// them: a request rate never loses to a packet rate or a bandwidth.
+// strictest resolves a specificity tie to the strictest Penalty: drop
+// beats reject beats the limits (smallest rate within one action).
+// Limits of different actions combine — one meter per dimension —
+// instead of ordering.
 func strictest(atLevel []entry) []stanceRate {
 	drop, reject := false, false
 	minRates := map[firewall.Stance]int64{}
@@ -229,8 +175,6 @@ func strictest(atLevel []entry) []stanceRate {
 	return out
 }
 
-// groupKey identifies the ban rule one group compiles to: a family, a
-// prefix length and the winning penalty (stance and rate).
 type groupKey struct {
 	is4    bool
 	bits   int
@@ -238,15 +182,10 @@ type groupKey struct {
 	rate   int64 // 0 for stances without a rate
 }
 
-// compareGroups orders the ban rules: prefix length descending (the
-// first-match lever that makes the most specific Target win), then
-// strictness — drop before reject before the limits, and the smallest
-// rate first within one action. The limit actions are incomparable, so
-// no strictness decides between them; their serialization order is
-// fixed — the ingress meter, then the egress meter, then the request
-// rate — purely so the same reports always compile to the same
-// ruleset, and equal-length sets are disjoint across stances, so the
-// order is unobservable to nftables. The family breaks the last tie.
+// compareGroups orders ban rules by prefix length descending (the
+// first-match lever behind most-specific-wins), then strictness. The
+// limit stances' fixed serialization order is determinism only — the
+// equal-length sets are disjoint, so nftables never observes it.
 func compareGroups(a, b groupKey) int {
 	if a.bits != b.bits {
 		return b.bits - a.bits
@@ -272,8 +211,6 @@ func compareGroups(a, b groupKey) int {
 	return 0
 }
 
-// strictRank orders stances by strictness: drop, then reject, then the
-// limits (incomparable among themselves).
 func strictRank(s firewall.Stance) int {
 	switch s {
 	case firewall.StanceDrop:
@@ -285,10 +222,8 @@ func strictRank(s firewall.Stance) int {
 	}
 }
 
-// meterRank fixes the serialization order of the three limit stances —
-// the ingress packet-rate meter, then the egress bandwidth meter, then
-// the request rate. It is not a strictness ordering: the merge never
-// resolves a tie with it (see strictest).
+// meterRank fixes the limit stances' serialization order; it is not a
+// strictness ordering and never resolves a merge tie (see strictest).
 func meterRank(s firewall.Stance) int {
 	switch s {
 	case firewall.StanceLimitBandwidth:
@@ -300,8 +235,7 @@ func meterRank(s firewall.Stance) int {
 	}
 }
 
-// rateValue reports the rate a penalty carries (0 when it carries
-// none).
+// rateValue returns the penalty's rate, 0 when it carries none.
 func rateValue(r *int64) int64 {
 	if r == nil {
 		return 0
@@ -309,14 +243,9 @@ func rateValue(r *int64) int64 {
 	return *r
 }
 
-// mapPenalty maps a penalty's action onto the ban rule's stance — the
-// penalty → stance mapping, total over the closed version-0
-// vocabulary so a consumer's switch is never silently wrong. The
-// penalty's rate (validated by parseReport) travels onto the ban rule
-// unchanged: the Penalty as stated reaches the firewall driver, which
-// applies it or declines it — the compiler never drops, substitutes,
-// weakens or tunes a penalty. The default keeps unknown actions loud
-// even if one slips past validation.
+// mapPenalty maps a penalty action onto the ban rule's stance, total
+// over the closed vocabulary. The rate travels unchanged: the Penalty
+// as stated reaches the driver, which applies or declines it.
 func mapPenalty(p Penalty) (firewall.Stance, string) {
 	switch p.Action {
 	case PenaltyDrop:
@@ -334,9 +263,8 @@ func mapPenalty(p Penalty) (firewall.Stance, string) {
 	}
 }
 
-// parseReport validates one record against the contract's penalty and
-// target rules, returning its masked Target prefix or the reason the
-// record is skipped ("" when it compiles).
+// parseReport validates one record, returning its masked Target prefix
+// or the skip reason ("" when the record compiles).
 func parseReport(r Report) (netip.Prefix, string) {
 	if r.Penalty == nil {
 		return netip.Prefix{}, "penalty: missing"

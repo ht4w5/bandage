@@ -13,11 +13,9 @@ import (
 	"time"
 )
 
-// Fetcher retrieves the report document from a bandage API over HTTP or
-// HTTPS: the server is verified against a CA, and an optional client
-// certificate and key are presented to it (mutual TLS) — bandaid's
-// fetch surface. There is no insecure mode: an unverified server is
-// refused, never accepted.
+// Fetcher retrieves the report document from a bandage API over
+// verified HTTPS (optional mutual TLS). There is no insecure mode: an
+// unverified server is refused.
 type Fetcher struct {
 	url      string
 	client   *http.Client
@@ -27,13 +25,10 @@ type Fetcher struct {
 // Fetch defaults mirror bandaid's: a 10s timeout and a 32 MiB cap on
 // the accepted document size.
 const (
-	// DefaultFetchTimeout is the fetch timeout unless the operator says
-	// otherwise (bandaid's default).
 	DefaultFetchTimeout = 10 * time.Second
 	maxReportBytes      = 32 << 20
 )
 
-// Option configures a Fetcher at construction.
 type Option func(*fetchOpts)
 
 type fetchOpts struct {
@@ -43,11 +38,8 @@ type fetchOpts struct {
 	timeout  time.Duration
 }
 
-// WithTLS loads the operator's PKI material — bandaid's --cacert,
-// --cert and --key one to one. caFile is the CA that verifies the
-// server (empty keeps the system roots); certFile and keyFile are the
-// client certificate and key presented to it, and must be provided
-// together.
+// WithTLS loads the operator's PKI material (bandaid's --cacert, --cert
+// and --key one to one); certFile and keyFile must be provided together.
 func WithTLS(caFile, certFile, keyFile string) Option {
 	return func(o *fetchOpts) {
 		o.caFile, o.certFile, o.keyFile = caFile, certFile, keyFile
@@ -60,8 +52,7 @@ func WithFetchTimeout(timeout time.Duration) Option {
 }
 
 // NewFetcher builds a Fetcher for the report document at rawURL, which
-// must be an http or https URL with a host; opts may load the
-// operator's PKI material and set the fetch timeout.
+// must be an http or https URL with a host.
 func NewFetcher(rawURL string, opts ...Option) (*Fetcher, error) {
 	if rawURL == "" {
 		return nil, errors.New("url: required")
@@ -94,10 +85,8 @@ func NewFetcher(rawURL string, opts ...Option) (*Fetcher, error) {
 	}, nil
 }
 
-// newMTLSClient is bandaid's HTTP-client construction: a client that
-// verifies the server against caFile and, when certFile and keyFile are
-// provided together, presents them to it. TLS 1.2 is the floor and
-// InsecureSkipVerify is never set.
+// newMTLSClient verifies the server against caFile and presents the
+// client cert/key when given; TLS 1.2 floor, InsecureSkipVerify never set.
 func newMTLSClient(caFile, certFile, keyFile string, timeout time.Duration) (*http.Client, error) {
 	if (certFile == "") != (keyFile == "") {
 		return nil, fmt.Errorf("client cert and key must be provided together: cert=%q key=%q", certFile, keyFile)

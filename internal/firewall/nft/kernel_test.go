@@ -17,12 +17,10 @@ import (
 	"github.com/HT4w5/bandage/internal/firewall"
 )
 
-// TestKernelInstallReadBackReset is the real driver's one integration
-// test: install, read the kernel state back, reset. It is skipped
-// where root or nftables is absent, and it verifies the driver's own
-// encoding, nothing else. It also refuses to run where a splint table
-// already exists: the test rebuilds and resets that table, which would
-// drop a live deployment's bans.
+// TestKernelInstallReadBackReset is skipped where root or nftables
+// is absent, and refuses to run where a splint table already exists:
+// it rebuilds and resets that table, which would drop a live
+// deployment's bans.
 func TestKernelInstallReadBackReset(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("needs root: netlink requires CAP_NET_ADMIN")
@@ -51,11 +49,8 @@ func TestKernelInstallReadBackReset(t *testing.T) {
 		}
 	})
 
-	// Phase 1 — the unscoped encoding: one ban rule per shape the
-	// compiler can emit without an enforcement scope — a mixed v4 drop,
-	// a v6 reject, a packet-rate meter, a bandwidth meter (the one
-	// egress rule, matched on destination), and a drop whose range
-	// reaches the top of the space (encoded with the null end).
+	// Phase 1: the unscoped encoding. The 255.255.255.0/24 drop
+	// exercises the null-end encoding of a top-touching range.
 	rules := []firewall.BanRule{
 		{Targets: []netip.Prefix{
 			netip.MustParsePrefix("203.0.113.0/24"),
@@ -82,15 +77,8 @@ func TestKernelInstallReadBackReset(t *testing.T) {
 	}
 	assertUnscopedKernelState(t, conn, HookInput)
 
-	// Phase 2 — the scoped encoding: the rule under the full service
-	// prefilter (the enforcement scope every effective rule matches
-	// under, in both families). Rebuilding over the live table proves
-	// the delete and the rebuild share one atomic batch; the second
-	// apply is also the --hook prerouting case (a fresh driver
-	// instance: skip state follows the instance that installed), and it
-	// reports the replaced rules' counter readings mapped onto the ban
-	// rules they count (how many depends on what traffic met the phase-1
-	// fixture rules; the mapping is what is asserted).
+	// Phase 2: the scoped encoding at prerouting, rebuilding over the
+	// live table. Hit counts vary: only the mapping is asserted.
 	scope := Prefilter{
 		DstPorts: []uint16{53, 443},
 		DstAddrs: []netip.Prefix{
@@ -120,9 +108,8 @@ func TestKernelInstallReadBackReset(t *testing.T) {
 	}
 	assertScopedKernelState(t, conn, HookPrerouting)
 
-	// Phase 3 — the unreachable-family shape under a configured scope:
-	// the rule's only family has no destination in the scope — no
-	// service traffic lives there — so it gets no kernel rule at all.
+	// Phase 3: the rule's only family has no destination in the scope,
+	// so it gets no kernel rule at all.
 	v4Only, err := New(Config{Hook: HookInput, Prefilter: Prefilter{
 		DstPorts: []uint16{443},
 		DstAddrs: []netip.Prefix{netip.MustParsePrefix("198.51.100.5/32")},
@@ -138,7 +125,6 @@ func TestKernelInstallReadBackReset(t *testing.T) {
 	}
 	assertEmptyKernelState(t, conn)
 
-	// Reset removes the owned table ...
 	if err := prerouting.Reset(); err != nil {
 		t.Fatalf("Reset: %v", err)
 	}
@@ -150,18 +136,11 @@ func TestKernelInstallReadBackReset(t *testing.T) {
 	} else if exists {
 		t.Errorf("table %q still exists after Reset", tableName)
 	}
-	// ... and tolerates it being already absent.
 	if err := prerouting.Reset(); err != nil {
 		t.Errorf("second Reset: %v", err)
 	}
 }
 
-// TestKernelDeclinesInstallNothing verifies the decline half of the
-// penalty-as-stated rule at the kernel: a limit-req-rate ban rule is
-// declined with a reason — reported per rule (by index) and per feature
-// — and installs nothing at the packet layer, never faked as a packet
-// or byte meter, while the rest of the ruleset still installs (the
-// spec's root-gated declines-install-nothing verification).
 func TestKernelDeclinesInstallNothing(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("needs root: netlink requires CAP_NET_ADMIN")
@@ -208,8 +187,6 @@ func TestKernelDeclinesInstallNothing(t *testing.T) {
 		t.Errorf("Declined = %+v, want rule 1's limit-req-rate with a reason", got)
 	}
 
-	// The declined ban rule installs nothing at the packet layer: the
-	// drop's one kernel rule on the ingress chain, no meter anywhere.
 	table, err := conn.ListTableOfFamily(tableName, nftables.TableFamilyINet)
 	if err != nil {
 		t.Fatalf("read table back: %v", err)
@@ -233,24 +210,14 @@ func TestKernelDeclinesInstallNothing(t *testing.T) {
 	}
 }
 
-// ratePtr points at a ban rule rate fixture.
 func ratePtr(n int64) *int64 { return &n }
 
-// assertUnscopedKernelState reads the owned table back from the kernel
-// and asserts the unscoped fixture's encoding: table, both chains at
-// their hooks, one kernel rule per ban rule and family (source-matched
-// on the ingress chain, the bandwidth meter destination-matched on the
-// egress chain) with the stance's verdict tail, and the sets behind
-// them. Expectations are hand-written from the test's fixtures, never
-// computed the way the implementation does.
+// assertUnscopedKernelState reads the owned table back and asserts
+// the unscoped fixture's encoding. Expectations are hand-written
+// from the fixtures, never computed the way the implementation does.
 func assertUnscopedKernelState(t *testing.T, conn *nftables.Conn, hook Hook) {
 	t.Helper()
-	// The kernel rules, in install order. The verdict tails are
-	// hand-written from the fixtures: the silent drop, the inet-family
-	// reject with icmpx admin-prohibited, the packet-rate meter over
-	// 250/second with its derived burst 250 then drop, and the byte-rate
-	// meter over 1000000 bytes/second with its derived burst 1000000
-	// then drop.
+	// The kernel rules, in install order.
 	ingressRules := []wantRule{
 		{proto: unix.NFPROTO_IPV4, off: 12, length: 4, setName: "v4_0", tail: dropTail},                                // 203.0.113.0/24 + 198.51.100.7/32
 		{proto: unix.NFPROTO_IPV6, off: 8, length: 16, setName: "v6_1", tail: rejectTail},                              // 2001:db8::/32
@@ -260,9 +227,8 @@ func assertUnscopedKernelState(t *testing.T, conn *nftables.Conn, hook Hook) {
 	egressRules := []wantRule{
 		{proto: unix.NFPROTO_IPV4, off: 16, length: 4, setName: "v4_3", tail: limitTail(expr.LimitTypePktBytes, 1000000, 1000000)}, // 203.0.113.9/32
 	}
-	// The sets behind the rules: every address range is [start, end)
-	// with end the first address after it; the top-touching range gets
-	// the null end.
+	// The sets behind the rules; v4_4's top-touching range gets the
+	// null end (its "end 0.0.0.0" element).
 	wantSets := map[string]wantSet{
 		"v4_0": {interval: true, elems: []string{"end 198.51.100.8", "end 203.0.114.0", "start 198.51.100.7", "start 203.0.113.0"}},
 		"v6_1": {interval: true, elems: []string{"end 2001:db9::", "start 2001:db8::"}},
@@ -274,10 +240,8 @@ func assertUnscopedKernelState(t *testing.T, conn *nftables.Conn, hook Hook) {
 }
 
 // assertScopedKernelState reads the owned table back and asserts the
-// scoped fixture's encoding: the ban rule under the full service
-// prefilter — every effective rule leads with the scope's
-// destination-port set behind its l4 gate, then its destination-address
-// set — in both families. Hand-written from the test's fixtures.
+// scoped fixture's encoding: the rule under the full service
+// prefilter, in both families.
 func assertScopedKernelState(t *testing.T, conn *nftables.Conn, hook Hook) {
 	t.Helper()
 	ingressRules := []wantRule{
@@ -305,8 +269,7 @@ func assertScopedKernelState(t *testing.T, conn *nftables.Conn, hook Hook) {
 	assertKernelState(t, conn, hook, ingressRules, nil, wantSets)
 }
 
-// assertEmptyKernelState asserts a rebuilt table whose ruleset
-// installed nothing — the ban rule the configured scope cannot reach:
+// assertEmptyKernelState asserts a rebuild that installed nothing:
 // both chains carry no kernel rules and there are no sets at all.
 func assertEmptyKernelState(t *testing.T, conn *nftables.Conn) {
 	t.Helper()
@@ -337,10 +300,8 @@ func assertEmptyKernelState(t *testing.T, conn *nftables.Conn) {
 }
 
 // assertKernelState asserts the shared encoding shape the wrappers
-// above hand-write their wants for: table, both chains at their hooks,
-// one kernel rule per wanted rule — the family gate, the service
-// prefilter in match order, the target load and lookup, the counter
-// and the stance's verdict tail — and the sets behind them.
+// above hand-write their wants for: chains at their hooks, each
+// wanted rule's match order ending in its verdict tail, and the sets.
 func assertKernelState(t *testing.T, conn *nftables.Conn, hook Hook, ingressRules, egressRules []wantRule, wantSets map[string]wantSet) {
 	t.Helper()
 	table, err := conn.ListTableOfFamily(tableName, nftables.TableFamilyINet)
@@ -351,9 +312,8 @@ func assertKernelState(t *testing.T, conn *nftables.Conn, hook Hook, ingressRule
 		t.Errorf("table = (%q, %v), want (%q, inet)", table.Name, table.Family, tableName)
 	}
 
-	// Both chains, at their hooks: ingress at the configured hook, and
-	// egress at output (input mode) or forward (prerouting mode) — the
-	// response direction bandwidth limits meter.
+	// Egress sits where the response direction flows: output in input
+	// mode, forward in prerouting mode.
 	ingressHook, ingressPrio := nftables.ChainHookInput, nftables.ChainPriorityFilter
 	egressHook := nftables.ChainHookOutput
 	if hook == HookPrerouting {
@@ -407,12 +367,9 @@ func assertKernelState(t *testing.T, conn *nftables.Conn, hook Hook, ingressRule
 	}
 }
 
-// wantRule is one expected kernel rule: the family gate, the service
-// prefilter first (the destination-port set behind its l4 gate, then
-// the destination-address set — either absent when its set is empty,
-// meaning all), the target match, the packet/byte counter and the
-// stance's verdict tail. The match load is the source address on the
-// ingress chain and the destination address on the egress chain.
+// wantRule is one expected kernel rule: the match prefix in order,
+// then the counter and the stance's verdict tail. The match load is
+// the source address on ingress, the destination address on egress.
 type wantRule struct {
 	proto   byte
 	off     uint32
@@ -428,15 +385,13 @@ type wantRule struct {
 	tail tailCheck
 }
 
-// wantSet is one expected kernel set: whether it is an interval set
-// and its elements, already sorted as strings.
+// wantSet is one expected kernel set: interval flag and elements,
+// already sorted as strings.
 type wantSet struct {
 	interval bool
 	elems    []string
 }
 
-// assertChain reads one base chain back and asserts its shape: filter
-// type at hook/prio.
 func assertChain(t *testing.T, conn *nftables.Conn, table *nftables.Table, name string, hook *nftables.ChainHook, prio *nftables.ChainPriority) *nftables.Chain {
 	t.Helper()
 	chain, err := conn.ListChain(table, name)
@@ -458,12 +413,9 @@ func assertChain(t *testing.T, conn *nftables.Conn, table *nftables.Table, name 
 // tailCheck asserts a kernel rule's verdict tail.
 type tailCheck func(t *testing.T, exprs []expr.Any)
 
-// assertMatch asserts the shared rule prefix in match order — the
-// family gate, the service prefilter, and the address load at off:len
-// into register 1 followed by the lookup of setName — then the
-// packet/byte counter every ban rule carries after its matches and
-// immediately before its verdict, and returns the verdict tail for the
-// caller.
+// assertMatch asserts the shared rule prefix in match order, then
+// the counter immediately before the verdict, and returns the
+// verdict tail for the caller.
 func assertMatch(t *testing.T, r *nftables.Rule, w wantRule) []expr.Any {
 	t.Helper()
 	exprs := r.Exprs
@@ -500,10 +452,6 @@ func assertMatch(t *testing.T, r *nftables.Rule, w wantRule) []expr.Any {
 	i++
 	assertLookup(t, "target set", exprs[i], w.setName)
 	i++
-	// Every ban rule carries its packet/byte counter after every match
-	// expr and immediately before the verdict: it counts only the
-	// packets the ban rule matches — never the traffic the prefilter or
-	// the target match lets past.
 	if _, ok := exprs[i].(*expr.Counter); !ok {
 		t.Errorf("rule counter = %+v, want the packet/byte counter before the verdict", exprs[i])
 	}
@@ -511,7 +459,6 @@ func assertMatch(t *testing.T, r *nftables.Rule, w wantRule) []expr.Any {
 	return exprs[i:]
 }
 
-// dropTail asserts the silent drop verdict.
 func dropTail(t *testing.T, exprs []expr.Any) {
 	t.Helper()
 	if len(exprs) != 1 {
@@ -523,8 +470,6 @@ func dropTail(t *testing.T, exprs []expr.Any) {
 	}
 }
 
-// rejectTail asserts the inet-family reject: icmpx admin-prohibited
-// (TCP peers get a reset automatically).
 func rejectTail(t *testing.T, exprs []expr.Any) {
 	t.Helper()
 	if len(exprs) != 1 {
@@ -536,9 +481,6 @@ func rejectTail(t *testing.T, exprs []expr.Any) {
 	}
 }
 
-// limitTail asserts a rate meter tail: the limit expression matching
-// once the rate is exceeded (type, rate per second, derived burst)
-// followed by the drop of the excess.
 func limitTail(limitType expr.LimitType, rate uint64, burst uint32) tailCheck {
 	return func(t *testing.T, exprs []expr.Any) {
 		t.Helper()
@@ -558,7 +500,6 @@ func limitTail(limitType expr.LimitType, rate uint64, burst uint32) tailCheck {
 	}
 }
 
-// assertMeta checks one meta load into register 1.
 func assertMeta(t *testing.T, what string, e expr.Any, key expr.MetaKey) {
 	t.Helper()
 	meta, ok := e.(*expr.Meta)
@@ -567,7 +508,6 @@ func assertMeta(t *testing.T, what string, e expr.Any, key expr.MetaKey) {
 	}
 }
 
-// assertCmp checks one comparison of register 1 against data.
 func assertCmp(t *testing.T, what string, e expr.Any, data []byte) {
 	t.Helper()
 	cmp, ok := e.(*expr.Cmp)
@@ -576,7 +516,6 @@ func assertCmp(t *testing.T, what string, e expr.Any, data []byte) {
 	}
 }
 
-// assertPayload checks one header-field load into register 1.
 func assertPayload(t *testing.T, what string, e expr.Any, base expr.PayloadBase, off, length uint32) {
 	t.Helper()
 	payload, ok := e.(*expr.Payload)
@@ -586,7 +525,6 @@ func assertPayload(t *testing.T, what string, e expr.Any, base expr.PayloadBase,
 	}
 }
 
-// assertLookup checks one set lookup of register 1.
 func assertLookup(t *testing.T, what string, e expr.Any, setName string) {
 	t.Helper()
 	lookup, ok := e.(*expr.Lookup)
@@ -595,9 +533,8 @@ func assertLookup(t *testing.T, what string, e expr.Any, setName string) {
 	}
 }
 
-// elementStrings renders one set's elements as strings — address keys
-// with their start/end kind, port and protocol keys as their numbers —
-// sorted, for the hand-written expectations.
+// elementStrings renders one set's elements as sorted strings for
+// the hand-written expectations.
 func elementStrings(s *nftables.Set, elems []nftables.SetElement) []string {
 	var got []string
 	for _, e := range elems {
@@ -619,8 +556,8 @@ func elementStrings(s *nftables.Set, elems []nftables.SetElement) []string {
 }
 
 // netlinkUnusable reports why the kernel nftables surface cannot be
-// tested here ("" when it can): the root gate of the integration test
-// and the inverse gate of the loud-failure test share it.
+// tested here ("" when it can); shared by the root gate and the
+// loud-failure test's inverse gate.
 func netlinkUnusable() string {
 	conn, err := nftables.New()
 	if err != nil {

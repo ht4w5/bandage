@@ -17,19 +17,12 @@ import (
 	"github.com/HT4w5/bandage/internal/firewall"
 )
 
-// The driver's identity suite: the nftables driver's planning and
-// apply logic against a fake kernel — the highest point at which
-// driver-owned identity is observable without privileges. The fake is
-// a private in-memory kernel stand-in that records what would be
-// flushed; it replaces the real netlink path in these tests, never
-// layers over it. Assertions stay external: which ban rules would be
-// installed, when, and what outcomes are reported — the netlink
-// encoding itself is verified by the root-gated kernel test only.
+// The fake kernel replaces the real netlink path in these tests,
+// never layers over it; the netlink encoding itself is verified only
+// by the root-gated kernel test.
 
-// fakeKernel is the in-memory kernel stand-in: it stands in for
-// nftables in one namespace, records every batch handed to Flush and
-// applies it to its own table state, and serves the read-backs the
-// driver performs (existence probes, chain listing, rule counters).
+// fakeKernel is an in-memory kernel stand-in: batches apply to its
+// own table state at Flush; read-backs serve what it recorded.
 type fakeKernel struct {
 	mu           sync.Mutex
 	table        *nftables.Table             // the owned table while present
@@ -40,14 +33,13 @@ type fakeKernel struct {
 	pendingRules []*nftables.Rule            // the batch's rules, flushed together
 }
 
-// kernelOp is one recorded batch operation — the shape of what would
-// be flushed, never its encoding.
+// kernelOp records one batch operation — the shape flushed, never
+// its encoding.
 type kernelOp struct {
 	kind  string // del-table, add-table, add-chain, add-set or add-rule
 	chain string // the chain name of add-chain and add-rule
 }
 
-// newFakeKernel stands up an empty fake kernel — nothing installed.
 func newFakeKernel() *fakeKernel {
 	return &fakeKernel{chains: map[string][]*nftables.Rule{}}
 }
@@ -93,8 +85,8 @@ func (k *fakeKernel) DelTable(t *nftables.Table) {
 }
 
 // Flush applies the buffered batch to the fake kernel's state and
-// records it — exactly the atomicity the real flush has: the batch
-// lands all at once or not at all.
+// records it — the same atomicity as the real flush: all at once or
+// not at all.
 func (k *fakeKernel) Flush() error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -172,15 +164,12 @@ func (k *fakeKernel) vanish() {
 	k.chains = map[string][]*nftables.Rule{}
 }
 
-// flushCount is the number of batches flushed — the atomic batches,
-// never individual operations.
 func (k *fakeKernel) flushCount() int {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	return len(k.flushes)
 }
 
-// lastFlush is the batch of the most recent flush, as recorded ops.
 func (k *fakeKernel) lastFlush() []kernelOp {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -190,25 +179,20 @@ func (k *fakeKernel) lastFlush() []kernelOp {
 	return k.flushes[len(k.flushes)-1]
 }
 
-// rulesIn counts the kernel rules recorded in one chain.
 func (k *fakeKernel) rulesIn(chain string) int {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	return len(k.chains[chain])
 }
 
-// probeCount is the number of existence probes served — the cheap
-// probe every apply performs before deciding anything.
 func (k *fakeKernel) probeCount() int {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	return k.probes
 }
 
-// counterRule builds the kernel-rule fixture one ban rule's counter
-// read-back maps: the lookup of the ban rule's set (its index baked
-// into the name) and the counter reading beside it — the shape every
-// ban rule's kernel rule carries.
+// counterRule builds the fixture shape a ban rule's counter read-back
+// maps: its set lookup (index baked into the name) and the reading.
 func counterRule(setName string, packets, bytes uint64) *nftables.Rule {
 	return &nftables.Rule{Exprs: []expr.Any{
 		&expr.Lookup{SourceRegister: 1, SetName: setName},
@@ -224,9 +208,6 @@ func newFakeDriver(t *testing.T, hook Hook, kernel *fakeKernel) *Driver {
 	return newFakeScopedDriver(t, hook, Prefilter{}, kernel)
 }
 
-// newFakeScopedDriver builds a driver enforcing under a configured
-// enforcement scope — the service prefilter of destination ports and
-// addresses, driver configuration rather than part of the ban rule.
 func newFakeScopedDriver(t *testing.T, hook Hook, scope Prefilter, kernel *fakeKernel) *Driver {
 	t.Helper()
 	d, err := New(Config{Hook: hook, Prefilter: scope})
@@ -237,7 +218,6 @@ func newFakeScopedDriver(t *testing.T, hook Hook, scope Prefilter, kernel *fakeK
 	return d
 }
 
-// The ban rule fixtures the identity tests plan and apply.
 func dropFixture(prefixes ...string) firewall.BanRule {
 	r := firewall.BanRule{Stance: firewall.StanceDrop}
 	for _, p := range prefixes {
@@ -252,7 +232,6 @@ func bandwidthFixture(rate int64, prefixes ...string) firewall.BanRule {
 	return r
 }
 
-// mustPrefixes parses prefix literals for scope fixtures.
 func mustPrefixes(prefixes ...string) []netip.Prefix {
 	out := make([]netip.Prefix, 0, len(prefixes))
 	for _, s := range prefixes {
@@ -267,11 +246,6 @@ func reqRateFixture(rate int64, prefixes ...string) firewall.BanRule {
 	return r
 }
 
-// TestPlanDerivesTheEffectiveRules: the planning step is pure and
-// derives exactly what would be installed — the ban rules this driver
-// can honour, narrowed to the targets that reach their address
-// families, placed at their chains by their stances, and the declines
-// with reasons.
 func TestPlanDerivesTheEffectiveRules(t *testing.T) {
 	kernel := newFakeKernel()
 
@@ -375,11 +349,8 @@ func TestPlanDerivesTheEffectiveRules(t *testing.T) {
 	})
 }
 
-// TestPlanFoldsTheEffectiveRules: the ruleset hash folds the effective
-// rules — after the declines, after the drops — so the identity is
-// what would be installed, and changing driver configuration changes
-// it. The hash values are compared to each other only; the
-// construction is never pinned.
+// The hash values are compared to each other only; the construction
+// is never pinned.
 func TestPlanFoldsTheEffectiveRules(t *testing.T) {
 	kernel := newFakeKernel()
 	hashOf := func(t *testing.T, d *Driver, rules []firewall.BanRule) uint32 {
@@ -445,11 +416,6 @@ func TestPlanFoldsTheEffectiveRules(t *testing.T) {
 	})
 }
 
-// TestApplySkipsWhenUnchanged: the skip-if-unchanged decision is the
-// driver's own — the install is skipped when the plan's hash matches
-// the last applied hash and the owned ruleset still exists (probed
-// fresh every apply), and re-enforces otherwise. Skip state follows
-// each driver instance.
 func TestApplySkipsWhenUnchanged(t *testing.T) {
 	rules := []firewall.BanRule{dropFixture("203.0.113.7/32"), bandwidthFixture(1000000, "198.51.100.9/32")}
 
@@ -503,8 +469,6 @@ func TestApplySkipsWhenUnchanged(t *testing.T) {
 		if _, err := d.Apply(rules); err != nil {
 			t.Fatalf("first Apply: %v", err)
 		}
-		// The table is gone behind our back — an external reset, a
-		// recreated container — while the ruleset is unchanged.
 		kernel.vanish()
 		out, err := d.Apply(rules)
 		if err != nil {
@@ -546,10 +510,6 @@ func TestApplySkipsWhenUnchanged(t *testing.T) {
 	})
 }
 
-// TestApplyReadsTheCountersOfWhatItReplaced: the hits covering the
-// period since the last change are the nonzero counters of the rules
-// the install replaces — read before the rebuild, mapped onto the ban
-// rules they count, aggregated across families.
 func TestApplyReadsTheCountersOfWhatItReplaced(t *testing.T) {
 	t.Run("the replaced rules' nonzero counters come back as hits", func(t *testing.T) {
 		kernel := newFakeKernel()
@@ -612,10 +572,6 @@ func TestApplyReadsTheCountersOfWhatItReplaced(t *testing.T) {
 	})
 }
 
-// TestApplyReportsDeclines: what the plan declines, apply reports —
-// per rule (by index) and per feature, with a reason — and the
-// declined ban rule installs nothing at the packet layer, never faked
-// as a packet or byte meter.
 func TestApplyReportsDeclines(t *testing.T) {
 	kernel := newFakeKernel()
 	d := newFakeDriver(t, HookInput, kernel)
@@ -632,8 +588,6 @@ func TestApplyReportsDeclines(t *testing.T) {
 	if got := out.Declined[0]; got.Rule != 1 || got.Feature != "limit-req-rate" || got.Reason == "" {
 		t.Errorf("declined = %+v, want rule 1's limit-req-rate with a reason", got)
 	}
-	// The declined ban rule installs nothing: the drop's one kernel
-	// rule on the ingress chain, no meter anywhere.
 	if n := kernel.rulesIn(ingressName); n != 1 {
 		t.Errorf("ingress chain carries %d kernel rules, want 1 (the declined rule installs nothing)", n)
 	}
@@ -642,10 +596,6 @@ func TestApplyReportsDeclines(t *testing.T) {
 	}
 }
 
-// TestApplyBuildsOneAtomicBatch: the rebuild is one atomic batch —
-// the delete and the rebuild share one flush, so the table is never
-// absent while the new one applies — and the delete joins the batch
-// only where the pre-delete existence probe found the table.
 func TestApplyBuildsOneAtomicBatch(t *testing.T) {
 	rules := []firewall.BanRule{
 		dropFixture("203.0.113.7/32"),
@@ -667,9 +617,6 @@ func TestApplyBuildsOneAtomicBatch(t *testing.T) {
 		for _, op := range flush {
 			kinds = append(kinds, op.kind)
 		}
-		// The delete joins the batch and comes before every add; the
-		// table, both chains and one kernel rule per ban rule and
-		// family are rebuilt inside the same batch.
 		want := []string{"del-table", "add-table", "add-chain", "add-chain", "add-set", "add-rule", "add-set", "add-rule"}
 		if !reflect.DeepEqual(kinds, want) {
 			t.Errorf("batch = %v, want %v", kinds, want)
@@ -710,8 +657,6 @@ func TestApplyBuildsOneAtomicBatch(t *testing.T) {
 		for _, op := range kernel.lastFlush() {
 			kinds = append(kinds, op.kind)
 		}
-		// The scope's l4 gate and port sets, then the target and
-		// destination sets, then the kernel rule — one atomic batch.
 		want := []string{"add-table", "add-chain", "add-chain", "add-set", "add-set", "add-set", "add-set", "add-rule"}
 		if !reflect.DeepEqual(kinds, want) {
 			t.Errorf("batch = %v, want %v", kinds, want)
@@ -719,9 +664,6 @@ func TestApplyBuildsOneAtomicBatch(t *testing.T) {
 	})
 }
 
-// TestResetToleratesAnAbsentRuleset: reset removes the owned ruleset
-// and tolerates it being already absent, and a reset driver re-enforces
-// from scratch.
 func TestResetToleratesAnAbsentRuleset(t *testing.T) {
 	rules := []firewall.BanRule{dropFixture("203.0.113.7/32")}
 
@@ -766,10 +708,6 @@ func TestResetToleratesAnAbsentRuleset(t *testing.T) {
 	})
 }
 
-// TestPlanRefusesWhatItCannotPlan: the planning step is loud about a
-// ban rule it could neither honour nor decline — an unknown stance or
-// a limit without a usable rate is a broken seam input, never silently
-// dropped. Failing and passing case per validation.
 func TestPlanRefusesWhatItCannotPlan(t *testing.T) {
 	kernel := newFakeKernel()
 	tests := []struct {
@@ -817,12 +755,6 @@ func TestPlanRefusesWhatItCannotPlan(t *testing.T) {
 	}
 }
 
-// TestPerPointEnforcement: fan-out at the fake kernel — one driver
-// instance per enforcement point, each with its own identity: an
-// unreachable point is reported as firewall.ErrUnreachable (the update
-// cycle warns and skips it for the cycle) while the other points still
-// enforce, and one point's unchanged-skip never silences another's
-// install.
 func TestPerPointEnforcement(t *testing.T) {
 	rules := []firewall.BanRule{dropFixture("203.0.113.7/32")}
 
@@ -855,7 +787,6 @@ func TestPerPointEnforcement(t *testing.T) {
 		if _, err := b.Apply(rules); err != nil {
 			t.Fatalf("Apply(b): %v", err)
 		}
-		// One point unchanged: its own skip state skips it.
 		out, err := a.Apply(rules)
 		if err != nil {
 			t.Fatalf("second Apply(a): %v", err)
@@ -863,8 +794,6 @@ func TestPerPointEnforcement(t *testing.T) {
 		if !out.Skipped {
 			t.Error("an identical ruleset at one point must skip")
 		}
-		// The other point's ruleset changed: it re-enforces while the
-		// first stays skipped.
 		changed := []firewall.BanRule{dropFixture("198.51.100.7/32")}
 		out, err = b.Apply(changed)
 		if err != nil {

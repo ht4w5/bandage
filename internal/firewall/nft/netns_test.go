@@ -15,17 +15,10 @@ import (
 	"github.com/HT4w5/bandage/internal/firewall"
 )
 
-// The netns targeting surface: construction without privileges, and
-// the root-gated scratch-namespace integration test — install through
-// an nsfs handle into a fresh network namespace, read the state back
-// there, reset there, then watch the handle vanish. The scratch
-// namespace is born empty and dies with the test, so the run is safe
-// next to a live deployment: the current namespace is only ever
-// probed, never modified.
+// The scratch namespace is born empty and dies with the test, so the
+// run is safe next to a live deployment: the current namespace is
+// only ever probed, never modified.
 
-// TestNewValidatesTheHookForANamespaceTarget: a namespace-targeted
-// construction shares the hook validation — a failing and a passing
-// case.
 func TestNewValidatesTheHookForANamespaceTarget(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -64,13 +57,6 @@ func TestNewValidatesTheHookForANamespaceTarget(t *testing.T) {
 	}
 }
 
-// TestKernelInstallInAScratchNetNS is the netns targeting integration
-// test: the driver installs its table into a non-default scratch
-// network namespace through the nsfs handle — the current namespace
-// stays untouched — reads it back there, resets it there, and a
-// handle whose namespace vanished surfaces as the firewall.ErrUnreachable
-// the update cycle warns, skips and tolerates at exit. It is skipped
-// where root, netlink or unshare(1) is absent.
 func TestKernelInstallInAScratchNetNS(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("needs root: netlink requires CAP_NET_ADMIN")
@@ -85,8 +71,7 @@ func TestKernelInstallInAScratchNetNS(t *testing.T) {
 	path, stop := startScratchNetNS(t, unshare)
 
 	// Whatever happens in the scratch namespace, the current one must
-	// come out exactly as it went in — possibly under a live
-	// splint. Its table is probed, never touched.
+	// come out exactly as it went in — possibly under a live splint.
 	conn, err := nftables.New()
 	if err != nil {
 		t.Fatalf("nftables.New: %v", err)
@@ -96,10 +81,8 @@ func TestKernelInstallInAScratchNetNS(t *testing.T) {
 		t.Fatalf("probe current namespace: %v", err)
 	}
 
-	// The encoding fixtures of TestKernelInstallReadBackReset, copied
-	// deliberately so both kernel tests pin their own expectations —
-	// the unscoped shapes and the scoped shape, one per driver
-	// configuration.
+	// Deliberately duplicated from TestKernelInstallReadBackReset:
+	// each kernel test pins its own expectations.
 	rules := []firewall.BanRule{
 		{Targets: []netip.Prefix{
 			netip.MustParsePrefix("203.0.113.0/24"),
@@ -128,8 +111,6 @@ func TestKernelInstallInAScratchNetNS(t *testing.T) {
 	nsConn := scratchConn(t, path)
 	assertUnscopedKernelState(t, nsConn, HookInput)
 
-	// Rebuilding through the same handle under the full service
-	// prefilter — the scoped encoding, one driver configuration later.
 	scoped, err := New(Config{Hook: HookInput, NetNSPath: path, Prefilter: Prefilter{
 		DstPorts: []uint16{53, 443},
 		DstAddrs: []netip.Prefix{
@@ -153,7 +134,6 @@ func TestKernelInstallInAScratchNetNS(t *testing.T) {
 		t.Errorf("current namespace table existence = %v, want %v (installing elsewhere must not touch it)", existsAfter, existsBefore)
 	}
 
-	// Reset removes the table in the scratch namespace only ...
 	if err := d.Reset(); err != nil {
 		t.Fatalf("Reset in the scratch namespace: %v", err)
 	}
@@ -162,15 +142,12 @@ func TestKernelInstallInAScratchNetNS(t *testing.T) {
 	} else if exists {
 		t.Errorf("table %q still exists in the scratch namespace", tableName)
 	}
-	// ... and tolerates it being already absent.
 	if err := d.Reset(); err != nil {
 		t.Errorf("second Reset: %v", err)
 	}
 
-	// A vanished namespace: the handle path is gone once the process
-	// holding the namespace is reaped. Both driver calls surface
-	// firewall.ErrUnreachable — the error the update cycle warns and
-	// skips for the cycle and tolerates at reset.
+	// stop() reaps the holder, so the nsfs handle path vanishes; both
+	// driver calls must surface firewall.ErrUnreachable.
 	stop()
 	if err := d.Reset(); !errors.Is(err, firewall.ErrUnreachable) {
 		t.Errorf("Reset on a vanished namespace = %v, want a firewall.ErrUnreachable", err)
@@ -180,11 +157,9 @@ func TestKernelInstallInAScratchNetNS(t *testing.T) {
 	}
 }
 
-// startScratchNetNS starts a process in a fresh network namespace and
-// returns its nsfs handle path and a stop function that kills and
-// reaps the holding process (idempotent; also the test cleanup). The
-// namespace dies with the process. The ready line is printed from
-// inside the new namespace, so reading it pins the namespace switch.
+// startScratchNetNS returns a fresh network namespace's nsfs handle
+// path and a stop function (idempotent; also the test cleanup). The
+// ready line is printed inside the new namespace, pinning the switch.
 func startScratchNetNS(t *testing.T, unshare string) (string, func()) {
 	t.Helper()
 	cmd := exec.Command(unshare, "--net", "sh", "-c", "echo ready; exec sleep 300")
@@ -221,9 +196,8 @@ func startScratchNetNS(t *testing.T, unshare string) (string, func()) {
 }
 
 // scratchConn opens a netlink connection into the scratch namespace.
-// The handle file must stay open for the connection's whole lifetime —
-// the library dials lazily per operation — so it is closed only with
-// the test.
+// The handle file must outlive the connection (the library dials
+// lazily), so it is closed only with the test.
 func scratchConn(t *testing.T, path string) *nftables.Conn {
 	t.Helper()
 	nsFile, err := os.Open(path)

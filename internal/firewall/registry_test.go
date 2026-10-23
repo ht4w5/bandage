@@ -7,17 +7,10 @@ import (
 	"github.com/spf13/pflag"
 )
 
-// Primary seam: the driver registry — the --firewall surface: the
-// known driver names, the selection of the one factory that serves a
-// whole run, and the refusal of an explicitly set flag that belongs to
-// an unselected driver. The command run seam is deliberately untested;
-// what would be asserted through the command is verified here, at the
-// module that owns it (the spec's Testing Decisions): selection and
-// flag-ownership validation keep a failing and a passing case each.
+// Coverage: the command-run seam is deliberately untested — what would
+// be asserted through the command is verified here, at the module
+// that owns it.
 
-// stubFactory is a minimal Factory standing in for a driver: its
-// registry name, its own flag group (one flag per bound name), and the
-// enforcement points its Open expands to.
 type stubFactory struct {
 	name   string
 	flags  []string
@@ -53,8 +46,6 @@ func bindStubs(t *testing.T, args []string, factories ...Factory) (*Registry, *p
 	return r, fs
 }
 
-// TestRegistrySelectsTheNamedDriver: the --firewall value selects its
-// factory from the registry — the passing case.
 func TestRegistrySelectsTheNamedDriver(t *testing.T) {
 	alpha := &stubFactory{name: "alpha"}
 	beta := &stubFactory{name: "beta"}
@@ -68,9 +59,6 @@ func TestRegistrySelectsTheNamedDriver(t *testing.T) {
 	}
 }
 
-// TestRegistryRefusesAnUnknownDriverListingTheKnownDrivers: the
-// failing case — an unknown --firewall value fails with the known
-// drivers listed.
 func TestRegistryRefusesAnUnknownDriverListingTheKnownDrivers(t *testing.T) {
 	r, fs := bindStubs(t, nil, &stubFactory{name: "alpha"}, &stubFactory{name: "beta"})
 	if _, err := r.Select("gamma", fs); err == nil {
@@ -85,11 +73,6 @@ func TestRegistryRefusesAnUnknownDriverListingTheKnownDrivers(t *testing.T) {
 	}
 }
 
-// TestRegistryRefusesFlagsOfUnselectedDrivers: a flag belonging to an
-// unselected driver, explicitly set, is a startup usage error — a
-// mistyped combination fails loudly instead of silently not applying.
-// One failing and one passing case: the selected driver's own flag is
-// fine, an untouched unselected driver's flag is fine.
 func TestRegistryRefusesFlagsOfUnselectedDrivers(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -137,10 +120,6 @@ func TestRegistryRefusesFlagsOfUnselectedDrivers(t *testing.T) {
 	}
 }
 
-// TestRegistryGroupsFlagsByOwner: the flag ownership the usage output
-// groups flags by — one group per registered driver holding exactly
-// the flags its factory bound, leaving the engine's flags outside
-// every group.
 func TestRegistryGroupsFlagsByOwner(t *testing.T) {
 	r := NewRegistry(
 		&stubFactory{name: "alpha", flags: []string{"alpha-one", "alpha-two"}},
@@ -165,9 +144,6 @@ func TestRegistryGroupsFlagsByOwner(t *testing.T) {
 	}
 }
 
-// TestOneDriverServesTheWholeRun: the selection surface hands the run
-// to exactly one factory, whose Open expands into the run's every
-// enforcement point — there is no per-point driver mixing.
 func TestOneDriverServesTheWholeRun(t *testing.T) {
 	alpha := &stubFactory{name: "alpha", points: []Point{{Label: "alpha-1"}, {Label: "alpha-2"}}}
 	beta := &stubFactory{name: "beta", points: []Point{{Label: "beta-1"}}}

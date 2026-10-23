@@ -5,15 +5,6 @@ import (
 	"testing"
 )
 
-// Primary seam: the driver's own surface. Hook parsing and driver
-// construction are validated here without privileges; where netlink is
-// unusable the driver must fail loudly (the exact complement of the
-// root gate below); and one root-gated integration test — install,
-// read the kernel state back, reset — verifies the encoding wherever
-// privileges exist.
-
-// TestParseHook: the --hook value validation, a failing and a passing
-// case per validation.
 func TestParseHook(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -64,8 +55,6 @@ func TestParseHook(t *testing.T) {
 	}
 }
 
-// TestNewValidatesTheHook: driver construction refuses a hook that is
-// not one of the two enforcement hooks, a failing and a passing case.
 func TestNewValidatesTheHook(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -113,11 +102,6 @@ func TestNewValidatesTheHook(t *testing.T) {
 	}
 }
 
-// TestApplyWithoutNetlinkPrivilegesFailsLoudly: where the kernel
-// test surface is unavailable there is no silent success — applying
-// (probe included) and resetting fail loudly, which is what surfaces
-// at the startup test install. It is the exact complement of the root
-// gate below.
 func TestApplyWithoutNetlinkPrivilegesFailsLoudly(t *testing.T) {
 	if reason := netlinkUnusable(); reason == "" {
 		t.Skip("nftables is available here; the root-gated integration test covers the driver")

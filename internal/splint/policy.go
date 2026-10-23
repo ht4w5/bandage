@@ -5,20 +5,16 @@ import (
 	"slices"
 )
 
-// Policy is the compilation policy the ban rules are compiled under:
-// the exclusion prefixes subtracted from every report's Target,
-// overriding every report. Enforcement scope is deliberately not here
-// — it is driver configuration, not engine policy (ADR 0012). NewPolicy
-// assembles it from the operator's flags; the zero Policy keeps the
-// always-on safety exclusions.
+// Policy is the compilation policy: the exclusion prefixes subtracted
+// from every report's Target, overriding every report. The zero Policy
+// keeps the always-on safety exclusions.
 type Policy struct {
 	Exclude []netip.Prefix
 }
 
-// The safety exclusions, in two tiers: loopback and link-local are
-// always subtracted (they cannot be re-included), and RFC1918 and ULA
-// are subtracted by default — NewPolicy drops that tier when the
-// operator opts out of --exclude-private.
+// Safety exclusions in two tiers: loopback and link-local are always
+// subtracted (they cannot be re-included); RFC1918 and ULA are
+// subtracted unless the operator opts out of --exclude-private.
 var (
 	alwaysExcluded = []netip.Prefix{
 		netip.MustParsePrefix("127.0.0.0/8"),    // loopback
@@ -34,10 +30,6 @@ var (
 	}
 )
 
-// NewPolicy assembles the compilation policy from the operator's
-// configuration: their exclusion prefixes, plus the RFC1918 and ULA
-// tier unless excludePrivate opts out of it. The loopback and
-// link-local tier needs no assembly — Subtract always applies it.
 func NewPolicy(exclude []netip.Prefix, excludePrivate bool) Policy {
 	if excludePrivate {
 		exclude = slices.Concat(privateExcluded, exclude)
@@ -45,12 +37,8 @@ func NewPolicy(exclude []netip.Prefix, excludePrivate bool) Policy {
 	return Policy{Exclude: exclude}
 }
 
-// Subtract returns the residual prefixes of target after the safety
-// exclusions: loopback and link-local are always subtracted (they
-// cannot be re-included), then the policy's exclusion prefixes. Every
-// exclusion is removed from the target, and a fully excluded target
-// returns no residual prefix — the caller drops its ban rule.
-// Residuals come back in ascending order.
+// Subtract returns target's residual prefixes after the exclusions; a
+// fully excluded target returns none. Residuals come back ascending.
 func (p Policy) Subtract(target netip.Prefix) []netip.Prefix {
 	res := []netip.Prefix{target.Masked()}
 	res = subtractAll(res, alwaysExcluded)
@@ -59,8 +47,6 @@ func (p Policy) Subtract(target netip.Prefix) []netip.Prefix {
 	return res
 }
 
-// subtractAll removes every exclusion prefix of exs from the residuals
-// of one target.
 func subtractAll(res, exs []netip.Prefix) []netip.Prefix {
 	for _, ex := range exs {
 		if len(res) == 0 {
@@ -75,10 +61,9 @@ func subtractAll(res, exs []netip.Prefix) []netip.Prefix {
 	return res
 }
 
-// subtractPrefix returns the residual prefixes of p with ex removed.
-// Two prefixes are disjoint or one contains the other, so the residual
-// is p itself (disjoint), nothing (ex covers p), or the sibling
-// prefixes along the split path from p down to ex.
+// subtractPrefix returns p's residual with ex removed: p itself
+// (disjoint), nothing (ex covers p), or the sibling prefixes along the
+// split path from p down to ex.
 func subtractPrefix(p, ex netip.Prefix) []netip.Prefix {
 	if !p.Overlaps(ex) {
 		return []netip.Prefix{p}
@@ -86,8 +71,6 @@ func subtractPrefix(p, ex netip.Prefix) []netip.Prefix {
 	if ex.Bits() <= p.Bits() {
 		return nil // p lies inside ex
 	}
-	// ex lies strictly inside p: split p in half repeatedly and keep
-	// every half that does not contain ex.
 	var out []netip.Prefix
 	for cur := p; ex.Bits() > cur.Bits(); {
 		lo, hi := splitPrefix(cur)
@@ -102,7 +85,6 @@ func subtractPrefix(p, ex netip.Prefix) []netip.Prefix {
 	return out // the last cur is ex itself: dropped
 }
 
-// splitPrefix halves p into its two covering prefixes of one more bit.
 func splitPrefix(p netip.Prefix) (lo, hi netip.Prefix) {
 	bits := p.Bits() + 1
 	lo = netip.PrefixFrom(p.Addr(), bits)
@@ -110,8 +92,7 @@ func splitPrefix(p netip.Prefix) (lo, hi netip.Prefix) {
 	return lo, hi
 }
 
-// setBit returns a with bit number n set (bit 0 is the most
-// significant).
+// setBit sets bit n of a (bit 0 is the most significant).
 func setBit(a netip.Addr, n int) netip.Addr {
 	b := a.AsSlice()
 	b[n/8] |= 1 << (7 - n%8)

@@ -2,15 +2,14 @@
 // firewall seam's ban rules through netlink
 // (github.com/google/nftables) — one wholly-owned inet table named
 // splint in the target namespace, rebuilt wholesale in a single
-// atomic batch per apply (fluxc's delete-then-rebuild gap is
-// deliberately not copied), removed on reset. It applies each Penalty
-// exactly as stated or declines it: limit-req-rate is application-layer
-// intent and is never faked at the packet layer (ADR 0012).
+// atomic batch per apply (no delete-then-rebuild window), removed on
+// reset. It applies each Penalty exactly as stated or declines it:
+// limit-req-rate is application-layer intent and is never faked at
+// the packet layer (ADR 0012).
 //
 // The driver owns its identity: the rolling hash over its effective
 // rules, the skip-if-unchanged decision with its existence probe and
-// the counter read-back live here, because only this driver knows
-// which ban rules are actually effective and which it drops.
+// the counter read-back live here.
 package nft
 
 import (
@@ -32,11 +31,9 @@ import (
 	"github.com/HT4w5/bandage/internal/firewall"
 )
 
-// The wholly-owned nftables objects: one inet table per target
-// namespace, carrying the ingress chain at the configured hook and the
-// egress chain behind the bandwidth limits. The chain names are the
-// placement labels the driver's plan reports (the --dry-run mapping
-// lines name these chains).
+// The wholly-owned nftables objects. The chain names are the
+// placement labels the plan reports (the --dry-run mapping lines
+// name these chains).
 const (
 	tableName   = "splint"
 	ingressName = "ingress"
@@ -44,17 +41,16 @@ const (
 )
 
 // Hook is the enforcement hook the ingress chain attaches to: input
-// catches locally-destined traffic (a web server host), prerouting
-// catches transit and local traffic (a routing box).
+// catches locally-destined traffic, prerouting catches transit and
+// local traffic.
 type Hook string
 
-// The two v0 enforcement hooks (--hook).
+// The two enforcement hooks (--hook).
 const (
 	HookInput      Hook = "input"
 	HookPrerouting Hook = "prerouting"
 )
 
-// ParseHook maps the --hook flag value onto a Hook.
 func ParseHook(s string) (Hook, error) {
 	h := Hook(s)
 	if !h.valid() {
@@ -63,67 +59,55 @@ func ParseHook(s string) (Hook, error) {
 	return h, nil
 }
 
-// valid reports whether h is one of the two enforcement hooks.
 func (h Hook) valid() bool {
 	return h == HookInput || h == HookPrerouting
 }
 
-// Driver is the nftables implementation of the firewall.Driver port.
-// It owns one table per target namespace and its identity: plan is
-// pure, apply rebuilds that table wholesale in one atomic batch —
-// skipping the install when the plan's hash matches the ruleset it
-// last applied and the table still exists — reset removes it. One
-// Driver targets one namespace: netns is its nsfs handle path, "" the
-// current namespace.
+// Driver is the nftables implementation of the firewall.Driver port:
+// one wholly-owned table per target namespace plus its identity —
+// plan is pure, apply rebuilds the table in one atomic batch
+// (skipping when the hash matches and the table exists), reset
+// removes it. One Driver targets one namespace: netns is its nsfs
+// handle path, "" the current namespace.
 type Driver struct {
 	hook      Hook
 	prefilter Prefilter
 	netns     string
 
-	// open dials the netlink surface of the target namespace —
-	// openNetlink in production, the fake kernel stand-in in the
-	// driver's tests.
+	// open dials the target namespace's netlink surface: openNetlink in
+	// production, the fake kernel in tests.
 	open func() (kernelConn, io.Closer, error)
 
-	// The skip-if-unchanged state, per driver instance: the ruleset
-	// hash last applied here (installed marks that an apply has
-	// succeeded — the zero hash is a legal hash).
+	// Skip-if-unchanged state: the hash last applied here; installed
+	// marks a succeeded apply (the zero hash is a legal hash).
 	hash      uint32
 	installed bool
 }
 
 var _ firewall.Driver = (*Driver)(nil)
 
-// Prefilter is this driver's enforcement scope — the service
-// prefilter of the protected destinations every effective rule
-// matches first: a ban reaches only traffic whose destination port is
-// in DstPorts and whose destination address is in DstAddrs — service
-// traffic only, never SSH, monitoring, or unrelated forwarded
-// traffic. Either set may be empty, meaning all; both are operator
-// configuration (--nft-service-port, --nft-service-address).
-// Enforcement scope is driver configuration, not part of the ban rule
-// (ADR 0012): it is folded into this driver's effective rules and
-// therefore its ruleset hash, so changing it re-enforces.
+// Prefilter is this driver's enforcement scope: a ban reaches only
+// traffic whose destination port is in DstPorts and whose destination
+// address is in DstAddrs. Either set may be empty, meaning all
+// (--nft-service-port, --nft-service-address). Scope is driver
+// configuration, folded into the ruleset hash (ADR 0012), so
+// changing it re-enforces.
 type Prefilter struct {
 	DstPorts []uint16
 	DstAddrs []netip.Prefix
 }
 
-// Config is one enforcement point's configuration — everything this
-// driver's own flags bind: the enforcement hook, the enforcement scope
-// (the service prefilter), and the target namespace's nsfs handle path
-// ("" is the current namespace).
+// Config is one enforcement point's configuration: hook, enforcement
+// scope, and target namespace nsfs handle path ("" is the current
+// namespace).
 type Config struct {
 	Hook      Hook
 	Prefilter Prefilter
 	NetNSPath string
 }
 
-// kernelConn is the netlink surface the driver flushes through —
-// *nftables.Conn in production, the fake kernel stand-in in the
-// driver's tests. The driver's plan/apply logic is verified against
-// the stand-in without privileges (fakekernel_test.go); the real
-// encoding is verified by the root-gated kernel test.
+// kernelConn is the netlink surface the driver flushes through:
+// *nftables.Conn in production, the fake kernel in tests.
 type kernelConn interface {
 	AddTable(*nftables.Table) *nftables.Table
 	AddChain(*nftables.Chain) *nftables.Chain
@@ -138,9 +122,9 @@ type kernelConn interface {
 
 var _ kernelConn = (*nftables.Conn)(nil)
 
-// New builds a driver for one enforcement point — one target
-// namespace, one enforcement hook and one enforcement scope. The nsfs
-// handle is re-opened on every apply and reset — a recreated container
+// New builds a driver for one enforcement point: one target
+// namespace, one enforcement hook, one enforcement scope. The nsfs
+// handle is re-opened on every apply/reset so a recreated container
 // is picked up through its stable handle.
 func New(cfg Config) (*Driver, error) {
 	if !cfg.Hook.valid() {
@@ -151,16 +135,12 @@ func New(cfg Config) (*Driver, error) {
 	return d, nil
 }
 
-// openNetlink dials the real netlink connection to this driver's
-// target namespace — the current one for an empty path. The
-// per-namespace connection is created through the library's
-// namespace-fd option (no setns, no thread locking in application
-// code), and the nsfs handle is re-opened on every call and kept open
-// until the connection's Flush returns: the library dials lazily at
-// flush time and the open handle is what keeps the namespace alive
-// meanwhile. A handle that cannot be opened is a vanished namespace:
-// it wraps firewall.ErrUnreachable, which the update cycle warns and
-// skips.
+// openNetlink dials netlink to this driver's target namespace (the
+// current one for an empty path) through the library's namespace-fd
+// option — no setns. The nsfs handle stays open until Flush returns:
+// the library dials lazily at flush time and the handle is what
+// keeps the namespace alive meanwhile. An unopenable handle is a
+// vanished namespace: it wraps firewall.ErrUnreachable.
 func (d *Driver) openNetlink() (kernelConn, io.Closer, error) {
 	if d.netns == "" {
 		conn, err := nftables.New()
@@ -181,16 +161,13 @@ func (d *Driver) openNetlink() (kernelConn, io.Closer, error) {
 	return conn, nsFile, nil
 }
 
-// ownedTable is the wholly-owned table both Install and Reset address.
 func ownedTable() *nftables.Table {
 	return &nftables.Table{Family: nftables.TableFamilyINet, Name: tableName}
 }
 
-// tableExists probes for the owned table: the cheap existence check
-// every apply consults before anything is decided (only a table known
-// to exist may skip, and only a present table's delete may join the
-// batch — a delete of a missing table aborts the whole batch with
-// ENOENT).
+// tableExists probes for the owned table: a delete of a missing
+// table aborts the whole batch with ENOENT, so only a present
+// table's delete may join the batch.
 func tableExists(conn kernelConn, table *nftables.Table) (bool, error) {
 	if _, err := conn.ListTableOfFamily(table.Name, table.Family); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -202,27 +179,18 @@ func tableExists(conn kernelConn, table *nftables.Table) (bool, error) {
 }
 
 // Plan is the pure planning step — no I/O, no privileges: it derives
-// the effective rules this driver would install (the ban rules it can
-// honour, after the declines and the drops, narrowed to the target
-// prefixes that reach their address families), their placement labels
-// (the chain each rule installs in at the hook that chain attaches to
-// — so a change of --hook is a change of effective rules), the
-// ruleset hash folding those effective rules, and the declines with
-// reasons. --dry-run prints exactly this. A ban rule the driver can
-// neither honour nor decline — an unknown stance, a limit without a
-// usable rate — refuses the plan loudly.
+// the effective rules (the ban rules it can honour, narrowed to the
+// target prefixes that reach their address families), their
+// placement labels (a change of --hook is a change of effective
+// rules), the ruleset hash, and the declines with reasons. --dry-run
+// prints exactly this. A ban rule neither honourable nor declinable
+// refuses the plan loudly.
 func (d *Driver) Plan(rules []firewall.BanRule) (firewall.Plan, error) {
 	plan := firewall.Plan{}
 	for i, r := range rules {
 		if r.Stance == firewall.StanceLimitReqRate {
-			// A limit-req-rate Penalty throttles requests per second —
-			// application-layer intent the packet layer cannot count —
-			// so this driver declines it with a reason and installs
-			// nothing for it, never faking the request rate as a packet
-			// or byte meter (ADR 0012 narrows ADR 0011: non-application
-			// is this driver's decision, not a blanket policy). The
-			// decline references the ban rule by its index in the
-			// ruleset handed to the driver.
+			// limit-req-rate is application-layer intent the packet layer
+			// cannot count: declined, never faked as a meter (ADR 0012).
 			plan.Declined = append(plan.Declined, firewall.Decline{
 				Rule:    i,
 				Feature: string(r.Stance),
@@ -252,12 +220,9 @@ func (d *Driver) Plan(rules []firewall.BanRule) (firewall.Plan, error) {
 	return plan, nil
 }
 
-// hashEffective folds the driver's effective rules into the ruleset
-// hash with the seam's rolling-hash helpers: every effective rule's
-// step carries its targets, the configured enforcement scope it
-// matches under — the destination ports and addresses, so changing
-// the scope changes the hash and re-enforces — its stance, its rate
-// and its placement label.
+// hashEffective folds the effective rules into the ruleset hash:
+// targets, the enforcement scope matched under (so changing it
+// re-enforces), stance, rate, placement label.
 func (d *Driver) hashEffective(rules []firewall.PlannedRule) uint32 {
 	h := firewall.NewHasher()
 	for _, r := range rules {
@@ -282,8 +247,7 @@ func (d *Driver) hashEffective(rules []firewall.PlannedRule) uint32 {
 }
 
 // placement reports the ban rule's placement label — the chain it
-// installs in at the hook that chain attaches to — and refuses a
-// stance this driver cannot enforce at the packet layer.
+// installs in at the hook that chain attaches to.
 func (d *Driver) placement(s firewall.Stance) (string, error) {
 	name, matchDst, err := directionOf(s)
 	if err != nil {
@@ -291,9 +255,8 @@ func (d *Driver) placement(s firewall.Stance) (string, error) {
 	}
 	hook := string(d.hook) // the ingress chain attaches at the configured hook
 	if matchDst {
-		// The egress chain carries the response direction: locally
-		// generated responses at output in input mode, transit
-		// responses at forward in prerouting mode.
+		// The egress chain meters the response direction: output in
+		// input mode (local responses), forward in prerouting mode.
 		hook = "output"
 		if d.hook == HookPrerouting {
 			hook = "forward"
@@ -303,10 +266,8 @@ func (d *Driver) placement(s firewall.Stance) (string, error) {
 }
 
 // directionOf reports the chain a stance installs in and where its
-// target match looks: source on the ingress chain for the
-// source-facing stances, destination on the egress chain for the
-// bandwidth meter (the response direction its unit names). Unknown
-// stances are refused loudly.
+// target match looks: source on ingress, destination on egress for
+// the bandwidth meter (the response direction its unit names).
 func directionOf(s firewall.Stance) (name string, matchDst bool, err error) {
 	switch s {
 	case firewall.StanceDrop, firewall.StanceReject, firewall.StanceLimitPktRate:
@@ -318,8 +279,8 @@ func directionOf(s firewall.Stance) (name string, matchDst bool, err error) {
 }
 
 // checkRate refuses a limit stance without a rate the kernel meter
-// can honour exactly as stated — no rate means nothing to meter, and
-// the driver never tunes a stated rate.
+// can honour exactly as stated — the driver never tunes a stated
+// rate.
 func checkRate(r firewall.BanRule) error {
 	switch r.Stance {
 	case firewall.StanceLimitPktRate, firewall.StanceLimitBandwidth:
@@ -334,21 +295,13 @@ func checkRate(r firewall.BanRule) error {
 }
 
 // Apply replaces the owned table wholesale in one atomic batch — or
-// skips the install when the plan's hash matches the ruleset it last
-// applied here and the owned table still exists (probed fresh every
-// apply) — and reports what happened: the ruleset hash, the nonzero
-// packet/byte counters of the rules it replaced (the hits covering
-// the period since the last change; none on a skipped cycle) and the
-// ban-rule features it declines. The probe decides both the skip and
-// whether the delete joins the batch; the replaced rules' counters
-// are read back first; then the table, both chains and one kernel rule
-// per honoureable ban rule and address family — each leading with the
-// configured enforcement scope and carrying its packet/byte counter immediately
-// before the verdict — are buffered and flushed together. The table is
-// never absent while the new one applies — there is no
-// delete-then-rebuild window. A declined ban rule keeps its input
-// index (declines index the input rules; the counter read-back
-// indexes the replaced ruleset) and installs nothing.
+// skips when the plan's hash matches the ruleset it last applied and
+// the owned table still exists (probed fresh every apply) — and
+// reports the hash, the replaced rules' nonzero counters (the hits
+// since the last change), and the declines. The table is never
+// absent while the new one applies. A declined ban rule keeps its
+// input index (the counter read-back indexes the replaced ruleset)
+// and installs nothing.
 func (d *Driver) Apply(rules []firewall.BanRule) (firewall.Outcome, error) {
 	plan, err := d.Plan(rules)
 	if err != nil {
@@ -363,12 +316,9 @@ func (d *Driver) Apply(rules []firewall.BanRule) (firewall.Outcome, error) {
 		defer closer.Close()
 	}
 	table := ownedTable()
-	// The existence probe — fresh every apply. Known limit: it is
-	// existence, not rule bodies — tampering under a surviving table is
-	// undetected. Only a table known to exist may skip (an unchanged
-	// ruleset must not hide behind a vanished enforcement point), and
-	// only a present table's delete may join the batch (deleting a
-	// missing one aborts the whole transaction with ENOENT).
+	// Known limit: existence only — tampering under a surviving table
+	// is undetected. Fresh every apply — an unchanged ruleset must not
+	// hide behind a vanished table.
 	exists, err := tableExists(conn, table)
 	if err != nil {
 		return firewall.Outcome{}, fmt.Errorf("apply: probe owned table: %w", err)
@@ -406,12 +356,10 @@ func (d *Driver) Apply(rules []firewall.BanRule) (firewall.Outcome, error) {
 	return firewall.Outcome{Hash: plan.Hash, Hits: hits, Declined: plan.Declined}, nil
 }
 
-// ruleHits reads the owned table's per-rule counters back, one hit per
-// ban rule: every kernel rule carries its counter immediately before
-// its verdict (addBanRule) and its ban rule's index in its set names,
-// so every reading maps onto the ban rule it counts — the index in the
-// ruleset being replaced. Only the nonzero readings come back: they
-// are the hits worth logging.
+// ruleHits reads the owned table's per-rule counters back, one hit
+// per ban rule: the counter position and the set-name index map each
+// reading onto the ban rule it counts — the ruleset being replaced.
+// Only nonzero readings come back.
 func ruleHits(conn kernelConn, table *nftables.Table) ([]firewall.Hit, error) {
 	byRule := map[int]firewall.Hit{}
 	for _, name := range []string{ingressName, egressName} {
@@ -447,10 +395,9 @@ func ruleHits(conn kernelConn, table *nftables.Table) ([]firewall.Hit, error) {
 	return hits, nil
 }
 
-// ruleCounter is a kernel rule's packet/byte counter (every ban rule
-// carries one immediately before its verdict), or false when the rule
-// carries none. It is found by shape rather than a fixed index: the
-// match exprs in front of it vary with the rule's prefilter.
+// ruleCounter is a kernel rule's packet/byte counter, or false when
+// it carries none. Found by shape, not index: the match exprs in
+// front vary with the rule's prefilter.
 func ruleCounter(r *nftables.Rule) (*expr.Counter, bool) {
 	for _, e := range r.Exprs {
 		if c, ok := e.(*expr.Counter); ok {
@@ -460,9 +407,9 @@ func ruleCounter(r *nftables.Rule) (*expr.Counter, bool) {
 	return nil, false
 }
 
-// ruleIndex maps a kernel rule back onto its ban rule: the ban rule's
-// index is baked into its set names (v4_3, port_3, … — the names
-// addBanRule builds them with), so the mapping survives restarts.
+// ruleIndex maps a kernel rule back onto its ban rule: the index is
+// baked into its set names (v4_3, port_3, …), so the mapping
+// survives restarts.
 func ruleIndex(r *nftables.Rule) (int, bool) {
 	for _, e := range r.Exprs {
 		l, ok := e.(*expr.Lookup)
@@ -497,8 +444,8 @@ func (d *Driver) Reset() error {
 }
 
 // ingress is the ingress base chain at the configured hook: filter
-// priority at input, fluxc's raw priority at prerouting so bans run
-// before conntrack.
+// priority at input, raw priority at prerouting so bans run before
+// conntrack.
 func (d *Driver) ingress(table *nftables.Table) *nftables.Chain {
 	c := &nftables.Chain{
 		Name:  ingressName,
@@ -514,10 +461,9 @@ func (d *Driver) ingress(table *nftables.Table) *nftables.Chain {
 	return c
 }
 
-// egress is the egress base chain carrying the bandwidth limits:
-// filter priority at output in input mode (locally generated
-// responses) and at forward in prerouting mode (transit responses) —
-// the response direction the limits' unit names.
+// egress is the egress base chain carrying the bandwidth limits, at
+// the response direction they meter: output in input mode (local
+// responses), forward in prerouting mode (transit responses).
 func (d *Driver) egress(table *nftables.Table) *nftables.Chain {
 	c := &nftables.Chain{
 		Name:  egressName,
@@ -533,26 +479,23 @@ func (d *Driver) egress(table *nftables.Table) *nftables.Chain {
 	return c
 }
 
-// addrFamily is one address family a ban rule can cover; the source
-// and destination offsets are fluxc's (IPv4 source at network-header
-// offset 12 and destination at 16, IPv6 source at 8 and destination at
-// 24). srcLen is the address length both loads share.
+// addrFamily is one address family a ban rule can cover; srcOff and
+// dstOff are the network-header offsets of its addresses, srcLen the
+// address length both loads share.
 type addrFamily struct {
-	name    string
-	proto   byte
-	keyType nftables.SetDatatype
-	srcOff  uint32
-	srcLen  uint32
-	dstOff  uint32
-	is      func(netip.Prefix) bool
-	setName func(i int) string
-	// dstSetName names the family's destination-address prefilter set.
+	name       string
+	proto      byte
+	keyType    nftables.SetDatatype
+	srcOff     uint32
+	srcLen     uint32
+	dstOff     uint32
+	is         func(netip.Prefix) bool
+	setName    func(i int) string
 	dstSetName func(i int) string
 }
 
-// The two families an inet table covers. Set names are the ban rule's
-// target prefixes per family and index (fluxc's naming); the
-// destination-address prefilter sets follow the same shape.
+// The two families an inet table covers. Set names carry the ban
+// rule's index (parsed back by ruleIndex).
 var families = []addrFamily{
 	{
 		name:       "v4",
@@ -578,17 +521,13 @@ var families = []addrFamily{
 	},
 }
 
-// The destination-port prefilter's own sets, per rule index: the l4
-// gate (tcp and udp — the transports whose packets carry ports) and
-// the port set itself. Family-independent, so both families' rules
-// share them.
+// The destination-port prefilter's sets, per rule index: the l4 gate
+// and the port set. Family-independent — both families share them.
 var (
 	l4SetName   = func(i int) string { return fmt.Sprintf("l4_%d", i) }
 	portSetName = func(i int) string { return fmt.Sprintf("port_%d", i) }
 )
 
-// familyRule is one ban rule's per-family slice: the family and the
-// target and destination-address prefixes it installs there.
 type familyRule struct {
 	family   addrFamily
 	targets  []netip.Prefix
@@ -596,11 +535,9 @@ type familyRule struct {
 }
 
 // ruleFamilies splits one ban rule per address family the configured
-// enforcement scope can reach: a family with no target prefix is out,
-// and when the operator configured destination addresses and none is
-// in the family, nothing there is service traffic and the family is
-// out too — it gets no kernel rule at all. All families out means the
-// ban rule installs nothing — the drop the planning step folds away.
+// scope can reach: a family with no target prefix is out, as is one
+// where configured destination addresses match none (no service
+// traffic lives there). All out means the ban rule installs nothing.
 func (d *Driver) ruleFamilies(r firewall.BanRule) []familyRule {
 	var fams []familyRule
 	for _, fam := range families {
@@ -617,24 +554,16 @@ func (d *Driver) ruleFamilies(r firewall.BanRule) []familyRule {
 	return fams
 }
 
-// addBanRule buffers one ban rule's sets and kernel rules: every
-// address family the configured enforcement scope can reach gets one
-// interval set of the rule's Target prefixes and one kernel rule that
-// leads with the enforcement scope — the destination-port set first,
-// then the destination-address set, either empty meaning all — before
-// the target match, the packet/byte counter and the stance's verdict.
-// The direction split of the penalty mapping: bandwidth meters the response direction on the
-// egress chain, matched on destination ∈ Target; every other stance
-// matches source on the ingress chain.
+// addBanRule buffers one ban rule's sets and kernel rules: one
+// interval set of the Target prefixes and one kernel rule per
+// reachable family, leading with the enforcement scope (port set,
+// then destination-address set, either empty meaning all), then the
+// target match, the counter and the stance's verdict.
 func (d *Driver) addBanRule(conn kernelConn, table *nftables.Table, ingress, egress *nftables.Chain, i int, r firewall.BanRule) error {
 	verdict, err := verdictExprs(r)
 	if err != nil {
 		return err
 	}
-	// The direction split of the penalty mapping (directionOf):
-	// bandwidth meters the response direction on the egress chain,
-	// matched on destination ∈ Target; every other stance matches
-	// source on the ingress chain.
 	_, matchDst, err := directionOf(r.Stance)
 	if err != nil {
 		return err
@@ -665,9 +594,8 @@ func (d *Driver) addBanRule(conn kernelConn, table *nftables.Table, ingress, egr
 		}, portElements(d.prefilter.DstPorts)); err != nil {
 			return err
 		}
-		// Ports are transport-header bytes: gate on tcp and udp so no
-		// other protocol's header bytes can match the port set by
-		// accident — a ban reaches service traffic only.
+		// Ports are transport-header bytes: the tcp/udp gate keeps
+		// other protocols' header bytes from matching by accident.
 		portExprs = []expr.Any{
 			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 			&expr.Lookup{SourceRegister: 1, SetName: l4SetName(i)},
@@ -687,8 +615,6 @@ func (d *Driver) addBanRule(conn kernelConn, table *nftables.Table, ingress, egr
 			return err
 		}
 		exprs := []expr.Any{
-			// The family gate leads: only this family's packets can
-			// reach the rule's matches at all.
 			&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
 			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{fam.proto}},
 		}
@@ -712,10 +638,8 @@ func (d *Driver) addBanRule(conn kernelConn, table *nftables.Table, ingress, egr
 			&expr.Payload{DestRegister: 1, OperationType: expr.PayloadLoad,
 				Base: expr.PayloadBaseNetworkHeader, Offset: matchOff(fam), Len: fam.srcLen},
 			&expr.Lookup{SourceRegister: 1, SetName: fam.setName(i)},
-			// The counter comes after every match expr and immediately
-			// before the verdict: it counts only the packets this ban
-			// rule matches, so its nonzero readings are the hits worth
-			// logging at the next install.
+			// The counter sits after every match and immediately before
+			// the verdict, so it counts only the ban rule's own hits.
 			&expr.Counter{},
 		)
 		exprs = append(exprs, verdict...)
@@ -728,7 +652,6 @@ func (d *Driver) addBanRule(conn kernelConn, table *nftables.Table, ingress, egr
 	return nil
 }
 
-// familyPrefixes returns the prefixes of one address family.
 func familyPrefixes(prefixes []netip.Prefix, fam addrFamily) []netip.Prefix {
 	var out []netip.Prefix
 	for _, p := range prefixes {
@@ -739,8 +662,6 @@ func familyPrefixes(prefixes []netip.Prefix, fam addrFamily) []netip.Prefix {
 	return out
 }
 
-// l4Elements is the l4proto gate of the port prefilter: tcp and udp,
-// the transports whose packets carry a destination port.
 var l4Elements = []nftables.SetElement{
 	{Key: []byte{unix.IPPROTO_TCP}},
 	{Key: []byte{unix.IPPROTO_UDP}},
@@ -757,16 +678,12 @@ func portElements(ports []uint16) []nftables.SetElement {
 	return elems
 }
 
-// verdictExprs maps a ban rule's stance onto its verdict expressions
-// — the stance switch of the contract's penalty mapping (unknown
-// stances error loudly). Reject is the inet family's icmpx
-// admin-prohibited: TCP peers get a reset automatically. A rate meter
-// matches only once its rate is exceeded (the nft "limit rate over …"
-// flag), so the drop applies to the excess while in-rate traffic falls
-// through to the next rule; its burst is one second's worth of the
-// rate, floored (burstFor). The kernel accepts reject at prerouting
-// only from ~5.9 — older kernels refuse the batch, the documented
-// floor for --hook prerouting (ticket 09 documents it).
+// verdictExprs maps a stance onto its verdict expressions (unknown
+// stances error loudly). Reject is icmpx admin-prohibited: TCP peers
+// get a reset automatically. The rate meter's Over flag drops only
+// the traffic past the rate. Reject at prerouting needs kernel ~5.9 —
+// older kernels refuse the batch, the documented floor for --hook
+// prerouting.
 func verdictExprs(r firewall.BanRule) ([]expr.Any, error) {
 	switch r.Stance {
 	case firewall.StanceDrop:
@@ -800,9 +717,8 @@ func verdictExprs(r firewall.BanRule) ([]expr.Any, error) {
 }
 
 // burstFor derives a rate meter's burst: one second's worth of the
-// rate (Rate per second × 1s), floored to the kernel's 32-bit burst
-// field. The spec derives the burst — there is no burst flag in v0:
-// nft's tiny default burst would drop legitimate micro-bursts.
+// rate, floored to the kernel's 32-bit field. nft's tiny default
+// burst would drop legitimate micro-bursts.
 func burstFor(rate int64) uint32 {
 	if rate > math.MaxUint32 {
 		return math.MaxUint32
@@ -810,12 +726,11 @@ func burstFor(rate int64) uint32 {
 	return uint32(rate) // rate >= 1 where the compiler emits it
 }
 
-// intervalElements encodes masked Target prefixes as an interval set's
-// element pairs (fluxc's encoding): every range starts at its base
-// address and ends at the first address after it, flagged IntervalEnd
-// — the kernel matches [start, end). A range that reaches the top of
-// the address space has no representable end there, so it gets the
-// kernel's null end (the all-zero key): [start, top].
+// intervalElements encodes masked Target prefixes as an interval
+// set's element pairs: [start, end), end flagged IntervalEnd and
+// holding the first address after the range. A range reaching the top
+// of the address space has no representable end, so it gets the
+// kernel's null end: [start, top].
 func intervalElements(prefixes []netip.Prefix) []nftables.SetElement {
 	var elems []nftables.SetElement
 	for _, p := range prefixes {
@@ -834,16 +749,13 @@ func intervalElements(prefixes []netip.Prefix) []nftables.SetElement {
 }
 
 // prefixEnd returns the first address after p's range as raw key
-// bytes, or nil when the range reaches the top of the address space
-// (no representable end; the caller uses the null end).
+// bytes, or nil when the range reaches the top of the address space.
 func prefixEnd(p netip.Prefix) []byte {
 	start := p.Addr().AsSlice()
 	end := make([]byte, len(start))
 	bits := p.Bits()
 	for i := range end {
-		// Set every host bit of the base address: the last address of
-		// the range. kept is how many leading bits of this byte the
-		// prefix keeps.
+		// Set the byte's host bits: end holds the range's last address.
 		kept := min(max(bits-8*i, 0), 8)
 		end[i] = start[i] | byte(0xff>>kept)
 	}

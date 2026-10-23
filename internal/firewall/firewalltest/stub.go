@@ -1,7 +1,7 @@
 // Package firewalltest holds the recording test doubles the
-// update-cycle seam observes: doubles on the firewall-driver port
-// that never touch an enforcement surface, so lifecycle behaviour
-// stays testable without privileges.
+// update-cycle seam observes: firewall drivers that never touch an
+// enforcement surface, so lifecycle behavior is testable without
+// privileges.
 package firewalltest
 
 import (
@@ -11,14 +11,10 @@ import (
 	"github.com/HT4w5/bandage/internal/firewall"
 )
 
-// Stub is a recording firewall.Driver: the test double the
-// update-cycle seam observes. It never touches an enforcement surface,
-// so lifecycle behavior is testable without privileges. Its plan puts
-// every input ban rule it does not decline in effect under the
-// Placement label it is configured with, and hashes those effective
-// rules with the seam's shared helper — so the ruleset hash the engine
-// logs is deterministic across runs. What it applies, skips and
-// reports is scripted per test.
+// Stub is a recording firewall.Driver. It never touches an enforcement
+// surface. Its plan puts every non-declined input ban rule in effect
+// under the configured Placement, hashed with the seam's shared
+// helper; what it applies, skips and reports is scripted per test.
 type Stub struct {
 	// ApplyErr, when set before use, makes Apply fail.
 	ApplyErr error
@@ -27,18 +23,16 @@ type Stub struct {
 	ResetErr error
 
 	// Skip, when set before use, makes every Apply report the cycle as
-	// skipped — the unchanged ruleset the driver leaves alone — with
-	// no hits.
+	// skipped, with no hits.
 	Skip bool
 
-	// ApplyHits, when set before use, are the nonzero counter readings
-	// every installing Apply reports — the hits the update cycle
-	// logs.
+	// ApplyHits, when set before use, are the counter readings every
+	// installing Apply reports.
 	ApplyHits []firewall.Hit
 
 	// ApplyDeclined, when set before use, are the ban-rule features
-	// Plan and Apply report declined — the declines the update cycle
-	// logs and counts. A declined ban rule is not effective.
+	// Plan and Apply report declined. A declined ban rule is not
+	// effective.
 	ApplyDeclined []firewall.Decline
 
 	// Placement is the placement label every planned rule carries.
@@ -49,17 +43,15 @@ type Stub struct {
 	resets  int
 }
 
-// Plan reports every input ban rule in effect — the declined ones
-// dropped — under the configured placement label, with the ruleset
-// hash folding those effective rules.
+// Plan reports every non-declined input ban rule in effect under the
+// configured placement label.
 func (s *Stub) Plan(rules []firewall.BanRule) (firewall.Plan, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.planOf(rules), nil
+	return s.scriptedPlan(rules), nil
 }
 
-// planOf derives the scripted plan over rules.
-func (s *Stub) planOf(rules []firewall.BanRule) firewall.Plan {
+func (s *Stub) scriptedPlan(rules []firewall.BanRule) firewall.Plan {
 	plan := firewall.Plan{Declined: slices.Clone(s.ApplyDeclined)}
 	declined := map[int]bool{}
 	for _, d := range plan.Declined {
@@ -75,10 +67,7 @@ func (s *Stub) planOf(rules []firewall.BanRule) firewall.Plan {
 	return plan
 }
 
-// Apply records the ruleset and reports the scripted outcome: ApplyErr
-// fails the call; otherwise Skip reports the cycle as skipped with no
-// hits, and an installing cycle carries ApplyHits and the plan's
-// declines.
+// Apply records the ruleset and reports the scripted outcome.
 func (s *Stub) Apply(rules []firewall.BanRule) (firewall.Outcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -86,7 +75,7 @@ func (s *Stub) Apply(rules []firewall.BanRule) (firewall.Outcome, error) {
 		return firewall.Outcome{}, s.ApplyErr
 	}
 	s.applies = append(s.applies, slices.Clone(rules))
-	plan := s.planOf(rules)
+	plan := s.scriptedPlan(rules)
 	if s.Skip {
 		return firewall.Outcome{Skipped: true, Hash: plan.Hash, Declined: plan.Declined}, nil
 	}
@@ -108,7 +97,6 @@ func (s *Stub) ApplyCalls() [][]firewall.BanRule {
 	return slices.Clone(s.applies)
 }
 
-// ResetCalls returns how many times Reset ran.
 func (s *Stub) ResetCalls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
