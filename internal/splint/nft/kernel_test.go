@@ -37,7 +37,7 @@ func TestKernelInstallReadBackReset(t *testing.T) {
 	if exists, err := tableExists(conn, ownedTable()); err != nil {
 		t.Fatalf("probe owned table: %v", err)
 	} else if exists {
-		t.Skipf("table %q exists: a splint-nft instance may be enforcing here", tableName)
+		t.Skipf("table %q exists: a splint instance may be enforcing here", tableName)
 	}
 	// Whatever the test does halfway, the owned table must not outlive it.
 	t.Cleanup(func() {

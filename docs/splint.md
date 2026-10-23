@@ -1,6 +1,6 @@
-# splint-nft: installing ban rules
+# splint: installing ban rules
 
-`splint-nft` is the companion binary that turns bandage's advice into
+`splint` is the companion binary that turns bandage's advice into
 enforcement. It fetches the report document (`GET /reports`, see
 [the report document](reports.md)) on a fixed interval, compiles every
 live [Report](../GLOSSARY.md) into [ban rules](../GLOSSARY.md), and
@@ -24,7 +24,7 @@ floodgates:
 - **`--dry-run`** prints the compiled ban rules without touching netlink
   and without privileges.
 
-The report document is consumed as published: `splint-nft` parses the
+The report document is consumed as published: `splint` parses the
 contract, ignores unknown fields, refuses a document `version` it does
 not know (keeping the last installed rules), and skips individual
 malformed Reports with a log and a counter instead of failing the cycle.
@@ -128,13 +128,13 @@ unrelated forwarded traffic even when a Report targets a broad prefix.
 
 ## Auditing with --dry-run
 
-Preview and verify a ruleset before enforcing it: run `splint-nft` with
+Preview and verify a ruleset before enforcing it: run `splint` with
 `--dry-run` and **the same flags the service will run with** — the
 exclusion and prefilter flags change the compiled ruleset, so audit
 exactly what you will deploy:
 
 ```console
-$ bin/splint-nft --dry-run --url http://127.0.0.1:8080/reports \
+$ bin/splint --dry-run --url http://127.0.0.1:8080/reports \
     --service-port 443 --service-address 203.0.113.10/32
 ```
 
@@ -184,24 +184,24 @@ second identical run. Then deploy the same flags via the sample unit.
 ## Deploying: the sample systemd unit
 
 The repo ships a sample unit at
-[`configs/splint-nft.service`](../configs/splint-nft.service). It runs
-`splint-nft` against a bandage endpoint on the host namespace:
+[`configs/splint.service`](../configs/splint.service). It runs
+`splint` against a bandage endpoint on the host namespace:
 
 ```text
-ExecStart=/usr/local/bin/splint-nft --url http://127.0.0.1:8080/reports
+ExecStart=/usr/local/bin/splint --url http://127.0.0.1:8080/reports
 ```
 
 Install and enable:
 
 ```console
 $ make build
-$ install -m 0755 bin/splint-nft /usr/local/bin/splint-nft
-$ install -m 0644 configs/splint-nft.service /etc/systemd/system/splint-nft.service
-# edit /etc/systemd/system/splint-nft.service: point --url at your
+$ install -m 0755 bin/splint /usr/local/bin/splint
+$ install -m 0644 configs/splint.service /etc/systemd/system/splint.service
+# edit /etc/systemd/system/splint.service: point --url at your
 # bandage endpoint (and add the flags you audited with --dry-run)
 $ systemctl daemon-reload
-$ systemctl enable --now splint-nft
-$ journalctl -u splint-nft -f
+$ systemctl enable --now splint
+$ journalctl -u splint -f
 ```
 
 `systemctl start` performs the startup test install; the journal shows
@@ -210,7 +210,7 @@ check out. Installing nftables rules needs `CAP_NET_ADMIN` — the sample
 unit runs as root by default and carries a commented block for a
 dedicated user instead. A startup test install that keeps failing
 (broken flags, endpoint or kernel) stops retrying and leaves the unit
-failed — `systemctl status splint-nft` says why.
+failed — `systemctl status splint` says why.
 
 `systemctl stop` is SIGTERM: the owned table is reset before exit, so
 stopping the service removes its ban rules. (A *crashed* installer
@@ -260,7 +260,7 @@ namespace PID lives in (root required):
 
 ```console
 $ ip netns attach splint-web "$(pgrep -n nginx)"
-$ splint-nft --url http://127.0.0.1:8080/reports --netns /run/netns/splint-web
+$ splint --url http://127.0.0.1:8080/reports --netns /run/netns/splint-web
 ```
 
 When the process is recreated, re-attach the name to its new pid
@@ -278,7 +278,7 @@ host:
 ```console
 $ docker inspect -f '{{.State.Pid}}' web
 23456
-$ splint-nft --url http://127.0.0.1:8080/reports --netns /proc/23456/ns/net
+$ splint --url http://127.0.0.1:8080/reports --netns /proc/23456/ns/net
 ```
 
 This handle dies with the container: a recreated container has a new
@@ -288,7 +288,7 @@ restart:
 
 ```console
 $ ip netns attach splint-web "$(docker inspect -f '{{.State.Pid}}' web)"
-$ splint-nft --url http://127.0.0.1:8080/reports --netns /run/netns/splint-web
+$ splint --url http://127.0.0.1:8080/reports --netns /run/netns/splint-web
 ```
 
 ## Caveats
