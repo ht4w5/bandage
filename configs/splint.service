@@ -1,18 +1,22 @@
 # Sample systemd unit for splint, the ban-rule installer: it pulls
-# bandage's report document and installs ban rules into the splint
-# nftables table (docs/splint.md).
+# bandage's report document and installs ban rules through the selected
+# firewall driver — nftables by default, into the splint nftables
+# table (docs/splint.md).
 #
 # Install and enable:
 #   make build
 #   install -m 0755 bin/splint /usr/local/bin/splint
 #   install -m 0644 configs/splint.service /etc/systemd/system/splint.service
-#   # point ExecStart's --url at your bandage endpoint first
+#   # edit /etc/systemd/system/splint.service: point --url at your
+#   # bandage endpoint (and add the flags you audited with --dry-run)
 #   systemctl daemon-reload
 #   systemctl enable --now splint
+#   journalctl -u splint -f
 #
-# One instance per network namespace. A clean stop (systemctl stop) is
-# SIGTERM, which resets the splint table before exit — stopping the
-# service removes its ban rules.
+# One instance per enforcement point (nftables: per network
+# namespace). A clean stop (systemctl stop) is SIGTERM, which resets
+# the owned ruleset before exit — stopping the service removes its ban
+# rules.
 
 [Unit]
 Description=bandage ban-rule installer (splint)

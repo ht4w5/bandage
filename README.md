@@ -13,8 +13,9 @@ tooling turns into ban rules.
 - [docs/rules.md](docs/rules.md) — writing rules, Match/Trigger
   semantics, and the tracker-less tripwire pattern
 - [docs/splint.md](docs/splint.md) — splint, the companion
-  binary that installs ban rules from reports: flag reference, penalty
-  mapping, deployment and caveats
+  binary that installs ban rules from reports: engine options and
+  lifecycle, the firewall-driver reference (nftables today),
+  deployment and caveats
 - [docs/storage.md](docs/storage.md) — the report store on sqlite WAL:
   the files beside the database and backing them up
 
