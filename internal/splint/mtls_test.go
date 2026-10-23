@@ -18,6 +18,9 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
+	"github.com/HT4w5/bandage/internal/firewall"
+	"github.com/HT4w5/bandage/internal/firewall/firewalltest"
 )
 
 // Primary seam: the transport — the update cycle driven against an
@@ -163,13 +166,13 @@ func newMutualTLSServer(t *testing.T, pki *testPKI) *docServer {
 // newTransportUpdater wires the seam with the operator's fetch options:
 // a real fetcher against the report endpoint, the recording stub driver
 // and a capturing logger.
-func newTransportUpdater(t *testing.T, rawURL string, opts ...Option) (*Updater, *Stub) {
+func newTransportUpdater(t *testing.T, rawURL string, opts ...Option) (*Updater, *firewalltest.Stub) {
 	t.Helper()
 	fetcher, err := NewFetcher(rawURL, opts...)
 	if err != nil {
 		t.Fatalf("NewFetcher: %v", err)
 	}
-	stub := &Stub{}
+	stub := &firewalltest.Stub{}
 	return New(fetcher, stub, defaultPolicy(), DefaultInterval, zerolog.New(&logCapture{})), stub
 }
 
@@ -191,7 +194,7 @@ func TestUpdateCycleMutualTLS(t *testing.T) {
 	if len(skips) != 0 {
 		t.Errorf("skipped %d report records, want 0", len(skips))
 	}
-	assertInstalls(t, stub, []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+	assertInstalls(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 }
 
 // TestUpdateCycleRefusesTheWrongCA: the wrong-CA failures — a cycle
@@ -206,7 +209,7 @@ func TestUpdateCycleRefusesTheWrongCA(t *testing.T) {
 	// badOpts, both on one driver so the last rules can be kept.
 	keepLast := func(t *testing.T, badOpts ...Option) {
 		t.Helper()
-		stub := &Stub{}
+		stub := &firewalltest.Stub{}
 		logs := &logCapture{}
 		newUpdater := func(opts ...Option) *Updater {
 			fetcher, err := NewFetcher(srv.URL, opts...)
@@ -221,7 +224,7 @@ func TestUpdateCycleRefusesTheWrongCA(t *testing.T) {
 		if _, err := newUpdater(badOpts...).Update(context.Background()); err == nil {
 			t.Fatal("second Update succeeded, want an error")
 		}
-		assertInstalls(t, stub, []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+		assertInstalls(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 		if stub.ResetCalls() != 0 {
 			t.Errorf("Reset ran %d times, want 0", stub.ResetCalls())
 		}
@@ -245,5 +248,5 @@ func TestUpdateCyclePlainHTTP(t *testing.T) {
 	if _, err := u.Update(context.Background()); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	assertInstalls(t, stub, []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+	assertInstalls(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 }

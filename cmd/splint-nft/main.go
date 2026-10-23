@@ -22,9 +22,10 @@ import (
 	"github.com/rs/zerolog"
 	flag "github.com/spf13/pflag"
 
+	"github.com/HT4w5/bandage/internal/firewall"
+	"github.com/HT4w5/bandage/internal/firewall/nft"
 	"github.com/HT4w5/bandage/internal/identity"
 	"github.com/HT4w5/bandage/internal/splint"
-	"github.com/HT4w5/bandage/internal/splint/nft"
 )
 
 // Exit codes: 0 for a clean run, 1 for a load or run error, 2 for a bad
@@ -152,7 +153,7 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	}
 	// Exclusions are subtracted compiler-side: the driver installs
 	// Targets verbatim. Every ban rule leads with the service prefilter.
-	policy := splint.NewPolicy(exclude, opts.excludePrivate, splint.Prefilter{
+	policy := splint.NewPolicy(exclude, opts.excludePrivate, firewall.Prefilter{
 		DstPorts: opts.servicePort,
 		DstAddrs: dstAddrs,
 	})

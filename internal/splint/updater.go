@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
+	"github.com/HT4w5/bandage/internal/firewall"
 )
 
 // DefaultInterval is the update interval unless the operator says
@@ -54,7 +56,7 @@ type Updater struct {
 // held across cycles.
 type Namespace struct {
 	Path   string
-	Driver Driver
+	Driver firewall.Driver
 }
 
 // name is the operator-facing namespace name in logs and warnings.
@@ -98,7 +100,7 @@ func (s *nsState) setInstalled(hash uint32) {
 // New assembles an Updater over a single driver — the default shape,
 // enforcing in one namespace. The update interval is clamped to
 // MinInterval, warning the operator when it is.
-func New(f *Fetcher, d Driver, p Policy, interval time.Duration, log zerolog.Logger) *Updater {
+func New(f *Fetcher, d firewall.Driver, p Policy, interval time.Duration, log zerolog.Logger) *Updater {
 	return newUpdater(f, []Namespace{{Driver: d}}, p, interval, log)
 }
 
@@ -152,14 +154,14 @@ func (u *Updater) Update(ctx context.Context) ([]Skip, error) {
 // missing netlink privileges surface at the startup install.
 // Unchanged rules skip the reinstall per namespace, provided the
 // namespace's table still exists (probed fresh every cycle).
-func (u *Updater) installAll(rules []BanRule, hash uint32) error {
+func (u *Updater) installAll(rules []firewall.BanRule, hash uint32) error {
 	var failed []error
 	for _, target := range u.targets {
 		name := target.name()
 		if target.unchanged(hash) {
 			exists, err := target.Driver.TableExists()
 			switch {
-			case errors.Is(err, ErrUnreachable):
+			case errors.Is(err, firewall.ErrUnreachable):
 				u.log.Warn().Err(err).Str("netns", name).Msg("namespace unreachable; skipping for the cycle")
 				continue
 			case err == nil && exists:
@@ -172,12 +174,12 @@ func (u *Updater) installAll(rules []BanRule, hash uint32) error {
 			// A probe that could not decide is answered by installing:
 			// only a table known to exist may skip.
 		}
-		hits, err := target.Driver.Install(rules)
+		out, err := target.Driver.Install(rules)
 		if err == nil {
 			target.setInstalled(hash)
 			// The nonzero counters of the rules just replaced — what the
 			// enforcement did since the last change.
-			for _, h := range hits {
+			for _, h := range out.Hits {
 				u.log.Info().
 					Str("netns", name).
 					Int("rule", h.Rule).
@@ -185,10 +187,20 @@ func (u *Updater) installAll(rules []BanRule, hash uint32) error {
 					Uint64("bytes", h.Bytes).
 					Msg("ban rule hit")
 			}
-			u.log.Info().Str("netns", name).Int("rules", len(rules)).Msg("installed ban rules")
+			// Declined features are lost enforcement — logged and counted
+			// per rule and feature, never silently dropped.
+			for _, d := range out.Declined {
+				u.log.Warn().
+					Str("netns", name).
+					Int("rule", d.Rule).
+					Str("feature", d.Feature).
+					Str("reason", d.Reason).
+					Msg("declined ban rule feature")
+			}
+			u.log.Info().Str("netns", name).Int("rules", len(rules)).Int("declined", len(out.Declined)).Msg("installed ban rules")
 			continue
 		}
-		if errors.Is(err, ErrUnreachable) {
+		if errors.Is(err, firewall.ErrUnreachable) {
 			u.log.Warn().Err(err).Str("netns", name).Msg("namespace unreachable; skipping for the cycle")
 			continue
 		}
@@ -209,7 +221,7 @@ func (u *Updater) resetAll() error {
 		if err == nil {
 			continue
 		}
-		if errors.Is(err, ErrUnreachable) {
+		if errors.Is(err, firewall.ErrUnreachable) {
 			u.log.Warn().Err(err).Str("netns", target.name()).Msg("namespace unreachable at reset; tolerating")
 			continue
 		}
@@ -238,7 +250,11 @@ func (u *Updater) DryRun(ctx context.Context, w io.Writer) error {
 		if r.Rate != nil {
 			rate = strconv.FormatInt(*r.Rate, 10)
 		}
-		if _, err := fmt.Fprintf(w, "stance=%s rate=%s chain=%s\n", r.Stance, rate, r.Stance.Chain()); err != nil {
+		chain := "-" // limit-req-rate maps to no packet-layer chain (the driver declines it)
+		if c := r.Stance.Chain(); c != "" {
+			chain = string(c)
+		}
+		if _, err := fmt.Fprintf(w, "stance=%s rate=%s chain=%s\n", r.Stance, rate, chain); err != nil {
 			return err
 		}
 	}
@@ -249,7 +265,7 @@ func (u *Updater) DryRun(ctx context.Context, w io.Writer) error {
 // load fetches and compiles one report document, logging the ruleset
 // hash (every cycle), every skipped report record and the cycle's
 // counts, and returning the compiled ruleset with its rolling hash.
-func (u *Updater) load(ctx context.Context) ([]BanRule, []Skip, uint32, error) {
+func (u *Updater) load(ctx context.Context) ([]firewall.BanRule, []Skip, uint32, error) {
 	data, err := u.fetcher.Fetch(ctx)
 	if err != nil {
 		return nil, nil, 0, err

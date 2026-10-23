@@ -20,10 +20,13 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
+	"github.com/HT4w5/bandage/internal/firewall"
+	"github.com/HT4w5/bandage/internal/firewall/firewalltest"
 )
 
 // Primary seam: the update cycle driven against a fake report endpoint
-// (httptest) and observed at the firewall-driver boundary (the Stub):
+// (httptest) and observed at the firewall-driver boundary (the firewalltest.Stub):
 // given a report document, which ban rules are installed and when.
 // The report document's canonical example is the base fixture; every
 // validation gets a failing and a passing case.
@@ -227,8 +230,8 @@ func setReports(t *testing.T, doc map[string]any, specs []reportSpec) {
 
 // banRule is a compiled ban rule expectation: the stance, its rate
 // (nil for stances that carry none) over the given Targets.
-func banRule(stance Stance, rate *int64, targets ...string) BanRule {
-	r := BanRule{Stance: stance, Rate: rate}
+func banRule(stance firewall.Stance, rate *int64, targets ...string) firewall.BanRule {
+	r := firewall.BanRule{Stance: stance, Rate: rate}
 	for _, target := range targets {
 		r.Targets = append(r.Targets, netip.MustParsePrefix(target))
 	}
@@ -239,8 +242,8 @@ func banRule(stance Stance, rate *int64, targets ...string) BanRule {
 func ratePtr(n int64) *int64 { return &n }
 
 // dropRule is the silent-drop ban rule.
-func dropRule(targets ...string) BanRule {
-	return banRule(StanceDrop, nil, targets...)
+func dropRule(targets ...string) firewall.BanRule {
+	return banRule(firewall.StanceDrop, nil, targets...)
 }
 
 // mustPrefixes parses prefix literals for test policies.
@@ -256,20 +259,20 @@ func mustPrefixes(t *testing.T, prefixes ...string) []netip.Prefix {
 // newTestUpdater wires the seam under the default compilation policy:
 // a real fetcher against the fake report endpoint, the recording stub
 // driver and a capturing logger.
-func newTestUpdater(t *testing.T, srv *docServer) (*Updater, *Stub, *logCapture) {
+func newTestUpdater(t *testing.T, srv *docServer) (*Updater, *firewalltest.Stub, *logCapture) {
 	t.Helper()
 	return newTestUpdaterCfg(t, srv, defaultPolicy())
 }
 
 // newTestUpdaterCfg wires the seam under a specific compilation
 // policy, for the cases that configure exclusions or the prefilter.
-func newTestUpdaterCfg(t *testing.T, srv *docServer, p Policy) (*Updater, *Stub, *logCapture) {
+func newTestUpdaterCfg(t *testing.T, srv *docServer, p Policy) (*Updater, *firewalltest.Stub, *logCapture) {
 	t.Helper()
 	fetcher, err := NewFetcher(srv.URL)
 	if err != nil {
 		t.Fatalf("NewFetcher: %v", err)
 	}
-	stub := &Stub{}
+	stub := &firewalltest.Stub{}
 	logs := &logCapture{}
 	return New(fetcher, stub, p, DefaultInterval, zerolog.New(logs)), stub, logs
 }
@@ -278,14 +281,14 @@ func newTestUpdaterCfg(t *testing.T, srv *docServer, p Policy) (*Updater, *Stub,
 // RFC1918 and ULA tier on (the shipped --exclude-private default) and
 // an empty service prefilter (all traffic is service traffic).
 func defaultPolicy() Policy {
-	return NewPolicy(nil, true, Prefilter{})
+	return NewPolicy(nil, true, firewall.Prefilter{})
 }
 
 // assertInstalls checks which ban rules the stub driver was asked to
 // install: want is the ruleset of exactly one install call; a refused
 // cycle passes nil and asserts nothing was installed. want may be an
 // empty (non-nil) slice for a cycle that installs an empty ruleset.
-func assertInstalls(t *testing.T, stub *Stub, want []BanRule) {
+func assertInstalls(t *testing.T, stub *firewalltest.Stub, want []firewall.BanRule) {
 	t.Helper()
 	calls := stub.InstallCalls()
 	if want == nil {
@@ -302,7 +305,7 @@ func assertInstalls(t *testing.T, stub *Stub, want []BanRule) {
 	}
 }
 
-func equalRules(got, want []BanRule) bool {
+func equalRules(got, want []firewall.BanRule) bool {
 	if len(got) != len(want) {
 		return false
 	}
@@ -342,7 +345,7 @@ func TestUpdateCycleCompilesTheCanonicalExample(t *testing.T) {
 	if len(skips) != 0 {
 		t.Errorf("skipped %d report records, want 0", len(skips))
 	}
-	assertInstalls(t, stub, []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+	assertInstalls(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 }
 
 // TestUpdateCycleValidations drives one update cycle per fixture
@@ -356,7 +359,7 @@ func TestUpdateCycleValidations(t *testing.T) {
 		mutate      func(t *testing.T, doc map[string]any)
 		body        string // overrides the fixture document when non-empty
 		wantErr     string
-		wantRules   []BanRule
+		wantRules   []firewall.BanRule
 		wantSkipped int
 	}{
 		{
@@ -381,14 +384,14 @@ func TestUpdateCycleValidations(t *testing.T) {
 		},
 		{
 			name:      "document version 0 compiles its reports",
-			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")},
+			wantRules: []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")},
 		},
 		{
 			name: "an envelope with an empty reports list compiles to an empty ruleset",
 			mutate: func(t *testing.T, doc map[string]any) {
 				doc["reports"] = []any{}
 			},
-			wantRules: []BanRule{},
+			wantRules: []firewall.BanRule{},
 		},
 		{
 			name: "unknown document fields are ignored",
@@ -398,7 +401,7 @@ func TestUpdateCycleValidations(t *testing.T) {
 				rec["future_record_field"] = 42
 				penalty(t, rec)["future_penalty_field"] = "x"
 			},
-			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")},
+			wantRules: []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")},
 		},
 		{
 			name:    "a malformed document body refuses the cycle",
@@ -410,7 +413,7 @@ func TestUpdateCycleValidations(t *testing.T) {
 			mutate: func(t *testing.T, doc map[string]any) {
 				delete(report(t, doc, 0), "penalty")
 			},
-			wantRules:   []BanRule{},
+			wantRules:   []firewall.BanRule{},
 			wantSkipped: 1,
 		},
 		{
@@ -420,14 +423,14 @@ func TestUpdateCycleValidations(t *testing.T) {
 				p["action"] = string(PenaltyReject)
 				delete(p, "rate")
 			},
-			wantRules: []BanRule{banRule(StanceReject, nil, "203.0.113.7/32")},
+			wantRules: []firewall.BanRule{banRule(firewall.StanceReject, nil, "203.0.113.7/32")},
 		},
 		{
 			name: "a report with an unknown penalty action is skipped",
 			mutate: func(t *testing.T, doc map[string]any) {
 				penalty(t, report(t, doc, 0))["action"] = "throttle"
 			},
-			wantRules:   []BanRule{},
+			wantRules:   []firewall.BanRule{},
 			wantSkipped: 1,
 		},
 		{
@@ -435,14 +438,14 @@ func TestUpdateCycleValidations(t *testing.T) {
 			mutate: func(t *testing.T, doc map[string]any) {
 				penalty(t, report(t, doc, 0))["action"] = string(PenaltyLimitPktRate)
 			},
-			wantRules: []BanRule{banRule(StanceLimitPktRate, ratePtr(1000000), "203.0.113.7/32")},
+			wantRules: []firewall.BanRule{banRule(firewall.StanceLimitPktRate, ratePtr(1000000), "203.0.113.7/32")},
 		},
 		{
 			name: "a limit penalty without its rate is skipped",
 			mutate: func(t *testing.T, doc map[string]any) {
 				delete(penalty(t, report(t, doc, 0)), "rate")
 			},
-			wantRules:   []BanRule{},
+			wantRules:   []firewall.BanRule{},
 			wantSkipped: 1,
 		},
 		{
@@ -450,7 +453,7 @@ func TestUpdateCycleValidations(t *testing.T) {
 			mutate: func(t *testing.T, doc map[string]any) {
 				penalty(t, report(t, doc, 0))["rate"] = json.Number("0")
 			},
-			wantRules:   []BanRule{},
+			wantRules:   []firewall.BanRule{},
 			wantSkipped: 1,
 		},
 		{
@@ -458,14 +461,14 @@ func TestUpdateCycleValidations(t *testing.T) {
 			mutate: func(t *testing.T, doc map[string]any) {
 				penalty(t, report(t, doc, 0))["rate"] = json.Number("500000")
 			},
-			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(500000), "203.0.113.7/32")},
+			wantRules: []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(500000), "203.0.113.7/32")},
 		},
 		{
 			name: "a rate on a non-limit penalty is skipped",
 			mutate: func(t *testing.T, doc map[string]any) {
 				penalty(t, report(t, doc, 0))["action"] = string(PenaltyDrop)
 			},
-			wantRules:   []BanRule{},
+			wantRules:   []firewall.BanRule{},
 			wantSkipped: 1,
 		},
 		{
@@ -475,14 +478,14 @@ func TestUpdateCycleValidations(t *testing.T) {
 				p["action"] = string(PenaltyDrop)
 				delete(p, "rate")
 			},
-			wantRules: []BanRule{banRule(StanceDrop, nil, "203.0.113.7/32")},
+			wantRules: []firewall.BanRule{banRule(firewall.StanceDrop, nil, "203.0.113.7/32")},
 		},
 		{
 			name: "a report with an unparseable Target is skipped",
 			mutate: func(t *testing.T, doc map[string]any) {
 				report(t, doc, 0)["target"] = "not-a-prefix"
 			},
-			wantRules:   []BanRule{},
+			wantRules:   []firewall.BanRule{},
 			wantSkipped: 1,
 		},
 		{
@@ -490,7 +493,7 @@ func TestUpdateCycleValidations(t *testing.T) {
 			mutate: func(t *testing.T, doc map[string]any) {
 				report(t, doc, 0)["target"] = "203.0.113.7/24"
 			},
-			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.0/24")},
+			wantRules: []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.0/24")},
 		},
 		{
 			name: "invalid reports are skipped while the rest compile",
@@ -502,7 +505,7 @@ func TestUpdateCycleValidations(t *testing.T) {
 				delete(noPenalty, "penalty")
 				doc["reports"] = []any{rec, badTarget, noPenalty}
 			},
-			wantRules:   []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")},
+			wantRules:   []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")},
 			wantSkipped: 2,
 		},
 	}
@@ -540,15 +543,16 @@ func TestUpdateCycleValidations(t *testing.T) {
 
 // TestUpdateCyclePenaltyMapping: every penalty action maps onto the
 // stance the contract defines — the mapping is total over the closed
-// vocabulary — with a failing and a passing case per action.
-// limit-req-rate is deliberately not applied (ADR 0011): its passing
-// case is the skip itself, logged and counted, with nothing installed.
+// vocabulary — with a failing and a passing case per action. Every
+// ban rule carries the Penalty as stated, limit-req-rate included: the
+// compiler never drops a penalty a driver has not yet seen (the
+// nftables driver then declines request rates, ADR 0012).
 func TestUpdateCyclePenaltyMapping(t *testing.T) {
 	tests := []struct {
 		name        string
 		action      PenaltyAction
 		rate        any // nil deletes the penalty's rate
-		wantRules   []BanRule
+		wantRules   []firewall.BanRule
 		wantSkipped int
 		wantSkipHas string
 		wantLogs    []string
@@ -556,64 +560,61 @@ func TestUpdateCyclePenaltyMapping(t *testing.T) {
 		{
 			name:      "drop is applied as a silent drop",
 			action:    PenaltyDrop,
-			wantRules: []BanRule{dropRule("203.0.113.7/32")},
+			wantRules: []firewall.BanRule{dropRule("203.0.113.7/32")},
 		},
 		{
 			name:        "a rate on drop is not applied and is skipped",
 			action:      PenaltyDrop,
 			rate:        json.Number("100"),
-			wantRules:   []BanRule{},
+			wantRules:   []firewall.BanRule{},
 			wantSkipped: 1,
 		},
 		{
 			name:      "reject is applied as a reject",
 			action:    PenaltyReject,
-			wantRules: []BanRule{banRule(StanceReject, nil, "203.0.113.7/32")},
+			wantRules: []firewall.BanRule{banRule(firewall.StanceReject, nil, "203.0.113.7/32")},
 		},
 		{
 			name:        "a rate on reject is not applied and is skipped",
 			action:      PenaltyReject,
 			rate:        json.Number("100"),
-			wantRules:   []BanRule{},
+			wantRules:   []firewall.BanRule{},
 			wantSkipped: 1,
 		},
 		{
 			name:      "limit-pkt-rate throttles packets to its rate",
 			action:    PenaltyLimitPktRate,
 			rate:      json.Number("250"),
-			wantRules: []BanRule{banRule(StanceLimitPktRate, ratePtr(250), "203.0.113.7/32")},
+			wantRules: []firewall.BanRule{banRule(firewall.StanceLimitPktRate, ratePtr(250), "203.0.113.7/32")},
 		},
 		{
 			name:        "limit-pkt-rate without its rate is skipped",
 			action:      PenaltyLimitPktRate,
-			wantRules:   []BanRule{},
+			wantRules:   []firewall.BanRule{},
 			wantSkipped: 1,
 		},
 		{
 			name:      "limit-bandwidth throttles response bytes to its rate",
 			action:    PenaltyLimitBandwidth,
 			rate:      json.Number("500000"),
-			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(500000), "203.0.113.7/32")},
+			wantRules: []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(500000), "203.0.113.7/32")},
 		},
 		{
 			name:        "limit-bandwidth without its rate is skipped",
 			action:      PenaltyLimitBandwidth,
-			wantRules:   []BanRule{},
+			wantRules:   []firewall.BanRule{},
 			wantSkipped: 1,
 		},
 		{
-			name:        "limit-req-rate is skipped, logged and counted",
-			action:      PenaltyLimitReqRate,
-			rate:        json.Number("300"),
-			wantRules:   []BanRule{},
-			wantSkipped: 1,
-			wantSkipHas: "not applied",
-			wantLogs:    []string{"skipped report record", `"skipped":1`},
+			name:      "limit-req-rate throttles requests to its rate, as stated",
+			action:    PenaltyLimitReqRate,
+			rate:      json.Number("300"),
+			wantRules: []firewall.BanRule{banRule(firewall.StanceLimitReqRate, ratePtr(300), "203.0.113.7/32")},
 		},
 		{
 			name:        "limit-req-rate without its rate is skipped too",
 			action:      PenaltyLimitReqRate,
-			wantRules:   []BanRule{},
+			wantRules:   []firewall.BanRule{},
 			wantSkipped: 1,
 		},
 	}
@@ -670,7 +671,7 @@ func TestUpdateCycleLogsAndCountsSkippedReports(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	assertInstalls(t, stub, []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+	assertInstalls(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 
 	if len(skips) != 2 {
 		t.Fatalf("skipped %d report records, want 2", len(skips))
@@ -690,6 +691,60 @@ func TestUpdateCycleLogsAndCountsSkippedReports(t *testing.T) {
 	}
 }
 
+// TestUpdateCycleLogsAndCountsDeclinedFeatures: every ban-rule feature
+// a firewall driver declines is logged with the ban rule it belongs to
+// (by index), its feature and its reason, and counted in the install
+// summary — lost enforcement is never silent. A cycle whose install
+// declines nothing logs none of it.
+func TestUpdateCycleLogsAndCountsDeclinedFeatures(t *testing.T) {
+	doc := fixture(t, func(t *testing.T, doc map[string]any) {
+		setReports(t, doc, []reportSpec{
+			{target: "203.0.113.7/32", action: PenaltyLimitReqRate, rate: json.Number("300")},
+			{target: "198.51.100.9/32", action: PenaltyLimitReqRate, rate: json.Number("100")},
+		})
+	})
+
+	t.Run("a declined feature is logged with its rule, feature and reason and counted", func(t *testing.T) {
+		srv := newDocServer(t)
+		srv.serve(http.StatusOK, doc)
+		u, stub, logs := newTestUpdater(t, srv)
+		stub.InstallDeclines = []firewall.Decline{
+			{Rule: 0, Feature: "limit-req-rate", Reason: "application-layer intent; never faked at the packet layer"},
+			{Rule: 1, Feature: "limit-req-rate", Reason: "application-layer intent; never faked at the packet layer"},
+		}
+
+		if _, err := u.Update(context.Background()); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		logText := logs.String()
+		if n := strings.Count(logText, "declined ban rule feature"); n != 2 {
+			t.Fatalf("logged %d declines, want 2 (one per declined rule): %s", n, logText)
+		}
+		for _, want := range []string{`"rule":0`, `"rule":1`, `"feature":"limit-req-rate"`, `"reason":"application-layer intent`, `"declined":2`} {
+			if !strings.Contains(logText, want) {
+				t.Errorf("the declines are not logged with %q: %s", want, logText)
+			}
+		}
+	})
+
+	t.Run("a cycle whose driver declines nothing logs no declines", func(t *testing.T) {
+		srv := newDocServer(t)
+		srv.serve(http.StatusOK, doc)
+		u, _, logs := newTestUpdater(t, srv)
+
+		if _, err := u.Update(context.Background()); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		logText := logs.String()
+		if strings.Contains(logText, "declined ban rule feature") {
+			t.Errorf("logged a decline that did not happen: %s", logText)
+		}
+		if !strings.Contains(logText, `"declined":0`) {
+			t.Errorf("the install summary does not count the non-declines: %s", logText)
+		}
+	})
+}
+
 // TestUpdateCycleMergePolicy: reports that disagree about overlapping
 // Targets resolve as the spec's merge policy states — the most
 // specific Target wins in both directions, ties on specificity go to
@@ -701,7 +756,7 @@ func TestUpdateCycleMergePolicy(t *testing.T) {
 	tests := []struct {
 		name      string
 		reports   []reportSpec
-		wantRules []BanRule
+		wantRules []firewall.BanRule
 	}{
 		{
 			name: "reports of one family, length and penalty group into one ban rule",
@@ -710,7 +765,7 @@ func TestUpdateCycleMergePolicy(t *testing.T) {
 				{target: "198.51.100.0/24", action: PenaltyDrop},
 				{target: "192.0.2.0/24", action: PenaltyDrop},
 			},
-			wantRules: []BanRule{dropRule("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")},
+			wantRules: []firewall.BanRule{dropRule("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")},
 		},
 		{
 			name: "reports of one length with different penalties do not group",
@@ -718,9 +773,9 @@ func TestUpdateCycleMergePolicy(t *testing.T) {
 				{target: "203.0.113.0/24", action: PenaltyDrop},
 				{target: "192.0.2.0/24", action: PenaltyReject},
 			},
-			wantRules: []BanRule{
+			wantRules: []firewall.BanRule{
 				dropRule("203.0.113.0/24"),
-				banRule(StanceReject, nil, "192.0.2.0/24"),
+				banRule(firewall.StanceReject, nil, "192.0.2.0/24"),
 			},
 		},
 		{
@@ -729,7 +784,7 @@ func TestUpdateCycleMergePolicy(t *testing.T) {
 				{target: "203.0.113.7/32", action: PenaltyDrop},
 				{target: "203.0.113.0/24", action: PenaltyDrop},
 			},
-			wantRules: []BanRule{
+			wantRules: []firewall.BanRule{
 				dropRule("203.0.113.7/32"),
 				dropRule("203.0.113.0/24"),
 			},
@@ -740,7 +795,7 @@ func TestUpdateCycleMergePolicy(t *testing.T) {
 				{target: "203.0.113.7/32", action: PenaltyDrop},
 				{target: "2001:db8::7/32", action: PenaltyDrop},
 			},
-			wantRules: []BanRule{
+			wantRules: []firewall.BanRule{
 				dropRule("203.0.113.7/32"),
 				dropRule("2001:db8::/32"),
 			},
@@ -753,11 +808,11 @@ func TestUpdateCycleMergePolicy(t *testing.T) {
 				{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("50")},
 				{target: "192.0.2.0/24", action: PenaltyReject},
 			},
-			wantRules: []BanRule{
+			wantRules: []firewall.BanRule{
 				dropRule("198.51.100.9/32"),
-				banRule(StanceLimitPktRate, ratePtr(50), "203.0.113.7/32"),
-				banRule(StanceReject, nil, "192.0.2.0/24"),
-				banRule(StanceLimitPktRate, ratePtr(100), "203.0.0.0/16"),
+				banRule(firewall.StanceLimitPktRate, ratePtr(50), "203.0.113.7/32"),
+				banRule(firewall.StanceReject, nil, "192.0.2.0/24"),
+				banRule(firewall.StanceLimitPktRate, ratePtr(100), "203.0.0.0/16"),
 			},
 		},
 		{
@@ -766,8 +821,8 @@ func TestUpdateCycleMergePolicy(t *testing.T) {
 				{target: "203.0.0.0/16", action: PenaltyDrop},
 				{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("10")},
 			},
-			wantRules: []BanRule{
-				banRule(StanceLimitPktRate, ratePtr(10), "203.0.113.7/32"),
+			wantRules: []firewall.BanRule{
+				banRule(firewall.StanceLimitPktRate, ratePtr(10), "203.0.113.7/32"),
 				dropRule("203.0.0.0/16"),
 			},
 		},
@@ -777,9 +832,9 @@ func TestUpdateCycleMergePolicy(t *testing.T) {
 				{target: "203.0.0.0/16", action: PenaltyLimitPktRate, rate: json.Number("100")},
 				{target: "203.0.113.7/32", action: PenaltyDrop},
 			},
-			wantRules: []BanRule{
+			wantRules: []firewall.BanRule{
 				dropRule("203.0.113.7/32"),
-				banRule(StanceLimitPktRate, ratePtr(100), "203.0.0.0/16"),
+				banRule(firewall.StanceLimitPktRate, ratePtr(100), "203.0.0.0/16"),
 			},
 		},
 		{
@@ -788,7 +843,7 @@ func TestUpdateCycleMergePolicy(t *testing.T) {
 				{target: "203.0.0.0/16", action: PenaltyDrop},
 				{target: "203.0.113.7/32", action: PenaltyDrop},
 			},
-			wantRules: []BanRule{
+			wantRules: []firewall.BanRule{
 				dropRule("203.0.113.7/32"),
 				dropRule("203.0.0.0/16"),
 			},
@@ -799,7 +854,7 @@ func TestUpdateCycleMergePolicy(t *testing.T) {
 				{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("250")},
 				{target: "203.0.113.7/32", action: PenaltyDrop},
 			},
-			wantRules: []BanRule{dropRule("203.0.113.7/32")},
+			wantRules: []firewall.BanRule{dropRule("203.0.113.7/32")},
 		},
 		{
 			name: "a drop tie beats a reject tie",
@@ -807,7 +862,7 @@ func TestUpdateCycleMergePolicy(t *testing.T) {
 				{target: "203.0.113.7/32", action: PenaltyReject},
 				{target: "203.0.113.7/32", action: PenaltyDrop},
 			},
-			wantRules: []BanRule{dropRule("203.0.113.7/32")},
+			wantRules: []firewall.BanRule{dropRule("203.0.113.7/32")},
 		},
 		{
 			name: "a reject tie beats a limit tie",
@@ -815,7 +870,7 @@ func TestUpdateCycleMergePolicy(t *testing.T) {
 				{target: "203.0.113.7/32", action: PenaltyLimitBandwidth, rate: json.Number("500")},
 				{target: "203.0.113.7/32", action: PenaltyReject},
 			},
-			wantRules: []BanRule{banRule(StanceReject, nil, "203.0.113.7/32")},
+			wantRules: []firewall.BanRule{banRule(firewall.StanceReject, nil, "203.0.113.7/32")},
 		},
 		{
 			name: "a smaller rate wins a limit tie of one action",
@@ -823,7 +878,7 @@ func TestUpdateCycleMergePolicy(t *testing.T) {
 				{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("250")},
 				{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("100")},
 			},
-			wantRules: []BanRule{banRule(StanceLimitPktRate, ratePtr(100), "203.0.113.7/32")},
+			wantRules: []firewall.BanRule{banRule(firewall.StanceLimitPktRate, ratePtr(100), "203.0.113.7/32")},
 		},
 		{
 			name: "duplicate reports of one penalty compile to one ban rule",
@@ -831,17 +886,17 @@ func TestUpdateCycleMergePolicy(t *testing.T) {
 				{target: "203.0.113.7/32", action: PenaltyDrop},
 				{target: "203.0.113.7/32", action: PenaltyDrop},
 			},
-			wantRules: []BanRule{dropRule("203.0.113.7/32")},
+			wantRules: []firewall.BanRule{dropRule("203.0.113.7/32")},
 		},
 		{
-			name: "tied limits of different actions combine — one meter per direction",
+			name: "tied limits of different actions combine — one meter per dimension",
 			reports: []reportSpec{
 				{target: "203.0.113.7/32", action: PenaltyLimitBandwidth, rate: json.Number("5000")},
 				{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("100")},
 			},
-			wantRules: []BanRule{
-				banRule(StanceLimitPktRate, ratePtr(100), "203.0.113.7/32"),
-				banRule(StanceLimitBandwidth, ratePtr(5000), "203.0.113.7/32"),
+			wantRules: []firewall.BanRule{
+				banRule(firewall.StanceLimitPktRate, ratePtr(100), "203.0.113.7/32"),
+				banRule(firewall.StanceLimitBandwidth, ratePtr(5000), "203.0.113.7/32"),
 			},
 		},
 		{
@@ -851,7 +906,7 @@ func TestUpdateCycleMergePolicy(t *testing.T) {
 				{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("50")},
 				{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("100")},
 			},
-			wantRules: []BanRule{banRule(StanceLimitPktRate, ratePtr(50), "203.0.113.7/32")},
+			wantRules: []firewall.BanRule{banRule(firewall.StanceLimitPktRate, ratePtr(50), "203.0.113.7/32")},
 		},
 		{
 			name: "a drop tie wins over combined limit ties",
@@ -860,7 +915,88 @@ func TestUpdateCycleMergePolicy(t *testing.T) {
 				{target: "203.0.113.7/32", action: PenaltyLimitBandwidth, rate: json.Number("5000")},
 				{target: "203.0.113.7/32", action: PenaltyDrop},
 			},
-			wantRules: []BanRule{dropRule("203.0.113.7/32")},
+			wantRules: []firewall.BanRule{dropRule("203.0.113.7/32")},
+		},
+		{
+			name: "a weaker /32 request rate exceptions a stronger /16 ban",
+			reports: []reportSpec{
+				{target: "203.0.0.0/16", action: PenaltyDrop},
+				{target: "203.0.113.7/32", action: PenaltyLimitReqRate, rate: json.Number("30")},
+			},
+			wantRules: []firewall.BanRule{
+				banRule(firewall.StanceLimitReqRate, ratePtr(30), "203.0.113.7/32"),
+				dropRule("203.0.0.0/16"),
+			},
+		},
+		{
+			name: "a stronger /32 drop tightens under a weaker /16 request rate",
+			reports: []reportSpec{
+				{target: "203.0.0.0/16", action: PenaltyLimitReqRate, rate: json.Number("300")},
+				{target: "203.0.113.7/32", action: PenaltyDrop},
+			},
+			wantRules: []firewall.BanRule{
+				dropRule("203.0.113.7/32"),
+				banRule(firewall.StanceLimitReqRate, ratePtr(300), "203.0.0.0/16"),
+			},
+		},
+		{
+			name: "a drop tie beats a request-rate tie",
+			reports: []reportSpec{
+				{target: "203.0.113.7/32", action: PenaltyLimitReqRate, rate: json.Number("300")},
+				{target: "203.0.113.7/32", action: PenaltyDrop},
+			},
+			wantRules: []firewall.BanRule{dropRule("203.0.113.7/32")},
+		},
+		{
+			name: "a reject tie beats a request-rate tie",
+			reports: []reportSpec{
+				{target: "203.0.113.7/32", action: PenaltyLimitReqRate, rate: json.Number("300")},
+				{target: "203.0.113.7/32", action: PenaltyReject},
+			},
+			wantRules: []firewall.BanRule{banRule(firewall.StanceReject, nil, "203.0.113.7/32")},
+		},
+		{
+			name: "a smaller rate wins a request-rate tie of one action",
+			reports: []reportSpec{
+				{target: "203.0.113.7/32", action: PenaltyLimitReqRate, rate: json.Number("300")},
+				{target: "203.0.113.7/32", action: PenaltyLimitReqRate, rate: json.Number("100")},
+			},
+			wantRules: []firewall.BanRule{banRule(firewall.StanceLimitReqRate, ratePtr(100), "203.0.113.7/32")},
+		},
+		{
+			name: "request rates combine with the other limit dimensions — never lost to an invented ordering",
+			reports: []reportSpec{
+				{target: "203.0.113.7/32", action: PenaltyLimitBandwidth, rate: json.Number("5000")},
+				{target: "203.0.113.7/32", action: PenaltyLimitReqRate, rate: json.Number("30")},
+				{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("100")},
+			},
+			wantRules: []firewall.BanRule{
+				banRule(firewall.StanceLimitPktRate, ratePtr(100), "203.0.113.7/32"),
+				banRule(firewall.StanceLimitBandwidth, ratePtr(5000), "203.0.113.7/32"),
+				banRule(firewall.StanceLimitReqRate, ratePtr(30), "203.0.113.7/32"),
+			},
+		},
+		{
+			name: "a request rate does not lose to a bandwidth tie",
+			reports: []reportSpec{
+				{target: "203.0.113.7/32", action: PenaltyLimitBandwidth, rate: json.Number("5000")},
+				{target: "203.0.113.7/32", action: PenaltyLimitReqRate, rate: json.Number("30")},
+			},
+			wantRules: []firewall.BanRule{
+				banRule(firewall.StanceLimitBandwidth, ratePtr(5000), "203.0.113.7/32"),
+				banRule(firewall.StanceLimitReqRate, ratePtr(30), "203.0.113.7/32"),
+			},
+		},
+		{
+			name: "a request rate does not lose to a packet-rate tie",
+			reports: []reportSpec{
+				{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("100")},
+				{target: "203.0.113.7/32", action: PenaltyLimitReqRate, rate: json.Number("30")},
+			},
+			wantRules: []firewall.BanRule{
+				banRule(firewall.StanceLimitPktRate, ratePtr(100), "203.0.113.7/32"),
+				banRule(firewall.StanceLimitReqRate, ratePtr(30), "203.0.113.7/32"),
+			},
 		},
 	}
 	for _, tt := range tests {
@@ -889,12 +1025,14 @@ func TestUpdateCycleMergePolicyIsOrderIndependent(t *testing.T) {
 		{target: "203.0.0.0/16", action: PenaltyDrop},
 		{target: "203.0.113.7/32", action: PenaltyLimitPktRate, rate: json.Number("10")},
 		{target: "203.0.113.7/32", action: PenaltyLimitBandwidth, rate: json.Number("5000")},
+		{target: "203.0.113.7/32", action: PenaltyLimitReqRate, rate: json.Number("30")},
 		{target: "203.0.113.0/24", action: PenaltyReject},
 	}
-	want := []BanRule{
-		banRule(StanceLimitPktRate, ratePtr(10), "203.0.113.7/32"),
-		banRule(StanceLimitBandwidth, ratePtr(5000), "203.0.113.7/32"),
-		banRule(StanceReject, nil, "203.0.113.0/24"),
+	want := []firewall.BanRule{
+		banRule(firewall.StanceLimitPktRate, ratePtr(10), "203.0.113.7/32"),
+		banRule(firewall.StanceLimitBandwidth, ratePtr(5000), "203.0.113.7/32"),
+		banRule(firewall.StanceLimitReqRate, ratePtr(30), "203.0.113.7/32"),
+		banRule(firewall.StanceReject, nil, "203.0.113.0/24"),
 		dropRule("203.0.0.0/16"),
 	}
 	for i, perm := range permutations(reports) {
@@ -923,7 +1061,7 @@ func TestUpdateCycleMergePolicyWithExclusions(t *testing.T) {
 		name        string
 		exclude     []string
 		reports     []reportSpec
-		wantRules   []BanRule
+		wantRules   []firewall.BanRule
 		wantSkipped int
 	}{
 		{
@@ -933,14 +1071,14 @@ func TestUpdateCycleMergePolicyWithExclusions(t *testing.T) {
 				{target: "203.0.113.0/24", action: PenaltyDrop},
 				{target: "203.0.113.0/25", action: PenaltyLimitPktRate, rate: json.Number("100")},
 			},
-			wantRules: []BanRule{
-				banRule(StanceLimitPktRate, ratePtr(100), "203.0.113.6/32"),
-				banRule(StanceLimitPktRate, ratePtr(100), "203.0.113.4/31"),
-				banRule(StanceLimitPktRate, ratePtr(100), "203.0.113.0/30"),
-				banRule(StanceLimitPktRate, ratePtr(100), "203.0.113.8/29"),
-				banRule(StanceLimitPktRate, ratePtr(100), "203.0.113.16/28"),
-				banRule(StanceLimitPktRate, ratePtr(100), "203.0.113.32/27"),
-				banRule(StanceLimitPktRate, ratePtr(100), "203.0.113.64/26"),
+			wantRules: []firewall.BanRule{
+				banRule(firewall.StanceLimitPktRate, ratePtr(100), "203.0.113.6/32"),
+				banRule(firewall.StanceLimitPktRate, ratePtr(100), "203.0.113.4/31"),
+				banRule(firewall.StanceLimitPktRate, ratePtr(100), "203.0.113.0/30"),
+				banRule(firewall.StanceLimitPktRate, ratePtr(100), "203.0.113.8/29"),
+				banRule(firewall.StanceLimitPktRate, ratePtr(100), "203.0.113.16/28"),
+				banRule(firewall.StanceLimitPktRate, ratePtr(100), "203.0.113.32/27"),
+				banRule(firewall.StanceLimitPktRate, ratePtr(100), "203.0.113.64/26"),
 				dropRule("203.0.113.128/25"),
 			},
 		},
@@ -951,7 +1089,7 @@ func TestUpdateCycleMergePolicyWithExclusions(t *testing.T) {
 				{target: "203.0.113.0/24", action: PenaltyDrop},
 				{target: "203.0.113.0/25", action: PenaltyLimitPktRate, rate: json.Number("100")},
 			},
-			wantRules:   []BanRule{dropRule("203.0.113.128/25")},
+			wantRules:   []firewall.BanRule{dropRule("203.0.113.128/25")},
 			wantSkipped: 1,
 		},
 	}
@@ -999,39 +1137,39 @@ func TestUpdateCycleSubtractsExclusions(t *testing.T) {
 		name        string
 		exclude     []string
 		target      string
-		wantRules   []BanRule
+		wantRules   []firewall.BanRule
 		wantSkipped int
 	}{
 		{
 			name:        "an exclusion covering the whole Target produces no ban rule",
 			exclude:     []string{"203.0.113.7/32"},
 			target:      "203.0.113.7/32",
-			wantRules:   []BanRule{},
+			wantRules:   []firewall.BanRule{},
 			wantSkipped: 1,
 		},
 		{
 			name:      "an exclusion disjoint from the Target leaves it untouched",
 			exclude:   []string{"198.51.100.0/24"},
 			target:    "203.0.113.7/32",
-			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")},
+			wantRules: []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")},
 		},
 		{
 			name:      "an exclusion covering part of the Target leaves its residual prefixes",
 			exclude:   []string{"203.0.113.0/25"},
 			target:    "203.0.113.0/24",
-			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.128/25")},
+			wantRules: []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.128/25")},
 		},
 		{
 			name:      "several exclusions each subtract from the Target",
 			exclude:   []string{"203.0.113.0/25", "203.0.113.192/26"},
 			target:    "203.0.113.0/24",
-			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.128/26")},
+			wantRules: []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.128/26")},
 		},
 		{
 			name:      "an exclusion covering part of an IPv6 Target leaves its residual prefixes",
 			exclude:   []string{"2001:db8::/33"},
 			target:    "2001:db8::/32",
-			wantRules: []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "2001:db8:8000::/33")},
+			wantRules: []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "2001:db8:8000::/33")},
 		},
 		{
 			// The residual prefixes split across prefix lengths; the
@@ -1040,9 +1178,9 @@ func TestUpdateCycleSubtractsExclusions(t *testing.T) {
 			name:    "an exclusion inside the Target splits it into residual prefixes",
 			exclude: []string{"203.0.113.64/26"},
 			target:  "203.0.113.0/24",
-			wantRules: []BanRule{
-				banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.0/26"),
-				banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.128/25"),
+			wantRules: []firewall.BanRule{
+				banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.0/26"),
+				banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.128/25"),
 			},
 		},
 	}
@@ -1077,14 +1215,14 @@ func TestUpdateCycleSafetyExclusions(t *testing.T) {
 		target string
 		wantOK bool // true: the Target compiles to a ban rule
 	}{
-		{"a loopback Target is excluded and cannot be re-included", NewPolicy(nil, false, Prefilter{}), "127.0.0.1/32", false},
-		{"the IPv6 loopback Target is excluded and cannot be re-included", NewPolicy(nil, false, Prefilter{}), "::1/128", false},
-		{"a link-local Target is excluded and cannot be re-included", NewPolicy(nil, false, Prefilter{}), "169.254.5.6/32", false},
-		{"the IPv6 link-local Target is excluded and cannot be re-included", NewPolicy(nil, false, Prefilter{}), "fe80::1/128", false},
-		{"a public Target compiles under the safety exclusions", NewPolicy(nil, true, Prefilter{}), "203.0.113.7/32", true},
-		{"an RFC1918 Target is excluded by default", NewPolicy(nil, true, Prefilter{}), "10.1.2.3/32", false},
-		{"a ULA Target is excluded by default", NewPolicy(nil, true, Prefilter{}), "fd00::1/128", false},
-		{"a private Target compiles when the default exclusions are opted out", NewPolicy(nil, false, Prefilter{}), "10.1.2.3/32", true},
+		{"a loopback Target is excluded and cannot be re-included", NewPolicy(nil, false, firewall.Prefilter{}), "127.0.0.1/32", false},
+		{"the IPv6 loopback Target is excluded and cannot be re-included", NewPolicy(nil, false, firewall.Prefilter{}), "::1/128", false},
+		{"a link-local Target is excluded and cannot be re-included", NewPolicy(nil, false, firewall.Prefilter{}), "169.254.5.6/32", false},
+		{"the IPv6 link-local Target is excluded and cannot be re-included", NewPolicy(nil, false, firewall.Prefilter{}), "fe80::1/128", false},
+		{"a public Target compiles under the safety exclusions", NewPolicy(nil, true, firewall.Prefilter{}), "203.0.113.7/32", true},
+		{"an RFC1918 Target is excluded by default", NewPolicy(nil, true, firewall.Prefilter{}), "10.1.2.3/32", false},
+		{"a ULA Target is excluded by default", NewPolicy(nil, true, firewall.Prefilter{}), "fd00::1/128", false},
+		{"a private Target compiles when the default exclusions are opted out", NewPolicy(nil, false, firewall.Prefilter{}), "10.1.2.3/32", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1102,13 +1240,13 @@ func TestUpdateCycleSafetyExclusions(t *testing.T) {
 				if len(skips) != 0 {
 					t.Errorf("skipped %d report records, want 0", len(skips))
 				}
-				assertInstalls(t, stub, []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), tt.target)})
+				assertInstalls(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), tt.target)})
 				return
 			}
 			if len(skips) != 1 {
 				t.Errorf("skipped %d report records, want 1", len(skips))
 			}
-			assertInstalls(t, stub, []BanRule{})
+			assertInstalls(t, stub, []firewall.BanRule{})
 		})
 	}
 }
@@ -1120,25 +1258,25 @@ func TestUpdateCycleSafetyExclusions(t *testing.T) {
 func TestUpdateCycleConstructsTheServicePrefilter(t *testing.T) {
 	tests := []struct {
 		name      string
-		prefilter Prefilter
+		prefilter firewall.Prefilter
 	}{
 		{
 			name:      "a ban rule carries the configured destination-port set",
-			prefilter: Prefilter{DstPorts: []uint16{53, 80, 443}},
+			prefilter: firewall.Prefilter{DstPorts: []uint16{53, 80, 443}},
 		},
 		{
 			name: "a ban rule carries an empty destination-port set when none is configured",
 		},
 		{
 			name:      "a ban rule carries the configured destination-address set",
-			prefilter: Prefilter{DstAddrs: mustPrefixes(t, "203.0.113.5/32", "2001:db8::5/128")},
+			prefilter: firewall.Prefilter{DstAddrs: mustPrefixes(t, "203.0.113.5/32", "2001:db8::5/128")},
 		},
 		{
 			name: "a ban rule carries an empty destination-address set when none is configured",
 		},
 		{
 			name:      "a ban rule carries both prefilter sets",
-			prefilter: Prefilter{DstPorts: []uint16{443}, DstAddrs: mustPrefixes(t, "203.0.113.5/32")},
+			prefilter: firewall.Prefilter{DstPorts: []uint16{443}, DstAddrs: mustPrefixes(t, "203.0.113.5/32")},
 		},
 	}
 	for _, tt := range tests {
@@ -1150,10 +1288,10 @@ func TestUpdateCycleConstructsTheServicePrefilter(t *testing.T) {
 			if _, err := u.Update(context.Background()); err != nil {
 				t.Fatalf("Update: %v", err)
 			}
-			want := []BanRule{{
+			want := []firewall.BanRule{{
 				Targets:   mustPrefixes(t, "203.0.113.7/32"),
 				Prefilter: tt.prefilter,
-				Stance:    StanceLimitBandwidth,
+				Stance:    firewall.StanceLimitBandwidth,
 				Rate:      ratePtr(1000000),
 			}}
 			assertInstalls(t, stub, want)
@@ -1179,7 +1317,7 @@ func TestUpdateCycleSkipIfUnchanged(t *testing.T) {
 		if _, err := u.Update(context.Background()); err != nil {
 			t.Fatalf("second Update: %v", err)
 		}
-		assertInstalls(t, stub, []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+		assertInstalls(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 		if !strings.Contains(logs.String(), "ban rules unchanged; skipping install") {
 			t.Errorf("the skipped install is not logged: %s", logs.String())
 		}
@@ -1405,7 +1543,7 @@ func TestUpdateCycleLogsTheBanRuleHits(t *testing.T) {
 	srv := newDocServer(t)
 	srv.serve(http.StatusOK, canonicalDoc(t))
 	u, stub, logs := newTestUpdater(t, srv)
-	stub.InstallHits = []Hit{{Rule: 0, Packets: 5, Bytes: 100}}
+	stub.InstallHits = []firewall.Hit{{Rule: 0, Packets: 5, Bytes: 100}}
 
 	if _, err := u.Update(context.Background()); err != nil {
 		t.Fatalf("first Update: %v", err)
@@ -1445,7 +1583,7 @@ func TestUpdateKeepsTheLastInstalledRules(t *testing.T) {
 		if _, err := u.Update(context.Background()); err == nil {
 			t.Fatal("second Update succeeded, want an error")
 		}
-		assertInstalls(t, stub, []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+		assertInstalls(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 		if stub.ResetCalls() != 0 {
 			t.Errorf("Reset ran %d times, want 0", stub.ResetCalls())
 		}
@@ -1539,9 +1677,9 @@ func TestUpdaterRun(t *testing.T) {
 		}
 
 		calls := stub.InstallCalls()
-		want := [][]BanRule{
-			{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")},
-			{banRule(StanceLimitBandwidth, ratePtr(1000000), "198.51.100.9/32")},
+		want := [][]firewall.BanRule{
+			{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")},
+			{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "198.51.100.9/32")},
 		}
 		if len(calls) != len(want) {
 			t.Fatalf("installed %d rulesets, want %d", len(calls), len(want))
@@ -1641,6 +1779,7 @@ stance=limit-bandwidth rate=1000000 chain=egress
 				{target: "203.0.113.7/32", action: PenaltyLimitBandwidth, rate: json.Number("1000000")},
 				{target: "198.51.100.9/32", action: PenaltyDrop},
 				{target: "192.0.2.5/32", action: PenaltyLimitPktRate, rate: json.Number("250")},
+				{target: "192.0.2.6/32", action: PenaltyLimitReqRate, rate: json.Number("300")},
 			})
 		}))
 		u, stub, _ := newTestUpdater(t, srv)
@@ -1659,6 +1798,7 @@ stance=limit-bandwidth rate=1000000 chain=egress
 			"stance=drop rate=- chain=ingress",
 			"stance=limit-pkt-rate rate=250 chain=ingress",
 			"stance=limit-bandwidth rate=1000000 chain=egress",
+			"stance=limit-req-rate rate=300 chain=-",
 		}
 		if !slices.Equal(mapping, want) {
 			t.Errorf("mapping lines = %q, want %q", mapping, want)
@@ -1677,7 +1817,7 @@ func TestDryRunShowsTheEffectiveSets(t *testing.T) {
 	}))
 	u, stub, _ := newTestUpdaterCfg(t, srv, NewPolicy(
 		mustPrefixes(t, "203.0.113.0/25"), true,
-		Prefilter{DstPorts: []uint16{53, 443}, DstAddrs: mustPrefixes(t, "203.0.113.5/32")},
+		firewall.Prefilter{DstPorts: []uint16{53, 443}, DstAddrs: mustPrefixes(t, "203.0.113.5/32")},
 	))
 
 	var out bytes.Buffer
@@ -1754,7 +1894,7 @@ func TestNewClampsTheIntervalLoudly(t *testing.T) {
 				t.Fatalf("NewFetcher: %v", err)
 			}
 			logs := &logCapture{}
-			u := New(fetcher, &Stub{}, defaultPolicy(), tt.interval, zerolog.New(logs))
+			u := New(fetcher, &firewalltest.Stub{}, defaultPolicy(), tt.interval, zerolog.New(logs))
 			if u.interval != tt.wantValue {
 				t.Errorf("interval = %v, want %v", u.interval, tt.wantValue)
 			}

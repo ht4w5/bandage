@@ -5,6 +5,8 @@ import (
 	"hash"
 	"hash/fnv"
 	"net/netip"
+
+	"github.com/HT4w5/bandage/internal/firewall"
 )
 
 // The compiled ruleset's rolling hash — bandaid's construction
@@ -28,7 +30,7 @@ var hashDelim = []byte{0}
 // to every effective field and to the order of the rules and of the
 // targets within a rule; Compile's canonical order is what makes any
 // permutation of the document hash identically.
-func Hash(rules []BanRule) uint32 {
+func Hash(rules []firewall.BanRule) uint32 {
 	prev := hashSeed
 	for _, r := range rules {
 		prev = hashRule(prev, r)
@@ -41,7 +43,7 @@ func Hash(rules []BanRule) uint32 {
 // rule's fields in their serialization order — Targets, the
 // prefilter's destination ports and destination addresses, the stance
 // and the rate — each item 0x00-terminated.
-func hashRule(prev uint32, r BanRule) uint32 {
+func hashRule(prev uint32, r firewall.BanRule) uint32 {
 	h := fnv.New32a()
 	var prevBytes [4]byte
 	binary.BigEndian.PutUint32(prevBytes[:], prev)

@@ -4,39 +4,20 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+
+	"github.com/HT4w5/bandage/internal/firewall"
 )
-
-// Prefilter is the service prefilter every ban rule leads with: the
-// protected destinations' ports and addresses. A ban rule matches only
-// traffic whose destination port is in DstPorts and whose destination
-// address is in DstAddrs — so a ban applies only to service traffic,
-// never to SSH, monitoring, or unrelated forwarded traffic. Either
-// set may be empty, meaning all; both are operator configuration.
-type Prefilter struct {
-	DstPorts []uint16       `json:"dst_ports"`
-	DstAddrs []netip.Prefix `json:"dst_addrs"`
-}
-
-// normalized returns pf with non-nil set slices, so every ban rule's
-// dry-run JSON shows its sets as arrays.
-func (pf Prefilter) normalized() Prefilter {
-	if pf.DstPorts == nil {
-		pf.DstPorts = []uint16{}
-	}
-	if pf.DstAddrs == nil {
-		pf.DstAddrs = []netip.Prefix{}
-	}
-	return pf
-}
 
 // Policy is the compilation policy the ban sets are compiled under:
 // the exclusion prefixes subtracted from every ban set, overriding
-// every report, and the service prefilter every ban rule leads with.
-// NewPolicy assembles it from the operator's flags; the zero Policy
-// keeps the always-on safety exclusions and an all-traffic prefilter.
+// every report, and the service prefilter every ban rule leads with
+// (firewall.Prefilter — the driver's configured input until the
+// nftables driver owns its enforcement scope). NewPolicy assembles it
+// from the operator's flags; the zero Policy keeps the always-on
+// safety exclusions and an all-traffic prefilter.
 type Policy struct {
 	Exclude   []netip.Prefix
-	Prefilter Prefilter
+	Prefilter firewall.Prefilter
 }
 
 // The safety exclusions, in two tiers: loopback and link-local are
@@ -63,7 +44,7 @@ var (
 // the RFC1918 and ULA tier unless excludePrivate opts out of it. The
 // loopback and link-local tier needs no assembly — Subtract always
 // applies it.
-func NewPolicy(exclude []netip.Prefix, excludePrivate bool, prefilter Prefilter) Policy {
+func NewPolicy(exclude []netip.Prefix, excludePrivate bool, prefilter firewall.Prefilter) Policy {
 	if excludePrivate {
 		exclude = slices.Concat(privateExcluded, exclude)
 	}
