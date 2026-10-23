@@ -1,6 +1,7 @@
 package nft
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -814,4 +815,69 @@ func TestPlanRefusesWhatItCannotPlan(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPerPointEnforcement: fan-out at the fake kernel — one driver
+// instance per enforcement point, each with its own identity: an
+// unreachable point is reported as firewall.ErrUnreachable (the update
+// cycle warns and skips it for the cycle) while the other points still
+// enforce, and one point's unchanged-skip never silences another's
+// install.
+func TestPerPointEnforcement(t *testing.T) {
+	rules := []firewall.BanRule{dropFixture("203.0.113.7/32")}
+
+	t.Run("an unreachable enforcement point is reported while another still enforces", func(t *testing.T) {
+		gone := newFakeDriver(t, HookInput, newFakeKernel())
+		gone.open = func() (kernelConn, io.Closer, error) {
+			return nil, nil, fmt.Errorf("%w: open /gone: no such file or directory", firewall.ErrUnreachable)
+		}
+		kernel := newFakeKernel()
+		alive := newFakeDriver(t, HookInput, kernel)
+
+		if _, err := gone.Apply(rules); !errors.Is(err, firewall.ErrUnreachable) {
+			t.Errorf("Apply at a vanished point = %v, want a firewall.ErrUnreachable", err)
+		}
+		if out, err := alive.Apply(rules); err != nil || out.Skipped {
+			t.Errorf("Apply at the live point = (%+v, %v), want a plain install", out, err)
+		}
+		if n := kernel.rulesIn(ingressName); n != 1 {
+			t.Errorf("ingress chain carries %d kernel rules, want 1 (the live point still enforces)", n)
+		}
+	})
+
+	t.Run("one point's unchanged skip never silences another's install", func(t *testing.T) {
+		kernelA, kernelB := newFakeKernel(), newFakeKernel()
+		a := newFakeDriver(t, HookInput, kernelA)
+		b := newFakeDriver(t, HookInput, kernelB)
+		if _, err := a.Apply(rules); err != nil {
+			t.Fatalf("Apply(a): %v", err)
+		}
+		if _, err := b.Apply(rules); err != nil {
+			t.Fatalf("Apply(b): %v", err)
+		}
+		// One point unchanged: its own skip state skips it.
+		out, err := a.Apply(rules)
+		if err != nil {
+			t.Fatalf("second Apply(a): %v", err)
+		}
+		if !out.Skipped {
+			t.Error("an identical ruleset at one point must skip")
+		}
+		// The other point's ruleset changed: it re-enforces while the
+		// first stays skipped.
+		changed := []firewall.BanRule{dropFixture("198.51.100.7/32")}
+		out, err = b.Apply(changed)
+		if err != nil {
+			t.Fatalf("Apply(b, changed): %v", err)
+		}
+		if out.Skipped {
+			t.Error("a changed ruleset at one point must re-enforce")
+		}
+		if n := kernelA.flushCount(); n != 1 {
+			t.Errorf("point a flushed %d batches, want 1 (its skip state is its own)", n)
+		}
+		if n := kernelB.flushCount(); n != 2 {
+			t.Errorf("point b flushed %d batches, want 2", n)
+		}
+	})
 }

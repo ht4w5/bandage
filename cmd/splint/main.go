@@ -16,7 +16,6 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
-	"slices"
 	"syscall"
 	"time"
 
@@ -41,11 +40,10 @@ const (
 // commit and build date are the shared linker-injected stamp.
 const progName = "splint"
 
-// options is the resolved command line.
+// options is the resolved engine command line; the driver's own flags
+// live in its factory's group.
 type options struct {
 	url            string
-	hook           string
-	netns          []string
 	caFile         string
 	certFile       string
 	keyFile        string
@@ -53,8 +51,6 @@ type options struct {
 	interval       time.Duration
 	excludePrefix  []string
 	excludePrivate bool
-	servicePort    []uint16
-	serviceAddress []string
 	dryRun         bool
 	logLevel       string
 }
@@ -75,14 +71,13 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	// are decided here. Help goes to stdout, errors to stderr below.
 	fs.SetOutput(stdout)
 	url := fs.StringP("url", "u", "", "URL of the bandage report document")
-	hookFlag := fs.String("hook", "input", "enforcement hook: input or prerouting")
-	// --netns is repeatable so one instance can enforce the same ban
-	// rules across several containers (and the host, addressed by its
-	// own nsfs path); the default target is the current namespace.
-	// Values are literal nsfs paths, never comma lists — hence
-	// StringArray, which unlike StringSlice keeps an empty value
-	// visible to the validation below.
-	netnsFlag := fs.StringArray("netns", nil, "target network namespace nsfs path (repeatable; default: the current namespace)")
+	// The nftables driver's factory binds its own flag group — its
+	// targeting (nsfs paths) and enforcement scope (the service
+	// prefilter) — and opens its enforcement points. Driver selection
+	// and the registry behind --firewall are not wired yet: this
+	// factory serves the run.
+	nftFactory := nft.NewFactory()
+	nftFactory.BindFlags(fs)
 	// The certificate surface is bandaid's flag for flag, so the
 	// operator's PKI runbook applies unchanged.
 	caFile := fs.String("cacert", "", "CA certificate file")
@@ -94,10 +89,6 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	// bandaid's whitelist and fluxc's exclude-prefix surfaces.
 	excludePrefix := fs.StringSliceP("exclude-prefix", "x", nil, "prefix excluded from every ban set (repeatable)")
 	excludePrivate := fs.BoolP("exclude-private", "p", true, "exclude RFC1918 and ULA targets")
-	// The service prefilter: the protected destinations every ban rule
-	// matches first. Empty sets mean all.
-	servicePort := fs.UintSlice("service-port", nil, "service destination port the ban prefilter matches (repeatable)")
-	serviceAddress := fs.StringSlice("service-address", nil, "service destination address or prefix the ban prefilter matches (repeatable)")
 	dryRun := fs.BoolP("dry-run", "d", false, "fetch and print the compiled ban rules once without installing")
 	logLevel := fs.StringP("log-level", "l", "info", "log level: debug, info, warn or error")
 	showVersion := fs.BoolP("version", "v", false, "print version and exit")
@@ -116,8 +107,6 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	}
 	opts := options{
 		url:            *url,
-		hook:           *hookFlag,
-		netns:          *netnsFlag,
 		caFile:         *caFile,
 		certFile:       *certFile,
 		keyFile:        *keyFile,
@@ -125,17 +114,11 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 		interval:       *interval,
 		excludePrefix:  *excludePrefix,
 		excludePrivate: *excludePrivate,
-		serviceAddress: *serviceAddress,
 		dryRun:         *dryRun,
 		logLevel:       *logLevel,
 	}
-	for i, path := range opts.netns {
-		if path == "" {
-			return fail(stderr, fmt.Errorf("netns: namespace path must not be empty (value %d)", i+1)), opts
-		}
-		if slices.Contains(opts.netns[:i], path) {
-			return fail(stderr, fmt.Errorf("netns: duplicate namespace path %q", path)), opts
-		}
+	if err := nftFactory.Validate(); err != nil {
+		return fail(stderr, err), opts
 	}
 	logger, err := newLogger(stderr, opts.logLevel)
 	if err != nil {
@@ -145,20 +128,10 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	if err != nil {
 		return fail(stderr, err), opts
 	}
-	ports, err := parsePorts(*servicePort)
-	if err != nil {
-		return fail(stderr, err), opts
-	}
-	opts.servicePort = ports
-	dstAddrs, err := parsePrefixes("service address", opts.serviceAddress)
-	if err != nil {
-		return fail(stderr, err), opts
-	}
 	// Exclusions are subtracted compiler-side: the driver installs
-	// Targets verbatim. The service prefilter is the nftables driver's
-	// enforcement scope — driver configuration, not ban-rule content.
+	// Targets verbatim. Targeting and enforcement scope never pass
+	// through here — the driver's factory owns them.
 	policy := splint.NewPolicy(exclude, opts.excludePrivate)
-	scope := nft.Prefilter{DstPorts: opts.servicePort, DstAddrs: dstAddrs}
 	fetcher, err := splint.NewFetcher(opts.url,
 		splint.WithTLS(opts.caFile, opts.certFile, opts.keyFile),
 		splint.WithFetchTimeout(opts.fetchTimeout),
@@ -166,27 +139,9 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	if err != nil {
 		return fail(stderr, err), opts
 	}
-	hook, err := nft.ParseHook(opts.hook)
+	points, err := nftFactory.Open()
 	if err != nil {
 		return fail(stderr, err), opts
-	}
-	// One driver per enforcement point; without --netns the single
-	// point is the current namespace.
-	paths := opts.netns
-	if len(paths) == 0 {
-		paths = []string{""}
-	}
-	points := make([]firewall.Point, 0, len(paths))
-	for _, path := range paths {
-		driver, err := nft.New(nft.Config{Hook: hook, Prefilter: scope, NetNSPath: path})
-		if err != nil {
-			return fail(stderr, err), opts
-		}
-		label := path
-		if label == "" {
-			label = "current"
-		}
-		points = append(points, firewall.Point{Label: label, Driver: driver})
 	}
 	u, err := splint.New(fetcher, points, policy, opts.interval, logger)
 	if err != nil {
@@ -211,25 +166,12 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	return exitOK, opts
 }
 
-// parsePorts validates the --service-port values: ports live in
-// 1-65535, and out-of-range values are refused at startup.
-func parsePorts(values []uint) ([]uint16, error) {
-	ports := make([]uint16, 0, len(values))
-	for _, v := range values {
-		if v < 1 || v > 65535 {
-			return nil, fmt.Errorf("service port: must be between 1 and 65535 (got %d)", v)
-		}
-		ports = append(ports, uint16(v))
-	}
-	return ports, nil
-}
-
-// parsePrefixes parses one flag's prefix values (--exclude-prefix,
-// --service-address), labeling parse failures with the flag's surface.
+// parsePrefixes parses the engine's exclusion-prefix flag values
+// (--exclude-prefix) with the seam's shared prefix-value parser.
 func parsePrefixes(what string, values []string) ([]netip.Prefix, error) {
 	prefixes := make([]netip.Prefix, 0, len(values))
 	for _, v := range values {
-		p, err := splint.ParsePrefixOrAddr(v)
+		p, err := firewall.ParsePrefixOrAddr(v)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", what, err)
 		}

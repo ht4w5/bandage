@@ -1,4 +1,4 @@
-package splint
+package firewall
 
 import (
 	"net/netip"
@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-// Primary seam: the compilation policy's operator-input parsing — a
-// prefix flag value (--exclude-prefix, --service-address) in bandaid's
-// whitelist-entry semantics. One failing and one passing case per
+// Primary seam: the shared operator-prefix flag value — the parser
+// behind the engine's --exclude-prefix and the nftables factory's
+// --nft-service-address. One failing and one passing case per
 // validation; exclusion subtraction and the safety tiers are verified
-// at the update-cycle seam.
+// at the update-cycle seam, the service scope at the driver's.
 
 // TestParsePrefixOrAddr: a prefix flag value is a CIDR prefix as given
 // (masked) or a bare address as its host prefix; anything else is
