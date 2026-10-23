@@ -8,7 +8,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/bandage"
 )
 
 // NewLogger builds the program-wide logger (ADR 0005): fixed

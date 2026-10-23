@@ -17,7 +17,7 @@ import (
 	"time"
 	"unicode"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/bandage"
 )
 
 // decodeOpts keeps the historic map-decoder contract: duplicate names resolve

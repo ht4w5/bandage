@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/bandage"
 )
 
 // Query filters reports by rule and/or target (empty = no filter).

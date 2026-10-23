@@ -12,7 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/bandage"
 )
 
 // DefaultCacheEntries is the default tracker cache entry cap.

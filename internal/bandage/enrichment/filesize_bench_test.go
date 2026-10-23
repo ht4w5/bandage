@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/bandage"
 )
 
 // BenchmarkEnrich measures FilesizeEnricher.Enrich per event over a stub

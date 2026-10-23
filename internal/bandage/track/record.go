@@ -3,7 +3,7 @@
 package track
 
 import (
-	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/bandage"
 )
 
 // Record is leaky-bucket state for one key: the domain core's value type

@@ -35,16 +35,16 @@ Per raw line, in order (`daemon.go` `runPipeline`, N workers):
 2. **Parse** — `internal/infra/parse/nginx` `Parser.Parse`:
    `json.Unmarshal` into `map[string]json.RawMessage`, then per-field
    re-parsing (time, IP, method, path, status, sent, agent).
-3. **Enrich** — `internal/domain/enrichment` `FilesizeEnricher.Enrich` →
+3. **Enrich** — `internal/bandage/enrichment` `FilesizeEnricher.Enrich` →
    `internal/infra/cache/memory` `Store.Update` (shared tracker store,
    filesize namespace): key concat, `fnv.New32a()` hashing, shard mutex,
    LRU list ops.
-4. **Evaluate** — `internal/domain/evaluation` `Service.Evaluate`: every
+4. **Evaluate** — `internal/bandage/evaluation` `Service.Evaluate`: every
    rule of every chain runs `Filter.Match` (interface tree over
-   `internal/domain/filter`), then for filter-matching rules with a
+   `internal/bandage/filter`), then for filter-matching rules with a
    tracker, `TargetString` + `TrackerKey` string building and another
    `Store.Update` (leaky-bucket `Record.Accumulate` under the shard lock).
-5. **Report write (on match)** — `internal/domain/report` `Trigger` →
+5. **Report write (on match)** — `internal/bandage/report` `Trigger` →
    `internal/infra/persistence/sqlite` `Upsert`: explicit transaction
    (SELECT created_at + upsert) + JSON body marshal, on a single
    connection (`SetMaxOpenConns(1)`, ADR 0007).

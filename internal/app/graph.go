@@ -3,7 +3,7 @@ package app
 import (
 	"fmt"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/bandage"
 )
 
 // validateChainGraph checks the goto/jump graph: chain names unique,

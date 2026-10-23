@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
-	"github.com/HT4w5/bandage/internal/domain/report"
+	"github.com/HT4w5/bandage/internal/bandage"
+	"github.com/HT4w5/bandage/internal/bandage/report"
 
 	_ "modernc.org/sqlite"
 )

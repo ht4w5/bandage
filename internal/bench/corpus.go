@@ -8,7 +8,7 @@ import (
 	"slices"
 	"time"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/bandage"
 )
 
 // Seed is the fixed fixture seed, keeping runs comparable across machines.

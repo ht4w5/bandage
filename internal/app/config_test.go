@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/bandage"
 )
 
 // validConfig is a minimal full config for the strict-decode tests.

@@ -6,8 +6,8 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/HT4w5/bandage/internal/bandage/enrichment"
 	"github.com/HT4w5/bandage/internal/bench"
-	"github.com/HT4w5/bandage/internal/domain/enrichment"
 	"github.com/HT4w5/bandage/internal/infra/cache/memory"
 )
 

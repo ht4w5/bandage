@@ -18,7 +18,7 @@ import (
 	flag "github.com/spf13/pflag"
 
 	"github.com/HT4w5/bandage/internal/app"
-	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/bandage"
 	"github.com/HT4w5/bandage/internal/identity"
 )
 

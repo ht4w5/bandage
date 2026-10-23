@@ -11,8 +11,8 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/HT4w5/bandage/internal/bandage/report"
 	"github.com/HT4w5/bandage/internal/bench"
-	"github.com/HT4w5/bandage/internal/domain/report"
 	"github.com/HT4w5/bandage/internal/identity"
 	"github.com/HT4w5/bandage/internal/infra/persistence/sqlite"
 )

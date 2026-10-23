@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/HT4w5/bandage/internal/bandage"
 	"github.com/HT4w5/bandage/internal/bench"
-	bandage "github.com/HT4w5/bandage/internal/domain"
 )
 
 // BenchmarkReportUpsert measures the report write path: inserting a fresh

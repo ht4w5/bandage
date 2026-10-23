@@ -34,7 +34,7 @@ of losing the detection. (Semantics of record: GLOSSARY **Trigger**, ADR
 A Trigger now empties the matched rule's tracker record for the match's
 key, once the report write completes without error. Changed:
 
-- `internal/domain/evaluation/evaluation.go`: `trigger` (the report
+- `internal/bandage/evaluation/evaluation.go`: `trigger` (the report
   action) clears the record after `ReportSink.Trigger` returns nil —
   the one traversal change (matching, action dispatch and terminality
   untouched). Key derivation is unified in `matchKey` (Target; per

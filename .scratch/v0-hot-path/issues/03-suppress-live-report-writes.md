@@ -39,7 +39,7 @@ While a report for (rule, Target) is alive its write is suppressed — one
 write per (rule, Target) per report lifetime — and deleting or expiring
 the report re-arms writing. Changed:
 
-- `internal/domain/report/report.go`: the Service owns the live-report
+- `internal/bandage/report/report.go`: the Service owns the live-report
   set (in-memory map keyed (rule, Target) → expiry; the report table is
   the correctness source). `Trigger` suppresses the write while the
   report is alive and returns nil — the report action completed, so the
@@ -62,7 +62,7 @@ the report re-arms writing. Changed:
 - `internal/infra/httpapi/httpapi.go`: the delete-promise doc names the
   re-arm nuance. The report document shape is unchanged.
 
-Tests: `internal/domain/report/report_test.go` (suppression and re-arm
+Tests: `internal/bandage/report/report_test.go` (suppression and re-arm
 rules over the stub repository: per-(rule, Target) grain, expiry, the
 delete/expiry re-arms, failed-write retry, Rebuild derivation);
 `internal/app/suppress_test.go` (daemon seam: frozen Sample/update time

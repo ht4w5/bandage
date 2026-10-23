@@ -27,7 +27,7 @@ then make the easy change").
 
 **Done:** report mutation now has one funnel — `report.Service` exposes
 `Trigger`, `List`, `Delete(ctx, Query) (int, error)` and
-`DeleteExpired(ctx, now) (int, error)` (`internal/domain/report/report.go`),
+`DeleteExpired(ctx, now) (int, error)` (`internal/bandage/report/report.go`),
 and every production mutation goes through it:
 
 - Trigger write: unchanged (`evaluation → ReportSink.Trigger →
@@ -56,7 +56,7 @@ Key facts:
   so nothing outside the repository's own tests mutates rows around the
   service.
 - New prior art the notes flagged as missing (test-harness.md §3):
-  `internal/domain/report/report_test.go` — the report service over a
+  `internal/bandage/report/report_test.go` — the report service over a
   plain stub repository (table tests, no framework), pinning the
   delegation contract ticket 03's re-arm hooks hang on.
 - Zero operator-visible change: report document, deletion counts,

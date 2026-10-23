@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/bandage"
 )
 
 // BenchmarkEvaluate measures full chain evaluation over pre-parsed events

@@ -8,7 +8,7 @@ import (
 	"math"
 	"time"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/bandage"
 )
 
 // TrackerCache is the tracker-state port: records keyed by (ns, key) with sliding TTL and atomic per-key updates.

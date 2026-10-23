@@ -3,9 +3,9 @@ package memory
 import (
 	"context"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
-	"github.com/HT4w5/bandage/internal/domain/enrichment"
-	"github.com/HT4w5/bandage/internal/domain/track"
+	"github.com/HT4w5/bandage/internal/bandage"
+	"github.com/HT4w5/bandage/internal/bandage/enrichment"
+	"github.com/HT4w5/bandage/internal/bandage/track"
 )
 
 // Filesize adapts Store to the enrichment.FilesizeCache port: file-size

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
-	"github.com/HT4w5/bandage/internal/domain/report"
+	"github.com/HT4w5/bandage/internal/bandage"
+	"github.com/HT4w5/bandage/internal/bandage/report"
 )
 
 // Schema contract: one row per (rule, target) with indexed rule, target and

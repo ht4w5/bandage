@@ -14,9 +14,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
-	"github.com/HT4w5/bandage/internal/domain/filter"
-	"github.com/HT4w5/bandage/internal/domain/track"
+	"github.com/HT4w5/bandage/internal/bandage"
+	"github.com/HT4w5/bandage/internal/bandage/filter"
+	"github.com/HT4w5/bandage/internal/bandage/track"
 )
 
 // reasonRe is the machine-readable reason slug pattern.

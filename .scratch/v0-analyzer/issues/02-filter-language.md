@@ -14,7 +14,7 @@
 ## Answer
 
 Implemented on `feat/v0-analyzer` (merge commit `9446791`). The webjail v0
-filter language is ported into `internal/domain/filter` (lexer/parser/AST,
+filter language is ported into `internal/bandage/filter` (lexer/parser/AST,
 exact-match semantics, positioned `ParseError{Line, Col}` per
 `porting-notes.md` §F, binary size units per §E); filters gate trackers at
 the evaluation seam; `-check` reports `filter: L:C: message` and the plan

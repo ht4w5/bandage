@@ -19,7 +19,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/bandage"
 	"github.com/HT4w5/bandage/internal/identity"
 )
 

@@ -15,7 +15,7 @@
 ## Answer
 
 Implemented on `feat/v0-analyzer` (merge commit `075aced`).
-`internal/domain/enrichment`: webjail's integer EWMA + warm-up gate
+`internal/bandage/enrichment`: webjail's integer EWMA + warm-up gate
 (app-wiring constants period=5, minSamples=5, DECISIONS §3), state in the
 shared cache store under `filesize` without TTL. `replay` tracker keyed
 (Target, path), fraction increments `min(sent/size, 1)`, full skip while

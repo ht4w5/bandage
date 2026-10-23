@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/bandage"
 )
 
 // stubRepository is a recording Repository stub; upWedge holds every Upsert in

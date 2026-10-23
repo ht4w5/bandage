@@ -12,7 +12,7 @@ import (
 // TestDomainModulesDependOnlyOnCore enforces the dependency rule
 // (ADR 0005): domain modules import only the stdlib and the domain core.
 func TestDomainModulesDependOnlyOnCore(t *testing.T) {
-	const domainPath = "github.com/HT4w5/bandage/internal/domain"
+	const domainPath = "github.com/HT4w5/bandage/internal/bandage"
 	err := filepath.WalkDir(".", func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/HT4w5/bandage/internal/domain/enrichment"
+	"github.com/HT4w5/bandage/internal/bandage/enrichment"
 )
 
 // TestFilesizeUpdateRoundTrip: the adapter shares the tracker store under

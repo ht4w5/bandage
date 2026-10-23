@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/bandage"
 )
 
 // stubCache is a FilesizeCache test double keyed by path.

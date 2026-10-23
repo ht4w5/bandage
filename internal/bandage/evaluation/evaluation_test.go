@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/bandage"
 )
 
 // matchAll accepts every event.

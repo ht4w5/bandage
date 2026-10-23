@@ -13,7 +13,7 @@ Reference DNA:
 | Source | What we take |
 |---|---|
 | **flux** | Chain-shaped YAML rules (chains → rules → match → action, with `goto`/`jump`/`stop` control flow); explicit leaky-**tracker** config (`leak`, `volume`); bucket math and overflow semantics; realtime pipeline (syslog → parser → workers); nginx JSON log format and parser |
-| **webjail** | Domain-driven design (`internal/domain` + one subpackage per concern, tiny `Update(ctx, key, fn)` ports, derived `Event` fields); the **filter expression language** (`src 10.0.0.0/8 and path prefix "/api"`) including `Parse`/`ParseError{Line,Col}` style; the **file size enrichment** (per-path EWMA + `minSamples` gate → `event.SizeBytes`); the **ubiquitous language** (`Event`, `Filter`, `Enrich`, `Track`/tracker, `Evaluation`, `leak`, `volume`) |
+| **webjail** | Domain-driven design (`internal/domain` in webjail, `internal/bandage` here — one subpackage per concern, tiny `Update(ctx, key, fn)` ports, derived `Event` fields); the **filter expression language** (`src 10.0.0.0/8 and path prefix "/api"`) including `Parse`/`ParseError{Line,Col}` style; the **file size enrichment** (per-path EWMA + `minSamples` gate → `event.SizeBytes`); the **ubiquitous language** (`Event`, `Filter`, `Enrich`, `Track`/tracker, `Evaluation`, `leak`, `volume`) |
 | **A batch log analyzer** (YAML rules compiled to trusted SQL over a log warehouse, one-shot runs) | Rule `id` + `reason` provenance on findings. The YAML and JSON formats are **not** borrowed from it. |
 
 ## 1. DSL: flux chains + webjail filter syntax + explicit trackers
@@ -167,37 +167,37 @@ nginx log format (flux-compatible)
 ## 3. Domain model (webjail DDD, webjail language)
 
 ```
-cmd/bandage/                run(args) seam: pflag CLI with shorthands
-                            (-c config, -r rules, -t test, -l log level,
-                            -w workers, -v version, -h help)
-internal/domain/            package bandage: Event (§2), Report, Rule/Chain
-                            value types, log `Level` enum (ADR 0005)
-internal/domain/filter/     webjail filter language: Parse, Filter.Match(*Event),
-                            ParseError{Line, Col} — ported as-is
-internal/domain/enrichment/ FilesizeEnricher (EWMA, minSamples) + FilesizeCache
-                            port — ported from webjail
-internal/domain/track/      RateTracker, BandwidthTracker, ReplayTracker
-                            (flux bucket math + replay volume methods) +
-                            TrackerCache port
-internal/domain/evaluation/ EvaluationService: prefilter → tracker update →
-                            match (filter ∧ overflow) → action dispatch +
-                            `Logger` port (ADR 0005)
-internal/domain/report/     ReportService + ReportRepository port (persistence)
-internal/app/               pipeline wiring, worker pool (flux engine style),
-                            program-wide zerolog logger (ADR 0005)
-internal/identity/          build identity: linker-injected version, commit,
-                            build date, dirty flag (-v output, startup log
-                            record, --test plan header)
-internal/infra/             ingest drivers (v0: syslog) + parsers (v0: nginx
-                            JSON, ported from flux); db drivers (v0: sqlite
-                            report repository); in-memory tracker cache
-                            (sharded, TTL + LRU); HTTP API (net/http)
+cmd/bandage/                 run(args) seam: pflag CLI with shorthands
+                             (-c config, -r rules, -t test, -l log level,
+                             -w workers, -v version, -h help)
+internal/bandage/            package bandage: Event (§2), Report, Rule/Chain
+                             value types, log `Level` enum (ADR 0005)
+internal/bandage/filter/     webjail filter language: Parse, Filter.Match(*Event),
+                             ParseError{Line, Col} — ported as-is
+internal/bandage/enrichment/ FilesizeEnricher (EWMA, minSamples) + FilesizeCache
+                             port — ported from webjail
+internal/bandage/track/      RateTracker, BandwidthTracker, ReplayTracker
+                             (flux bucket math + replay volume methods) +
+                             TrackerCache port
+internal/bandage/evaluation/ EvaluationService: prefilter → tracker update →
+                             match (filter ∧ overflow) → action dispatch +
+                             `Logger` port (ADR 0005)
+internal/bandage/report/     ReportService + ReportRepository port (persistence)
+internal/app/                pipeline wiring, worker pool (flux engine style),
+                             program-wide zerolog logger (ADR 0005)
+internal/identity/           build identity: linker-injected version, commit,
+                             build date, dirty flag (-v output, startup log
+                             record, --test plan header)
+internal/infra/              ingest drivers (v0: syslog) + parsers (v0: nginx
+                             JSON, ported from flux); db drivers (v0: sqlite
+                             report repository); in-memory tracker cache
+                             (sharded, TTL + LRU); HTTP API (net/http)
 configs/                    bandage.yml + rules.yml examples
 ```
 
 House rules (webjail): ports are tiny interfaces declared beside their
 consumer; `Update(ctx, key, fn)` callbacks run under a per-key lock and never
-do I/O; `internal/domain*` depends on stdlib + `internal/domain` only.
+do I/O; `internal/bandage*` depends on stdlib + `internal/bandage` only.
 Derived fields live on `Event` (`SizeBytes`).
 
 ### bandage.yml sketch
@@ -289,9 +289,9 @@ The `TrackerCache` port below is the seam where a write-back persistence
 layer can slot in later (hybrid memory + disk: dirty-set flush to the
 reports sqlite DB, read-through on miss).
 
-### Port (`Record` is a core value type in `internal/domain`; the tiny
+### Port (`Record` is a core value type in `internal/bandage`; the tiny
 ### `TrackerCache` interfaces are declared beside each consumer —
-### `internal/domain/track`, `internal/domain/evaluation` — and satisfied
+### `internal/bandage/track`, `internal/bandage/evaluation` — and satisfied
 ### structurally by the store)
 
 ```go
@@ -312,7 +312,7 @@ type TrackerCache interface {
 }
 ```
 
-`internal/domain/enrichment.FilesizeCache` keeps webjail's shape
+`internal/bandage/enrichment.FilesizeCache` keeps webjail's shape
 (`Update(ctx, path, fn)`) and is served by the same store (ns `filesize`,
 no TTL). TTL is flux's `volume/leak`, passed by the tracker on each update
 (0 = no expiry).
@@ -346,7 +346,7 @@ no TTL). TTL is flux's `volume/leak`, passed by the tracker on each update
 
 ## 6. Reports
 
-### Repository port (declared in `internal/domain/report`)
+### Repository port (declared in `internal/bandage/report`)
 
 ```go
 type Repository interface {

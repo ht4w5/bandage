@@ -32,7 +32,7 @@ upserts, WAL, split read path) — docs describe shipped behavior
 Operator docs are born here, as `docs/*.md` with a root `README.md`
 pointer (the repo had none — PLAN.md §7/8 and config comments were the
 only prose). Written against the shipped behavior pinned by the tests
-in `internal/app` (suppress/trigger semantics), `internal/domain/report`
+in `internal/app` (suppress/trigger semantics), `internal/bandage/report`
 and `internal/infra/persistence/sqlite` (WAL, read split):
 
 - `docs/ingest.md` — ingest transport guidance: udp/unixgram recommended
@@ -54,7 +54,7 @@ and `internal/infra/persistence/sqlite` (WAL, read split):
   immediately for tracker-less rules, fresh accumulation episode for
   tracker rules); restart re-derives suppression from the report table;
   Target is the default aggregation (per address IPv4 / per /64 IPv6 —
-  `TrackerConfig.TargetString` nil-falls-back, `internal/domain/target.go`);
+  `TrackerConfig.TargetString` nil-falls-back, `internal/bandage/target.go`);
   reason slug contract per ADR 0004.
 - `docs/storage.md` — the WAL backup note: `reports.db-wal`/`-shm` beside
   `reports.db`, stale-copy hazard of backing up the main file alone,
@@ -74,7 +74,7 @@ Context pointers: GLOSSARY.md; ADR 0008 (Trigger semantics), ADR 0009
 (WAL + separate read path), ADR 0004 (reason slug); spec stories 28–29
 and Implementation Decisions 'Docs'; oracle tests
 `internal/app/suppress_test.go` (incl. `tripwireRules` fixture),
-`internal/app/trigger_test.go`, `internal/domain/report/*_test.go`,
+`internal/app/trigger_test.go`, `internal/bandage/report/*_test.go`,
 `internal/infra/persistence/sqlite/*_test.go`; notes
 /tmp/bandage-v0-hot-path-notes/codebase-map.md §7 (surprise #3).
 

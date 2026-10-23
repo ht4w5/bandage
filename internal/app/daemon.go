@@ -13,10 +13,10 @@ import (
 
 	"github.com/rs/zerolog"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
-	"github.com/HT4w5/bandage/internal/domain/enrichment"
-	"github.com/HT4w5/bandage/internal/domain/evaluation"
-	"github.com/HT4w5/bandage/internal/domain/report"
+	"github.com/HT4w5/bandage/internal/bandage"
+	"github.com/HT4w5/bandage/internal/bandage/enrichment"
+	"github.com/HT4w5/bandage/internal/bandage/evaluation"
+	"github.com/HT4w5/bandage/internal/bandage/report"
 	"github.com/HT4w5/bandage/internal/identity"
 	"github.com/HT4w5/bandage/internal/infra/cache/memory"
 	"github.com/HT4w5/bandage/internal/infra/httpapi"

@@ -5,7 +5,7 @@ import (
 	"net/netip"
 	"testing"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/bandage"
 )
 
 // baseEvent is the event the table cases vary; zero fields never match.

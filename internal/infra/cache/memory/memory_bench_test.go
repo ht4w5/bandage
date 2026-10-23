@@ -9,9 +9,9 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/HT4w5/bandage/internal/bandage"
+	"github.com/HT4w5/bandage/internal/bandage/track"
 	"github.com/HT4w5/bandage/internal/bench"
-	bandage "github.com/HT4w5/bandage/internal/domain"
-	"github.com/HT4w5/bandage/internal/domain/track"
 )
 
 // Benchmarks measure Store.Update per call (sequential and contended over the

@@ -7,7 +7,7 @@ import (
 	"net/netip"
 	"strings"
 
-	bandage "github.com/HT4w5/bandage/internal/domain"
+	"github.com/HT4w5/bandage/internal/bandage"
 )
 
 // Filter is a predicate over an Event.
