@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
+	"github.com/HT4w5/bandage/internal/firewall"
+	"github.com/HT4w5/bandage/internal/firewall/firewalltest"
 )
 
 // Primary seam: the update cycle's network-namespace targeting,
@@ -23,16 +26,16 @@ import (
 
 // newTestNamespaces wires the seam over one stub driver per namespace
 // path ("" is the current namespace).
-func newTestNamespaces(t *testing.T, srv *docServer, paths ...string) (*Updater, []*Stub, *logCapture) {
+func newTestNamespaces(t *testing.T, srv *docServer, paths ...string) (*Updater, []*firewalltest.Stub, *logCapture) {
 	t.Helper()
 	fetcher, err := NewFetcher(srv.URL)
 	if err != nil {
 		t.Fatalf("NewFetcher: %v", err)
 	}
-	var stubs []*Stub
+	var stubs []*firewalltest.Stub
 	var namespaces []Namespace
 	for _, path := range paths {
-		s := &Stub{}
+		s := &firewalltest.Stub{}
 		stubs = append(stubs, s)
 		namespaces = append(namespaces, Namespace{Path: path, Driver: s})
 	}
@@ -45,10 +48,10 @@ func newTestNamespaces(t *testing.T, srv *docServer, paths ...string) (*Updater,
 }
 
 // unreachable is the driver error a vanished namespace surfaces: its
-// nsfs handle cannot be opened (internal/splint/nft wraps open
+// nsfs handle cannot be opened (internal/firewall/nft wraps open
 // failures exactly so).
 func unreachable(path string) error {
-	return fmt.Errorf("%w: open %s: no such file or directory", ErrUnreachable, path)
+	return fmt.Errorf("%w: open %s: no such file or directory", firewall.ErrUnreachable, path)
 }
 
 // TestUpdateCycleInstallsIntoEveryTargetNamespace: one fetch-compile
@@ -63,7 +66,7 @@ func TestUpdateCycleInstallsIntoEveryTargetNamespace(t *testing.T) {
 		t.Fatalf("Update: %v", err)
 	}
 	for _, stub := range stubs {
-		assertInstalls(t, stub, []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+		assertInstalls(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 	}
 	if got := srv.Hits(); got != 1 {
 		t.Errorf("report endpoint fetched %d times, want 1 (one fetch-compile serves every namespace)", got)
@@ -86,7 +89,7 @@ func TestUpdateCycleSkipsAnUnreachableNamespace(t *testing.T) {
 			t.Fatalf("Update: %v", err)
 		}
 		assertInstalls(t, stubs[0], nil)
-		assertInstalls(t, stubs[1], []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+		assertInstalls(t, stubs[1], []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 		logText := logs.String()
 		if !strings.Contains(logText, "namespace unreachable") || !strings.Contains(logText, "/gone") {
 			t.Errorf("the skipped namespace is not warned about: %s", logText)
@@ -103,7 +106,7 @@ func TestUpdateCycleSkipsAnUnreachableNamespace(t *testing.T) {
 			t.Fatalf("Update error = %v, want a loud install failure", err)
 		}
 		assertInstalls(t, stubs[0], nil)
-		assertInstalls(t, stubs[1], []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+		assertInstalls(t, stubs[1], []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 	})
 }
 
@@ -125,8 +128,8 @@ func TestUpdateCycleSkipsUnchangedRulesPerNamespace(t *testing.T) {
 		if _, err := u.Update(context.Background()); err != nil {
 			t.Fatalf("second Update: %v", err)
 		}
-		assertInstalls(t, stubs[0], []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
-		assertInstalls(t, stubs[1], []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+		assertInstalls(t, stubs[0], []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+		assertInstalls(t, stubs[1], []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 		if n := strings.Count(logs.String(), "ban rules unchanged"); n != 2 {
 			t.Errorf("logged %d unchanged skips, want 2 (one per namespace): %s", n, logs.String())
 		}
@@ -151,7 +154,7 @@ func TestUpdateCycleSkipsUnchangedRulesPerNamespace(t *testing.T) {
 			if len(calls) != 2 {
 				t.Fatalf("installed %d rulesets, want 2", len(calls))
 			}
-			if !equalRules(calls[1], []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "198.51.100.9/32")}) {
+			if !equalRules(calls[1], []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "198.51.100.9/32")}) {
 				t.Errorf("second installed ruleset = %v, want the changed rules", calls[1])
 			}
 		}
@@ -172,8 +175,8 @@ func TestUpdateCycleSkipsUnchangedRulesPerNamespace(t *testing.T) {
 		if _, err := u.Update(context.Background()); err != nil {
 			t.Fatalf("second Update: %v", err)
 		}
-		assertInstalls(t, stubs[0], []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
-		assertInstalls(t, stubs[1], []BanRule{banRule(StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+		assertInstalls(t, stubs[0], []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+		assertInstalls(t, stubs[1], []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 	})
 }
 
@@ -249,7 +252,7 @@ func TestNewForNamespacesValidatesTheNamespaceList(t *testing.T) {
 	})
 
 	t.Run("a namespace list is accepted", func(t *testing.T) {
-		u, err := NewForNamespaces(fetcher, []Namespace{{Path: "/a", Driver: &Stub{}}}, defaultPolicy(), DefaultInterval, log)
+		u, err := NewForNamespaces(fetcher, []Namespace{{Path: "/a", Driver: &firewalltest.Stub{}}}, defaultPolicy(), DefaultInterval, log)
 		if err != nil {
 			t.Fatalf("NewForNamespaces: %v", err)
 		}

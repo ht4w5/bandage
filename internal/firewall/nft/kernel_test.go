@@ -14,7 +14,7 @@ import (
 	"github.com/google/nftables/expr"
 	"golang.org/x/sys/unix"
 
-	"github.com/HT4w5/bandage/internal/splint"
+	"github.com/HT4w5/bandage/internal/firewall"
 )
 
 // TestKernelInstallReadBackReset is the real driver's one integration
@@ -58,48 +58,48 @@ func TestKernelInstallReadBackReset(t *testing.T) {
 	// service prefilter, and a rule whose family the destination
 	// prefilter cannot reach — no service traffic lives there, so it
 	// gets no kernel rule at all.
-	rules := []splint.BanRule{
+	rules := []firewall.BanRule{
 		{Targets: []netip.Prefix{
 			netip.MustParsePrefix("203.0.113.0/24"),
 			netip.MustParsePrefix("198.51.100.7/32"),
-		}, Stance: splint.StanceDrop},
-		{Targets: []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")}, Stance: splint.StanceReject},
-		{Targets: []netip.Prefix{netip.MustParsePrefix("198.51.100.9/32")}, Stance: splint.StanceLimitPktRate, Rate: ratePtr(250)},
-		{Targets: []netip.Prefix{netip.MustParsePrefix("203.0.113.9/32")}, Stance: splint.StanceLimitBandwidth, Rate: ratePtr(1000000)},
-		{Targets: []netip.Prefix{netip.MustParsePrefix("255.255.255.0/24")}, Stance: splint.StanceDrop},
+		}, Stance: firewall.StanceDrop},
+		{Targets: []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")}, Stance: firewall.StanceReject},
+		{Targets: []netip.Prefix{netip.MustParsePrefix("198.51.100.9/32")}, Stance: firewall.StanceLimitPktRate, Rate: ratePtr(250)},
+		{Targets: []netip.Prefix{netip.MustParsePrefix("203.0.113.9/32")}, Stance: firewall.StanceLimitBandwidth, Rate: ratePtr(1000000)},
+		{Targets: []netip.Prefix{netip.MustParsePrefix("255.255.255.0/24")}, Stance: firewall.StanceDrop},
 		{
 			Targets: []netip.Prefix{
 				netip.MustParsePrefix("203.0.113.7/32"),
 				netip.MustParsePrefix("2001:db8::7/128"),
 			},
-			Prefilter: splint.Prefilter{
+			Prefilter: firewall.Prefilter{
 				DstPorts: []uint16{53, 443},
 				DstAddrs: []netip.Prefix{
 					netip.MustParsePrefix("198.51.100.5/32"),
 					netip.MustParsePrefix("2001:db8::5/128"),
 				},
 			},
-			Stance: splint.StanceDrop,
+			Stance: firewall.StanceDrop,
 		},
 		{
 			Targets: []netip.Prefix{netip.MustParsePrefix("2001:db8::9/128")},
-			Prefilter: splint.Prefilter{
+			Prefilter: firewall.Prefilter{
 				DstPorts: []uint16{443},
 				DstAddrs: []netip.Prefix{netip.MustParsePrefix("198.51.100.5/32")},
 			},
-			Stance: splint.StanceDrop,
+			Stance: firewall.StanceDrop,
 		},
 	}
 	input, err := New(HookInput)
 	if err != nil {
 		t.Fatalf("New(input): %v", err)
 	}
-	firstHits, err := input.Install(rules)
+	first, err := input.Install(rules)
 	if err != nil {
 		t.Fatalf("first Install: %v", err)
 	}
-	if len(firstHits) != 0 {
-		t.Errorf("first Install reported %d hits, want none (nothing was installed to count)", len(firstHits))
+	if len(first.Hits) != 0 {
+		t.Errorf("first Install reported %d hits, want none (nothing was installed to count)", len(first.Hits))
 	}
 	if exists, err := input.TableExists(); err != nil || !exists {
 		t.Errorf("TableExists after Install = (%v, %v), want (true, nil)", exists, err)
@@ -116,11 +116,11 @@ func TestKernelInstallReadBackReset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New(prerouting): %v", err)
 	}
-	rebuildHits, err := prerouting.Install(rules)
+	rebuild, err := prerouting.Install(rules)
 	if err != nil {
 		t.Fatalf("rebuild Install: %v", err)
 	}
-	for _, h := range rebuildHits {
+	for _, h := range rebuild.Hits {
 		if h.Rule < 0 || h.Rule >= len(rules) {
 			t.Errorf("counter read-back mapped to ban rule %d, want 0..%d", h.Rule, len(rules)-1)
 		}
@@ -142,6 +142,83 @@ func TestKernelInstallReadBackReset(t *testing.T) {
 	// ... and tolerates it being already absent.
 	if err := prerouting.Reset(); err != nil {
 		t.Errorf("second Reset: %v", err)
+	}
+}
+
+// TestKernelDeclinesInstallNothing verifies the decline half of the
+// penalty-as-stated rule at the kernel: a limit-req-rate ban rule is
+// declined with a reason — reported per rule (by index) and per feature
+// — and installs nothing at the packet layer, never faked as a packet
+// or byte meter, while the rest of the ruleset still installs (the
+// spec's root-gated declines-install-nothing verification).
+func TestKernelDeclinesInstallNothing(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root: netlink requires CAP_NET_ADMIN")
+	}
+	if reason := netlinkUnusable(); reason != "" {
+		t.Skip(reason)
+	}
+	conn, err := nftables.New()
+	if err != nil {
+		t.Fatalf("nftables.New: %v", err)
+	}
+	if exists, err := tableExists(conn, ownedTable()); err != nil {
+		t.Fatalf("probe owned table: %v", err)
+	} else if exists {
+		t.Skipf("table %q exists: a splint instance may be enforcing here", tableName)
+	}
+	t.Cleanup(func() {
+		d, err := New(HookInput)
+		if err != nil {
+			t.Errorf("New: %v", err)
+			return
+		}
+		if err := d.Reset(); err != nil {
+			t.Errorf("cleanup reset: %v", err)
+		}
+	})
+
+	rules := []firewall.BanRule{
+		{Targets: []netip.Prefix{netip.MustParsePrefix("203.0.113.7/32")}, Stance: firewall.StanceDrop},
+		{Targets: []netip.Prefix{netip.MustParsePrefix("198.51.100.9/32")}, Stance: firewall.StanceLimitReqRate, Rate: ratePtr(300)},
+	}
+	d, err := New(HookInput)
+	if err != nil {
+		t.Fatalf("New(input): %v", err)
+	}
+	out, err := d.Install(rules)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if len(out.Declined) != 1 {
+		t.Fatalf("Install reported %d declines, want 1: %+v", len(out.Declined), out.Declined)
+	}
+	if got := out.Declined[0]; got.Rule != 1 || got.Feature != "limit-req-rate" || got.Reason == "" {
+		t.Errorf("Declined = %+v, want rule 1's limit-req-rate with a reason", got)
+	}
+
+	// The declined ban rule installs nothing at the packet layer: the
+	// drop's one kernel rule on the ingress chain, no meter anywhere.
+	table, err := conn.ListTableOfFamily(tableName, nftables.TableFamilyINet)
+	if err != nil {
+		t.Fatalf("read table back: %v", err)
+	}
+	for chainName, want := range map[string]int{ingressName: 1, egressName: 0} {
+		chain, err := conn.ListChain(table, chainName)
+		if err != nil {
+			t.Fatalf("read chain %s back: %v", chainName, err)
+		}
+		krules, err := conn.GetRules(table, chain)
+		if err != nil {
+			t.Fatalf("read rules of %s back: %v", chainName, err)
+		}
+		if len(krules) != want {
+			t.Errorf("chain %s carries %d kernel rules, want %d (the declined rule installs nothing)", chainName, len(krules), want)
+		}
+	}
+
+	if err := d.Reset(); err != nil {
+		t.Fatalf("Reset: %v", err)
 	}
 }
 

@@ -78,8 +78,9 @@ const (
 	// PenaltyLimitBandwidth throttles the target to Rate response-payload
 	// bytes per second.
 	PenaltyLimitBandwidth PenaltyAction = "limit-bandwidth"
-	// PenaltyLimitReqRate throttles the target to Rate requests per second;
-	// deliberately not applied at the packet layer (ADR 0011).
+	// PenaltyLimitReqRate throttles the target to Rate requests per second —
+	// carried as stated; packet-layer drivers decline it with a reason
+	// (ADR 0012 narrows ADR 0011).
 	PenaltyLimitReqRate PenaltyAction = "limit-req-rate"
 )
 

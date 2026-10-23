@@ -1,8 +1,11 @@
-// Package nft installs splint's ban rules through netlink
-// (github.com/google/nftables): one wholly-owned inet table named
+// Package nft is splint's nftables firewall driver: it enforces the
+// firewall seam's ban rules through netlink
+// (github.com/google/nftables) — one wholly-owned inet table named
 // splint in the target namespace, rebuilt wholesale in a single
 // atomic batch per install (fluxc's delete-then-rebuild gap is
-// deliberately not copied), removed on reset.
+// deliberately not copied), removed on reset. It applies each Penalty
+// exactly as stated or declines it: limit-req-rate is application-layer
+// intent and is never faked at the packet layer (ADR 0012).
 package nft
 
 import (
@@ -20,18 +23,18 @@ import (
 	"github.com/google/nftables/expr"
 	"golang.org/x/sys/unix"
 
-	"github.com/HT4w5/bandage/internal/splint"
+	"github.com/HT4w5/bandage/internal/firewall"
 )
 
 // The wholly-owned nftables objects: one inet table per target
 // namespace, carrying the ingress chain at the configured hook and the
 // egress chain behind the bandwidth limits. The chain names are the
-// ones splint.Stance.Chain() reports (the --dry-run mapping lines name
-// these chains).
+// ones firewall.Stance.Chain() reports (the --dry-run mapping lines
+// name these chains).
 const (
 	tableName   = "splint"
-	ingressName = string(splint.ChainIngress)
-	egressName  = string(splint.ChainEgress)
+	ingressName = string(firewall.ChainIngress)
+	egressName  = string(firewall.ChainEgress)
 )
 
 // Hook is the enforcement hook the ingress chain attaches to: input
@@ -59,7 +62,7 @@ func (h Hook) valid() bool {
 	return h == HookInput || h == HookPrerouting
 }
 
-// Driver is the nftables implementation of the splint.Driver port.
+// Driver is the nftables implementation of the firewall.Driver port.
 // It owns nothing but one table per target namespace: Install
 // rebuilds that table wholesale, Reset removes it. One Driver targets
 // one namespace: netns is its nsfs handle path, "" the current
@@ -69,7 +72,7 @@ type Driver struct {
 	netns string
 }
 
-var _ splint.Driver = (*Driver)(nil)
+var _ firewall.Driver = (*Driver)(nil)
 
 // New builds a driver whose ingress chain attaches at hook in the
 // current namespace.
@@ -96,7 +99,7 @@ func NewNetNS(hook Hook, netnsPath string) (*Driver, error) {
 // connection's Flush returns: the library dials lazily at flush time
 // and the open handle is what keeps the namespace alive meanwhile. A
 // handle that cannot be opened is a vanished namespace: it wraps
-// splint.ErrUnreachable, which the update cycle warns and skips.
+// firewall.ErrUnreachable, which the update cycle warns and skips.
 func (d *Driver) connect() (*nftables.Conn, *os.File, error) {
 	if d.netns == "" {
 		conn, err := nftables.New()
@@ -107,12 +110,12 @@ func (d *Driver) connect() (*nftables.Conn, *os.File, error) {
 	}
 	nsFile, err := os.Open(d.netns)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: open netns %s: %w", splint.ErrUnreachable, d.netns, err)
+		return nil, nil, fmt.Errorf("%w: open netns %s: %w", firewall.ErrUnreachable, d.netns, err)
 	}
 	conn, err := nftables.New(nftables.WithNetNSFd(int(nsFile.Fd())))
 	if err != nil {
 		nsFile.Close()
-		return nil, nil, fmt.Errorf("%w: connect netns %s: %w", splint.ErrUnreachable, d.netns, err)
+		return nil, nil, fmt.Errorf("%w: connect netns %s: %w", firewall.ErrUnreachable, d.netns, err)
 	}
 	return conn, nsFile, nil
 }
@@ -156,19 +159,22 @@ func (d *Driver) TableExists() (bool, error) {
 }
 
 // Install rebuilds the owned table wholesale in one atomic batch and
-// reports the nonzero packet/byte counters of the rules it replaces —
+// reports the nonzero packet/byte counters of the rules it replaced —
 // the hits covering the period since the last change (the rebuild
-// resets the counters): a probe decides whether the delete joins the
-// batch, the replaced rules' counters are read back first, then the
-// table, both chains and one kernel rule per ban rule and address
+// resets the counters) — together with the ban-rule features it
+// declines: a probe decides whether the delete joins the batch, the
+// replaced rules' counters are read back first, then the table, both
+// chains and one kernel rule per honoureable ban rule and address
 // family — each leading with the service prefilter and carrying its
 // packet/byte counter immediately before the verdict — are buffered
 // and flushed together. The table is never absent while the new one
-// applies — there is no delete-then-rebuild window.
-func (d *Driver) Install(rules []splint.BanRule) ([]splint.Hit, error) {
+// applies — there is no delete-then-rebuild window. A declined ban
+// rule keeps its input index (the correlation the decline and the
+// counter read-back share) and installs nothing.
+func (d *Driver) Install(rules []firewall.BanRule) (firewall.Outcome, error) {
 	conn, nsFile, err := d.connect()
 	if err != nil {
-		return nil, fmt.Errorf("install: %w", err)
+		return firewall.Outcome{}, fmt.Errorf("install: %w", err)
 	}
 	if nsFile != nil {
 		// The handle stays open through Flush (see connect).
@@ -177,31 +183,55 @@ func (d *Driver) Install(rules []splint.BanRule) ([]splint.Hit, error) {
 	table := ownedTable()
 	exists, err := tableExists(conn, table)
 	if err != nil {
-		return nil, fmt.Errorf("install: probe owned table: %w", err)
+		return firewall.Outcome{}, fmt.Errorf("install: probe owned table: %w", err)
 	}
-	var hits []splint.Hit
+	var hits []firewall.Hit
 	if exists {
 		// The replaced rules' counters are read before the batch resets
 		// them. Only a present table may join the batch: deleting a
 		// missing one aborts the whole transaction with ENOENT.
 		hits, err = ruleHits(conn, table)
 		if err != nil {
-			return nil, fmt.Errorf("install: read rule counters: %w", err)
+			return firewall.Outcome{}, fmt.Errorf("install: read rule counters: %w", err)
 		}
 		conn.DelTable(table)
 	}
 	table = conn.AddTable(table)
 	ingress := conn.AddChain(d.ingress(table))
 	egress := conn.AddChain(d.egress(table))
+	var declines []firewall.Decline
 	for i, r := range rules {
+		if decline, ok := declineRule(i, r); ok {
+			declines = append(declines, decline)
+			continue
+		}
 		if err := addBanRule(conn, table, ingress, egress, i, r); err != nil {
-			return nil, fmt.Errorf("install: ban rule %d: %w", i, err)
+			return firewall.Outcome{}, fmt.Errorf("install: ban rule %d: %w", i, err)
 		}
 	}
 	if err := conn.Flush(); err != nil {
-		return nil, fmt.Errorf("install: %w", err)
+		return firewall.Outcome{}, fmt.Errorf("install: %w", err)
 	}
-	return hits, nil
+	return firewall.Outcome{Hits: hits, Declined: declines}, nil
+}
+
+// declineRule reports one ban rule's declined feature: a limit-req-rate
+// Penalty throttles requests per second — application-layer intent the
+// packet layer cannot count — so this driver declines it with a reason
+// and installs nothing for it, never faking the request rate as a
+// packet or byte meter (ADR 0012 narrows ADR 0011: non-application is
+// this driver's decision, not a blanket policy). Every other Penalty
+// installs exactly as stated. The decline references the ban rule by
+// its index in the ruleset handed to Install.
+func declineRule(i int, r firewall.BanRule) (firewall.Decline, bool) {
+	if r.Stance != firewall.StanceLimitReqRate {
+		return firewall.Decline{}, false
+	}
+	return firewall.Decline{
+		Rule:    i,
+		Feature: string(r.Stance),
+		Reason:  "application-layer intent; never faked at the packet layer",
+	}, true
 }
 
 // ruleHits reads the owned table's per-rule counters back, one hit per
@@ -210,8 +240,8 @@ func (d *Driver) Install(rules []splint.BanRule) ([]splint.Hit, error) {
 // so every reading maps onto the ban rule it counts — the index in the
 // ruleset being replaced. Only the nonzero readings come back: they
 // are the hits worth logging.
-func ruleHits(conn *nftables.Conn, table *nftables.Table) ([]splint.Hit, error) {
-	byRule := map[int]splint.Hit{}
+func ruleHits(conn *nftables.Conn, table *nftables.Table) ([]firewall.Hit, error) {
+	byRule := map[int]firewall.Hit{}
 	for _, name := range []string{ingressName, egressName} {
 		chain, err := conn.ListChain(table, name)
 		if err != nil {
@@ -234,14 +264,14 @@ func ruleHits(conn *nftables.Conn, table *nftables.Table) ([]splint.Hit, error) 
 				continue // not a kernel rule this driver wrote
 			}
 			h := byRule[i]
-			byRule[i] = splint.Hit{Rule: i, Packets: h.Packets + c.Packets, Bytes: h.Bytes + c.Bytes}
+			byRule[i] = firewall.Hit{Rule: i, Packets: h.Packets + c.Packets, Bytes: h.Bytes + c.Bytes}
 		}
 	}
-	hits := make([]splint.Hit, 0, len(byRule))
+	hits := make([]firewall.Hit, 0, len(byRule))
 	for _, h := range byRule {
 		hits = append(hits, h)
 	}
-	slices.SortFunc(hits, func(a, b splint.Hit) int { return a.Rule - b.Rule })
+	slices.SortFunc(hits, func(a, b firewall.Hit) int { return a.Rule - b.Rule })
 	return hits, nil
 }
 
@@ -392,7 +422,7 @@ var (
 // direction split of the penalty mapping: bandwidth meters the response direction on the
 // egress chain, matched on destination ∈ Target; every other stance
 // matches source on the ingress chain.
-func addBanRule(conn *nftables.Conn, table *nftables.Table, ingress, egress *nftables.Chain, i int, r splint.BanRule) error {
+func addBanRule(conn *nftables.Conn, table *nftables.Table, ingress, egress *nftables.Chain, i int, r firewall.BanRule) error {
 	verdict, err := verdictExprs(r)
 	if err != nil {
 		return err
@@ -402,8 +432,8 @@ func addBanRule(conn *nftables.Conn, table *nftables.Table, ingress, egress *nft
 	// Target; every other stance matches source on the ingress chain.
 	chain, matchOff := ingress, func(f addrFamily) uint32 { return f.srcOff }
 	switch r.Stance.Chain() {
-	case splint.ChainIngress:
-	case splint.ChainEgress:
+	case firewall.ChainIngress:
+	case firewall.ChainEgress:
 		chain, matchOff = egress, func(f addrFamily) uint32 { return f.dstOff }
 	default:
 		return fmt.Errorf("stance %q: not supported", r.Stance)
@@ -552,16 +582,16 @@ func portElements(ports []uint16) []nftables.SetElement {
 // rate, floored (burstFor). The kernel accepts reject at prerouting
 // only from ~5.9 — older kernels refuse the batch, the documented
 // floor for --hook prerouting (ticket 09 documents it).
-func verdictExprs(r splint.BanRule) ([]expr.Any, error) {
+func verdictExprs(r firewall.BanRule) ([]expr.Any, error) {
 	switch r.Stance {
-	case splint.StanceDrop:
+	case firewall.StanceDrop:
 		return []expr.Any{&expr.Verdict{Kind: expr.VerdictDrop}}, nil
-	case splint.StanceReject:
+	case firewall.StanceReject:
 		return []expr.Any{&expr.Reject{
 			Type: unix.NFT_REJECT_ICMPX_UNREACH,
 			Code: unix.NFT_REJECT_ICMPX_ADMIN_PROHIBITED,
 		}}, nil
-	case splint.StanceLimitPktRate, splint.StanceLimitBandwidth:
+	case firewall.StanceLimitPktRate, firewall.StanceLimitBandwidth:
 		if r.Rate == nil {
 			return nil, fmt.Errorf("stance %q: rate required", r.Stance)
 		}
@@ -569,7 +599,7 @@ func verdictExprs(r splint.BanRule) ([]expr.Any, error) {
 			return nil, fmt.Errorf("stance %q: rate must be at least 1 (got %d)", r.Stance, *r.Rate)
 		}
 		limitType := expr.LimitTypePkts
-		if r.Stance == splint.StanceLimitBandwidth {
+		if r.Stance == firewall.StanceLimitBandwidth {
 			limitType = expr.LimitTypePktBytes
 		}
 		return []expr.Any{

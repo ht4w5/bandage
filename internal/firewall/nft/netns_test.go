@@ -12,7 +12,7 @@ import (
 
 	"github.com/google/nftables"
 
-	"github.com/HT4w5/bandage/internal/splint"
+	"github.com/HT4w5/bandage/internal/firewall"
 )
 
 // The netns targeting surface: the per-namespace constructor without
@@ -67,7 +67,7 @@ func TestNewNetNSValidatesTheHook(t *testing.T) {
 // test: the driver installs its table into a non-default scratch
 // network namespace through the nsfs handle — the current namespace
 // stays untouched — reads it back there, resets it there, and a
-// handle whose namespace vanished surfaces as the splint.ErrUnreachable
+// handle whose namespace vanished surfaces as the firewall.ErrUnreachable
 // the update cycle warns, skips and tolerates at exit. It is skipped
 // where root, netlink or unshare(1) is absent.
 func TestKernelInstallInAScratchNetNS(t *testing.T) {
@@ -97,36 +97,36 @@ func TestKernelInstallInAScratchNetNS(t *testing.T) {
 
 	// The encoding fixture of TestKernelInstallReadBackReset, copied
 	// deliberately so both kernel tests pin their own expectations.
-	rules := []splint.BanRule{
+	rules := []firewall.BanRule{
 		{Targets: []netip.Prefix{
 			netip.MustParsePrefix("203.0.113.0/24"),
 			netip.MustParsePrefix("198.51.100.7/32"),
-		}, Stance: splint.StanceDrop},
-		{Targets: []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")}, Stance: splint.StanceReject},
-		{Targets: []netip.Prefix{netip.MustParsePrefix("198.51.100.9/32")}, Stance: splint.StanceLimitPktRate, Rate: ratePtr(250)},
-		{Targets: []netip.Prefix{netip.MustParsePrefix("203.0.113.9/32")}, Stance: splint.StanceLimitBandwidth, Rate: ratePtr(1000000)},
-		{Targets: []netip.Prefix{netip.MustParsePrefix("255.255.255.0/24")}, Stance: splint.StanceDrop},
+		}, Stance: firewall.StanceDrop},
+		{Targets: []netip.Prefix{netip.MustParsePrefix("2001:db8::/32")}, Stance: firewall.StanceReject},
+		{Targets: []netip.Prefix{netip.MustParsePrefix("198.51.100.9/32")}, Stance: firewall.StanceLimitPktRate, Rate: ratePtr(250)},
+		{Targets: []netip.Prefix{netip.MustParsePrefix("203.0.113.9/32")}, Stance: firewall.StanceLimitBandwidth, Rate: ratePtr(1000000)},
+		{Targets: []netip.Prefix{netip.MustParsePrefix("255.255.255.0/24")}, Stance: firewall.StanceDrop},
 		{
 			Targets: []netip.Prefix{
 				netip.MustParsePrefix("203.0.113.7/32"),
 				netip.MustParsePrefix("2001:db8::7/128"),
 			},
-			Prefilter: splint.Prefilter{
+			Prefilter: firewall.Prefilter{
 				DstPorts: []uint16{53, 443},
 				DstAddrs: []netip.Prefix{
 					netip.MustParsePrefix("198.51.100.5/32"),
 					netip.MustParsePrefix("2001:db8::5/128"),
 				},
 			},
-			Stance: splint.StanceDrop,
+			Stance: firewall.StanceDrop,
 		},
 		{
 			Targets: []netip.Prefix{netip.MustParsePrefix("2001:db8::9/128")},
-			Prefilter: splint.Prefilter{
+			Prefilter: firewall.Prefilter{
 				DstPorts: []uint16{443},
 				DstAddrs: []netip.Prefix{netip.MustParsePrefix("198.51.100.5/32")},
 			},
-			Stance: splint.StanceDrop,
+			Stance: firewall.StanceDrop,
 		},
 	}
 	d, err := NewNetNS(HookInput, path)
@@ -164,14 +164,14 @@ func TestKernelInstallInAScratchNetNS(t *testing.T) {
 
 	// A vanished namespace: the handle path is gone once the process
 	// holding the namespace is reaped. Both driver calls surface
-	// splint.ErrUnreachable — the error the update cycle warns and
+	// firewall.ErrUnreachable — the error the update cycle warns and
 	// skips for the cycle and tolerates at reset.
 	stop()
-	if err := d.Reset(); !errors.Is(err, splint.ErrUnreachable) {
-		t.Errorf("Reset on a vanished namespace = %v, want a splint.ErrUnreachable", err)
+	if err := d.Reset(); !errors.Is(err, firewall.ErrUnreachable) {
+		t.Errorf("Reset on a vanished namespace = %v, want a firewall.ErrUnreachable", err)
 	}
-	if _, err := d.Install(rules); !errors.Is(err, splint.ErrUnreachable) {
-		t.Errorf("Install into a vanished namespace = %v, want a splint.ErrUnreachable", err)
+	if _, err := d.Install(rules); !errors.Is(err, firewall.ErrUnreachable) {
+		t.Errorf("Install into a vanished namespace = %v, want a firewall.ErrUnreachable", err)
 	}
 }
 

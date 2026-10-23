@@ -4,68 +4,9 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+
+	"github.com/HT4w5/bandage/internal/firewall"
 )
-
-// BanRule is one compiled ban rule (the GLOSSARY's Ban rule): a stance
-// over Target prefixes, the unit the firewall driver installs. Every
-// rule leads with the service prefilter, so the ban only ever reaches
-// service traffic. Rate is the stance's per-second rate in the unit
-// the stance names (packets or response-payload bytes); it is non-nil
-// exactly for the limit stances.
-//
-// Compile groups the ban rules by (family, prefix length, penalty), so
-// every rule holds one address family's equal-length prefix set and the
-// driver turns one rule into exactly one kernel rule per family.
-type BanRule struct {
-	Targets   []netip.Prefix `json:"targets"`
-	Prefilter Prefilter      `json:"prefilter"`
-	Stance    Stance         `json:"stance"`
-	Rate      *int64         `json:"rate,omitempty"`
-}
-
-// Stance is the enforcement stance a ban rule applies to its Targets,
-// compiled from the reports' Penalties. (The GLOSSARY's Action is a
-// rule step, so this is not called Action.)
-type Stance string
-
-const (
-	// StanceDrop discards the target's traffic silently.
-	StanceDrop Stance = "drop"
-	// StanceReject refuses the target's traffic with an error signal.
-	StanceReject Stance = "reject"
-	// StanceLimitPktRate throttles the target to Rate packets per second.
-	StanceLimitPktRate Stance = "limit-pkt-rate"
-	// StanceLimitBandwidth throttles the target to Rate response-payload
-	// bytes per second, metered in the response direction.
-	StanceLimitBandwidth Stance = "limit-bandwidth"
-)
-
-// Chain names the two chains of the spec's nftables shape. The ingress
-// chain at the configured hook carries drop, reject and packet-rate
-// stances; the egress chain (output in input mode, forward in
-// prerouting mode) carries bandwidth meters matched on destination ∈
-// Target — the response direction the contract's unit names.
-type Chain string
-
-const (
-	// ChainIngress carries the source-facing stances.
-	ChainIngress Chain = "ingress"
-	// ChainEgress carries the response-direction bandwidth meters.
-	ChainEgress Chain = "egress"
-)
-
-// Chain reports the chain the stance installs in — the direction split
-// of the penalty mapping. Unknown stances map to "" and the firewall
-// driver refuses them loudly.
-func (s Stance) Chain() Chain {
-	switch s {
-	case StanceDrop, StanceReject, StanceLimitPktRate:
-		return ChainIngress
-	case StanceLimitBandwidth:
-		return ChainEgress
-	}
-	return ""
-}
 
 // Skip is a report record the compiler left out and why; every skip is
 // logged and counted by the update cycle.
@@ -80,10 +21,11 @@ type Skip struct {
 //
 // Every report with a valid Penalty and a parseable Target compiles
 // through the contract's penalty mapping (mapPenalty — total over the
-// closed vocabulary): drop, reject and the two packet-layer limits
-// become their stances with the rate travelling along, and
-// limit-req-rate is deliberately not applied (ADR 0011) — skipped,
-// logged and counted instead.
+// closed vocabulary): every action becomes its ban rule's stance with
+// the rate travelling along, limit-req-rate included — the Penalty as
+// stated reaches the firewall driver, which decides what its
+// enforcement surface can honour and reports the rest as declines
+// (ADR 0012). The compiler drops no penalty before a driver sees it.
 //
 // Reports that disagree about overlapping Targets then resolve by the
 // merge policy (merge): the most specific Target wins even with a
@@ -91,13 +33,14 @@ type Skip struct {
 // broader ban and a fine-grained report tightens under a broader one;
 // ties on specificity go to the strictest Penalty (drop, then reject,
 // then the limits — smallest rate within one action), and tied limits
-// of different actions combine instead — one meter per direction, both
-// enforced (ADR 0011). The winning stances group by (family, prefix
-// length, penalty) into one ban rule per group with an equal-length
-// prefix set, ordered by prefix length descending, then strictness —
-// so nftables first-match reproduces the merge policy. The result is
-// canonical: permuting the document's report order compiles to an
-// identical ruleset.
+// of different actions combine instead — one meter per dimension
+// (packet rate, bandwidth, request rate), all enforced, with no
+// strictness ordering invented between them (ADR 0011). The winning
+// stances group by (family, prefix length, penalty) into one ban rule
+// per group with an equal-length prefix set, ordered by prefix length
+// descending, then strictness — so nftables first-match reproduces the
+// merge policy. The result is canonical: permuting the document's
+// report order compiles to an identical ruleset.
 //
 // Exclusions are subtracted compiler-side before the merge, overriding
 // every report: the driver installs Targets verbatim, and a record
@@ -106,7 +49,7 @@ type Skip struct {
 // Records with a missing or unknown Penalty, an unparseable Target or
 // a fully excluded Target are skipped and reported in the returned
 // skips; the remaining records still compile.
-func Compile(doc Document, p Policy) ([]BanRule, []Skip) {
+func Compile(doc Document, p Policy) ([]firewall.BanRule, []Skip) {
 	var entries []entry
 	var skips []Skip
 	for _, r := range doc.Reports {
@@ -117,7 +60,7 @@ func Compile(doc Document, p Policy) ([]BanRule, []Skip) {
 		}
 		entries = append(entries, e)
 	}
-	return merge(entries, p.Prefilter.normalized()), skips
+	return merge(entries, p.Prefilter.Normalized()), skips
 }
 
 // entry is one compiling report record's contribution to the merge:
@@ -130,7 +73,7 @@ func Compile(doc Document, p Policy) ([]BanRule, []Skip) {
 type entry struct {
 	target    netip.Prefix
 	residuals []netip.Prefix
-	stance    Stance
+	stance    firewall.Stance
 	rate      *int64
 }
 
@@ -172,7 +115,7 @@ func compileReport(r Report, p Policy) (entry, string) {
 // into one ban rule per group, and the rules order by prefix length
 // descending, then strictness — nftables first-match over the ordered
 // equal-length sets reproduces the per-address resolution.
-func merge(entries []entry, prefilter Prefilter) []BanRule {
+func merge(entries []entry, prefilter firewall.Prefilter) []firewall.BanRule {
 	var values []netip.Prefix
 	seen := map[netip.Prefix]bool{}
 	for _, e := range entries {
@@ -198,14 +141,14 @@ func merge(entries []entry, prefilter Prefilter) []BanRule {
 	}
 	slices.SortFunc(keys, compareGroups)
 
-	rules := []BanRule{}
+	rules := []firewall.BanRule{}
 	for _, k := range keys {
 		var rate *int64
 		if k.rate != 0 { // the limit stances carry their rate; the rest carry none
 			r := k.rate
 			rate = &r
 		}
-		rules = append(rules, BanRule{Targets: groups[k], Prefilter: prefilter, Stance: k.stance, Rate: rate})
+		rules = append(rules, firewall.BanRule{Targets: groups[k], Prefilter: prefilter, Stance: k.stance, Rate: rate})
 	}
 	return rules
 }
@@ -239,7 +182,7 @@ func covers(target, v netip.Prefix) bool {
 // stanceRate is one winning stance over a prefix: the stance and its
 // rate (nil for stances that carry none).
 type stanceRate struct {
-	stance Stance
+	stance firewall.Stance
 	rate   *int64
 }
 
@@ -247,17 +190,18 @@ type stanceRate struct {
 // — to the strictest Penalty: drop beats reject beats the limits, and
 // within one limit action the smallest rate is the strictest. Limits
 // of different actions are dimensionally incomparable and combine
-// instead of ordering: one meter per direction (the ingress
-// packet-rate meter and the egress bandwidth meter — Stance.Chain),
-// both enforced. No strictness ordering is invented between them.
+// instead of ordering — one meter per dimension (the ingress
+// packet-rate meter, the egress bandwidth meter and the request-rate
+// limit), all enforced. No strictness ordering is invented between
+// them: a request rate never loses to a packet rate or a bandwidth.
 func strictest(atLevel []entry) []stanceRate {
 	drop, reject := false, false
-	minRates := map[Stance]int64{}
+	minRates := map[firewall.Stance]int64{}
 	for _, e := range atLevel {
 		switch e.stance {
-		case StanceDrop:
+		case firewall.StanceDrop:
 			drop = true
-		case StanceReject:
+		case firewall.StanceReject:
 			reject = true
 		default:
 			r := rateValue(e.rate)
@@ -268,12 +212,12 @@ func strictest(atLevel []entry) []stanceRate {
 	}
 	switch {
 	case drop:
-		return []stanceRate{{stance: StanceDrop}}
+		return []stanceRate{{stance: firewall.StanceDrop}}
 	case reject:
-		return []stanceRate{{stance: StanceReject}}
+		return []stanceRate{{stance: firewall.StanceReject}}
 	}
 	var out []stanceRate
-	for _, s := range []Stance{StanceLimitPktRate, StanceLimitBandwidth} {
+	for _, s := range []firewall.Stance{firewall.StanceLimitPktRate, firewall.StanceLimitBandwidth, firewall.StanceLimitReqRate} {
 		if r, ok := minRates[s]; ok {
 			rate := r
 			out = append(out, stanceRate{stance: s, rate: &rate})
@@ -287,17 +231,17 @@ func strictest(atLevel []entry) []stanceRate {
 type groupKey struct {
 	is4    bool
 	bits   int
-	stance Stance
+	stance firewall.Stance
 	rate   int64 // 0 for stances without a rate
 }
 
 // compareGroups orders the ban rules: prefix length descending (the
 // first-match lever that makes the most specific Target win), then
 // strictness — drop before reject before the limits, and the smallest
-// rate first within one action. The two limit actions are
-// incomparable, so no strictness decides between them; their
-// serialization order is fixed — the ingress meter before the egress
-// meter — purely so the same reports always compile to the same
+// rate first within one action. The limit actions are incomparable, so
+// no strictness decides between them; their serialization order is
+// fixed — the ingress meter, then the egress meter, then the request
+// rate — purely so the same reports always compile to the same
 // ruleset, and equal-length sets are disjoint across stances, so the
 // order is unobservable to nftables. The family breaks the last tie.
 func compareGroups(a, b groupKey) int {
@@ -327,26 +271,30 @@ func compareGroups(a, b groupKey) int {
 
 // strictRank orders stances by strictness: drop, then reject, then the
 // limits (incomparable among themselves).
-func strictRank(s Stance) int {
+func strictRank(s firewall.Stance) int {
 	switch s {
-	case StanceDrop:
+	case firewall.StanceDrop:
 		return 0
-	case StanceReject:
+	case firewall.StanceReject:
 		return 1
 	default:
 		return 2
 	}
 }
 
-// meterRank fixes the serialization order of the two limit stances —
-// the ingress packet-rate meter before the egress bandwidth meter. It
-// is not a strictness ordering: the merge never resolves a tie with it
-// (see strictest).
-func meterRank(s Stance) int {
-	if s == StanceLimitBandwidth {
+// meterRank fixes the serialization order of the three limit stances —
+// the ingress packet-rate meter, then the egress bandwidth meter, then
+// the request rate. It is not a strictness ordering: the merge never
+// resolves a tie with it (see strictest).
+func meterRank(s firewall.Stance) int {
+	switch s {
+	case firewall.StanceLimitBandwidth:
 		return 1
+	case firewall.StanceLimitReqRate:
+		return 2
+	default:
+		return 0
 	}
-	return 0
 }
 
 // rateValue reports the rate a penalty carries (0 when it carries
@@ -359,25 +307,25 @@ func rateValue(r *int64) int64 {
 }
 
 // mapPenalty maps a penalty's action onto the ban rule's stance — the
-// penalty → nftables mapping, total over the closed version-0
+// penalty → stance mapping, total over the closed version-0
 // vocabulary so a consumer's switch is never silently wrong. The
 // penalty's rate (validated by parseReport) travels onto the ban rule
-// unchanged. limit-req-rate maps to a skip reason instead of a stance:
-// it is deliberately not applied (ADR 0011) and nothing installs for
-// it. The default keeps unknown actions loud even if one slips past
-// validation.
-func mapPenalty(p Penalty) (Stance, string) {
+// unchanged: the Penalty as stated reaches the firewall driver, which
+// applies it or declines it — the compiler never drops, substitutes,
+// weakens or tunes a penalty. The default keeps unknown actions loud
+// even if one slips past validation.
+func mapPenalty(p Penalty) (firewall.Stance, string) {
 	switch p.Action {
 	case PenaltyDrop:
-		return StanceDrop, ""
+		return firewall.StanceDrop, ""
 	case PenaltyReject:
-		return StanceReject, ""
+		return firewall.StanceReject, ""
 	case PenaltyLimitPktRate:
-		return StanceLimitPktRate, ""
+		return firewall.StanceLimitPktRate, ""
 	case PenaltyLimitBandwidth:
-		return StanceLimitBandwidth, ""
+		return firewall.StanceLimitBandwidth, ""
 	case PenaltyLimitReqRate:
-		return "", "penalty: limit-req-rate: not applied (ADR 0011)"
+		return firewall.StanceLimitReqRate, ""
 	default:
 		return "", fmt.Sprintf("penalty: action: unknown (got %q)", p.Action)
 	}
