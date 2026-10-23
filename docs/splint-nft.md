@@ -63,7 +63,7 @@ refused, never accepted.
 | `reject` | `reject with icmpx admin-prohibited` (TCP gets a reset automatically) |
 | `limit-pkt-rate` | `limit rate over N/second`, then `drop` |
 | `limit-bandwidth` | `limit rate bytes over N/second` on the egress chain, then `drop` |
-| `limit-req-rate` | **not applied** — skipped, logged, counted |
+| `limit-req-rate` | nothing — **declined** with a reason (application-layer intent), logged and counted |
 
 The direction split: one **ingress** chain at the configured hook
 carries `drop`, `reject` and `limit-pkt-rate`, matched on source ∈
@@ -74,7 +74,8 @@ output and the ingress chain at input (filter priority 0); in
 prerouting mode the egress chain attaches at forward and the ingress
 chain at prerouting (raw priority −300, so ban rules run before
 conntrack). `limit-req-rate` is application-layer intent and is never
-faked at the packet layer (ADR 0011).
+faked at the packet layer: the driver declines it with a reason and the
+engine logs and counts every decline (ADR 0012 narrows ADR 0011).
 
 Every limit is an aggregate over the Report's whole Target prefix, not
 each host inside it. Rate limits carry a derived burst of one second's
@@ -94,8 +95,8 @@ strictest Penalty breaking ties:
 2. **Ties on specificity resolve strictest first**: `drop` > `reject` >
    limits; within one limit action, a smaller `rate` is stricter.
 3. **Dimensionally incomparable limits at a tie are combined** — one
-   meter per direction, both enforced. No recommendation is lost to an
-   invented ordering.
+   meter per dimension (packet rate, bandwidth, request rate), all
+   enforced. No recommendation is lost to an invented ordering.
 
 Reports group by (address family, prefix length, Penalty) into one ban
 rule per group holding an equal-length prefix set; ban rules order by
@@ -169,7 +170,9 @@ Reading the output:
 - **`targets`** are the ban set's prefixes after exclusion subtraction;
   `prefilter` shows the effective destination sets (empty = all).
 - **`stance` and `rate`** name the compiled Penalty; the mapping line's
-  `chain` is the chain it installs in (`ingress` or `egress`).
+  `chain` is the chain it installs in (`ingress` or `egress`, or `-`
+  when no packet-layer chain installs it — `limit-req-rate`, which the
+  driver declines).
 - **`hash=<hex>`** is the compiled ruleset's rolling hash. The same
   hash appears in every cycle's `compiled ban rules` log line, so an
   audited dry-run correlates with what the running installer later
