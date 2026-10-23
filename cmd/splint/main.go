@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -67,17 +68,27 @@ func main() {
 // that owns it.
 func run(args []string, stdout, stderr io.Writer) (int, options) {
 	fs := flag.NewFlagSet(progName, flag.ContinueOnError)
-	// pflag renders the usage itself; only the streams and exit codes
-	// are decided here. Help goes to stdout, errors to stderr below.
+	// The usage text is ours — flags grouped by owner — so only the
+	// streams and exit codes are decided here. Help goes to stdout,
+	// errors to stderr below.
 	fs.SetOutput(stdout)
-	url := fs.StringP("url", "u", "", "URL of the bandage report document")
-	// The nftables driver's factory binds its own flag group — its
-	// targeting (nsfs paths) and enforcement scope (the service
-	// prefilter) — and opens its enforcement points. Driver selection
-	// and the registry behind --firewall are not wired yet: this
-	// factory serves the run.
+	// The registry holds the driver factories and owns the selection
+	// semantics behind --firewall: the known driver names, the one
+	// driver that serves the whole run, and the refusal of an
+	// explicitly set flag that belongs to an unselected driver. The
+	// nftables factory is the only driver in v0; its registry name is
+	// also --firewall's default, so the flag value, the factory name
+	// and the usage text agree by construction.
 	nftFactory := nft.NewFactory()
-	nftFactory.BindFlags(fs)
+	reg := firewall.NewRegistry(nftFactory)
+	fs.Usage = func() { writeUsage(fs, fs.Output(), reg) }
+	firewallName := fs.String("firewall", nftFactory.Name(), "firewall driver: "+strings.Join(reg.Names(), ", "))
+	url := fs.StringP("url", "u", "", "URL of the bandage report document")
+	// Each factory binds its own prefixed flag group through the
+	// registry — the nftables driver's targeting (nsfs paths) and
+	// enforcement scope (the service prefilter). Targeting and
+	// enforcement scope never pass through the engine's flags.
+	reg.Bind(fs)
 	// The certificate surface is bandaid's flag for flag, so the
 	// operator's PKI runbook applies unchanged.
 	caFile := fs.String("cacert", "", "CA certificate file")
@@ -98,7 +109,7 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 			return exitOK, options{}
 		}
 		fmt.Fprintln(stderr, err)
-		printUsage(fs, stderr)
+		writeUsage(fs, stderr, reg)
 		return exitUsage, options{}
 	}
 	if *showVersion {
@@ -117,7 +128,18 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 		dryRun:         *dryRun,
 		logLevel:       *logLevel,
 	}
-	if err := nftFactory.Validate(); err != nil {
+	// --firewall selects the one driver that serves the whole run; an
+	// unknown value fails listing the known drivers, and a flag
+	// explicitly set that belongs to an unselected driver is a usage
+	// error — a mistyped combination fails loudly instead of silently
+	// not applying.
+	factory, err := reg.Select(*firewallName, fs)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		writeUsage(fs, stderr, reg)
+		return exitUsage, opts
+	}
+	if err := factory.Validate(); err != nil {
 		return fail(stderr, err), opts
 	}
 	logger, err := newLogger(stderr, opts.logLevel)
@@ -139,7 +161,7 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	if err != nil {
 		return fail(stderr, err), opts
 	}
-	points, err := nftFactory.Open()
+	points, err := factory.Open()
 	if err != nil {
 		return fail(stderr, err), opts
 	}
@@ -212,12 +234,35 @@ func parseLevel(level string) (zerolog.Level, error) {
 	}
 }
 
-// printUsage prints pflag's own usage text to w. pflag renders it only
-// on its built-in help path, so replay that path against the wanted
-// stream and ignore the resulting ErrHelp.
-func printUsage(fs *flag.FlagSet, w io.Writer) {
-	fs.SetOutput(w)
-	_ = fs.Parse([]string{"--help"})
+// writeUsage prints the usage text with the flags grouped by owner:
+// the engine's options first, then one group per registered driver, so
+// the operator sees at a glance which settings belong to the thing
+// that enforces. pflag renders each group's flags, keeping every line
+// in its own formatting.
+func writeUsage(fs *flag.FlagSet, w io.Writer, reg *firewall.Registry) {
+	fmt.Fprintf(w, "Usage of %s:\n", fs.Name())
+	owned := make(map[string]bool)
+	for _, g := range reg.Groups() {
+		for _, name := range g.Flags {
+			owned[name] = true
+		}
+	}
+	engine := flag.NewFlagSet("engine options", flag.ContinueOnError)
+	fs.VisitAll(func(f *flag.Flag) {
+		if !owned[f.Name] {
+			engine.AddFlag(f)
+		}
+	})
+	fmt.Fprintf(w, "\nengine options:\n%s", engine.FlagUsages())
+	for _, g := range reg.Groups() {
+		group := flag.NewFlagSet(g.Owner+" driver options", flag.ContinueOnError)
+		for _, name := range g.Flags {
+			if f := fs.Lookup(name); f != nil {
+				group.AddFlag(f)
+			}
+		}
+		fmt.Fprintf(w, "\n%s driver options:\n%s", g.Owner, group.FlagUsages())
+	}
 }
 
 // fail reports err on the error stream and returns the exit code.

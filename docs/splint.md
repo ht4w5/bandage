@@ -33,6 +33,7 @@ malformed Reports with a log and a counter instead of failing the cycle.
 
 | flag | default | meaning |
 |---|---|---|
+| `--firewall` | `nftables` | Firewall driver selected from the registry. An unknown value is refused at startup, listing the known drivers. Driver-specific flags live in their driver's own group (`--nft-*` here); a flag of an unselected driver, set explicitly, is a usage error. |
 | `--url`, `-u` | (required) | URL of the report document — bandage's `GET /reports`, e.g. `http://127.0.0.1:8080/reports`. `http` or `https` with a host. |
 | `--nft-hook` | `input` | Enforcement hook: `input` (a web server host) or `prerouting` (a routing box). Anything else is refused at startup. |
 | `--nft-netns` | (current namespace) | Target network namespace as a literal nsfs path, repeatable. **Replaces** the default target rather than adding to it. Empty values and duplicates are refused at startup. |
