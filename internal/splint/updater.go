@@ -32,17 +32,20 @@ func ClampInterval(d time.Duration) (time.Duration, bool) {
 	return d, false
 }
 
-// Updater runs the fetch-compile-apply update cycle against one
-// firewall driver per target namespace — fluxc's lifecycle: one
-// startup test install before the loop, the last installed rules kept
-// on a failed cycle, and a reset on clean exit. One fetch-compile
-// serves every namespace. The engine carries no hash, probe, skip or
-// counter logic: each driver owns its identity and the engine just
-// logs what the driver reports — applied, or unchanged-skip with the
-// hash, the nonzero hits since the last change, and declines.
+// Updater runs the fetch-compile-apply update cycle at every
+// enforcement point — fluxc's lifecycle: one startup test install
+// before the loop, the last installed rules kept on a failed cycle,
+// and a reset on clean exit. One fetch-compile serves every point.
+// The engine carries no hash, probe, skip or counter logic: each
+// driver owns its identity and the engine just logs what the driver
+// reports — applied, or unchanged-skip with the hash, the nonzero hits
+// since the last change, and declines. The engine knows no targeting
+// and no enforcement scope: where and what to enforce is each driver's
+// configuration (ADR 0012); the points name themselves only through
+// their opaque labels.
 type Updater struct {
 	fetcher  *Fetcher
-	targets  []Namespace
+	points   []firewall.Point
 	policy   Policy
 	log      zerolog.Logger
 	interval time.Duration
@@ -51,59 +54,27 @@ type Updater struct {
 	ticks <-chan time.Time
 }
 
-// Namespace is one network namespace to enforce in: the nsfs handle
-// path whose netlink the driver installs through, plus the driver
-// itself. The empty path is the current namespace — the default
-// target. The handle path is re-opened on every driver call (a
-// recreated container is picked up through its stable handle), never
-// held across cycles.
-type Namespace struct {
-	Path   string
-	Driver firewall.Driver
-}
-
-// name is the operator-facing namespace name in logs and warnings.
-func (n Namespace) name() string {
-	if n.Path == "" {
-		return "current"
+// New assembles an Updater enforcing at every given enforcement point
+// — one fetch-compile cycle serves them all. The point list must be
+// non-empty (a driver factory opens at least one). The update interval
+// is clamped to MinInterval, warning the operator when it is.
+func New(f *Fetcher, points []firewall.Point, p Policy, interval time.Duration, log zerolog.Logger) (*Updater, error) {
+	if len(points) == 0 {
+		return nil, errors.New("enforcement points: at least one required")
 	}
-	return n.Path
-}
-
-// New assembles an Updater over a single driver — the default shape,
-// enforcing in one namespace. The update interval is clamped to
-// MinInterval, warning the operator when it is.
-func New(f *Fetcher, d firewall.Driver, p Policy, interval time.Duration, log zerolog.Logger) *Updater {
-	return newUpdater(f, []Namespace{{Driver: d}}, p, interval, log)
-}
-
-// NewForNamespaces assembles an Updater installing into one target
-// namespace per entry: one fetch-compile cycle serves them all. The
-// namespace list must be non-empty.
-func NewForNamespaces(f *Fetcher, namespaces []Namespace, p Policy, interval time.Duration, log zerolog.Logger) (*Updater, error) {
-	if len(namespaces) == 0 {
-		return nil, errors.New("namespaces: at least one required")
-	}
-	return newUpdater(f, namespaces, p, interval, log), nil
-}
-
-// newUpdater assembles an Updater over the resolved namespace list.
-// The update interval is clamped to MinInterval, warning the operator
-// when it is.
-func newUpdater(f *Fetcher, namespaces []Namespace, p Policy, interval time.Duration, log zerolog.Logger) *Updater {
 	interval, clamped := ClampInterval(interval)
 	if clamped {
 		log.Warn().Dur("interval", interval).Msg("update interval clamped to the one-minute floor")
 	}
-	return &Updater{fetcher: f, targets: namespaces, policy: p, log: log, interval: interval}
+	return &Updater{fetcher: f, points: points, policy: p, log: log, interval: interval}, nil
 }
 
 // Update runs one update cycle: fetch the report document, compile its
-// live reports into ban rules and hand them to every target's driver —
-// one fetch-compile serves them all. Each namespace is reached and
-// failed independently; on error the last installed rules stay and
-// nothing more installs, and the returned skips are the report records
-// left out of the compilation.
+// live reports into ban rules and hand them to every enforcement
+// point's driver — one fetch-compile serves them all. Each point is
+// reached and failed independently; on error the last installed rules
+// stay and nothing more installs, and the returned skips are the
+// report records left out of the compilation.
 func (u *Updater) Update(ctx context.Context) ([]Skip, error) {
 	rules, skips, err := u.load(ctx)
 	if err != nil {
@@ -115,49 +86,49 @@ func (u *Updater) Update(ctx context.Context) ([]Skip, error) {
 	return skips, nil
 }
 
-// applyAll hands the compiled ruleset to every target's driver and
-// logs what each reports. Every namespace is independent: an
-// unreachable one is warned and skipped for the cycle while the others
-// still install — one dead container cannot halt enforcement
-// everywhere — and a real failure is loud after every namespace has
-// been tried, so missing netlink privileges surface at the startup
+// applyAll hands the compiled ruleset to every enforcement point's
+// driver and logs what each reports. Every point is independent: an
+// unreachable one is warned and skipped for the cycle while the
+// others still install — one dead container cannot halt enforcement
+// everywhere — and a real failure is loud after every point has been
+// tried, so missing netlink privileges surface at the startup
 // install. Whether an unchanged ruleset skips is each driver's own
 // decision; the engine only reports it.
 func (u *Updater) applyAll(rules []firewall.BanRule) error {
 	var failed []error
-	for _, target := range u.targets {
-		name := target.name()
-		out, err := target.Driver.Apply(rules)
+	for _, point := range u.points {
+		name := point.Label
+		out, err := point.Driver.Apply(rules)
 		switch {
 		case errors.Is(err, firewall.ErrUnreachable):
-			u.log.Warn().Err(err).Str("netns", name).Msg("namespace unreachable; skipping for the cycle")
+			u.log.Warn().Err(err).Str("point", name).Msg("enforcement point unreachable; skipping for the cycle")
 			continue
 		case err != nil:
-			failed = append(failed, fmt.Errorf("netns %s: %w", name, err))
+			failed = append(failed, fmt.Errorf("point %s: %w", name, err))
 			continue
 		}
 		hash := fmt.Sprintf("%x", out.Hash)
 		if out.Skipped {
 			// A skipped cycle logs the skip and no hits.
-			u.log.Info().Str("netns", name).Str("hash", hash).Msg("ban rules unchanged; skipping install")
+			u.log.Info().Str("point", name).Str("hash", hash).Msg("ban rules unchanged; skipping install")
 		} else {
 			// The nonzero counters of the rules just replaced — what the
 			// enforcement did since the last change.
 			for _, h := range out.Hits {
 				u.log.Info().
-					Str("netns", name).
+					Str("point", name).
 					Int("rule", h.Rule).
 					Uint64("packets", h.Packets).
 					Uint64("bytes", h.Bytes).
 					Msg("ban rule hit")
 			}
-			u.log.Info().Str("netns", name).Int("rules", len(rules)).Int("declined", len(out.Declined)).Str("hash", hash).Msg("installed ban rules")
+			u.log.Info().Str("point", name).Int("rules", len(rules)).Int("declined", len(out.Declined)).Str("hash", hash).Msg("installed ban rules")
 		}
 		// Declined features are lost enforcement — logged and counted
 		// per rule and feature, never silently dropped.
 		for _, d := range out.Declined {
 			u.log.Warn().
-				Str("netns", name).
+				Str("point", name).
 				Int("rule", d.Rule).
 				Str("feature", d.Feature).
 				Str("reason", d.Reason).
@@ -167,23 +138,23 @@ func (u *Updater) applyAll(rules []firewall.BanRule) error {
 	return errors.Join(failed...)
 }
 
-// resetAll removes the installed ruleset from every target namespace,
-// tolerating namespaces that vanished meanwhile: an unreachable one
-// is warned and skipped at exit too, so a dead container cannot spoil
-// a clean shutdown. Any other reset failure is loud after every
-// namespace has been tried.
+// resetAll removes the installed ruleset from every enforcement point,
+// tolerating points that vanished meanwhile: an unreachable one is
+// warned and skipped at exit too, so a dead container cannot spoil a
+// clean shutdown. Any other reset failure is loud after every point
+// has been tried.
 func (u *Updater) resetAll() error {
 	var failed []error
-	for _, target := range u.targets {
-		err := target.Driver.Reset()
+	for _, point := range u.points {
+		err := point.Driver.Reset()
 		if err == nil {
 			continue
 		}
 		if errors.Is(err, firewall.ErrUnreachable) {
-			u.log.Warn().Err(err).Str("netns", target.name()).Msg("namespace unreachable at reset; tolerating")
+			u.log.Warn().Err(err).Str("point", point.Label).Msg("enforcement point unreachable at reset; tolerating")
 			continue
 		}
-		failed = append(failed, fmt.Errorf("netns %s: %w", target.name(), err))
+		failed = append(failed, fmt.Errorf("point %s: %w", point.Label, err))
 	}
 	return errors.Join(failed...)
 }
@@ -205,15 +176,15 @@ func (u *Updater) DryRun(ctx context.Context, w io.Writer) error {
 	if err := enc.Encode(rules); err != nil {
 		return err
 	}
-	for _, target := range u.targets {
-		plan, err := target.Driver.Plan(rules)
+	for _, point := range u.points {
+		plan, err := point.Driver.Plan(rules)
 		if err != nil {
 			return fmt.Errorf("plan: %w", err)
 		}
-		if len(u.targets) > 1 {
-			// One plan per target driver; with a single target the
+		if len(u.points) > 1 {
+			// One plan per enforcement point; with a single point the
 			// plan stands bare.
-			if _, err := fmt.Fprintf(w, "netns=%s\n", target.name()); err != nil {
+			if _, err := fmt.Fprintf(w, "point=%s\n", point.Label); err != nil {
 				return err
 			}
 		}

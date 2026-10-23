@@ -3,13 +3,24 @@ package firewall
 import "errors"
 
 // ErrUnreachable marks a driver failure caused by the target
-// enforcement point being unreachable: its nsfs handle cannot be
-// opened. The update cycle warns and skips such an enforcement point
-// for the cycle (the others still enforce) and tolerates it on reset,
-// so one dead container cannot halt enforcement everywhere or spoil a
-// clean shutdown. A failure past the open — netlink privileges, a
-// rejected batch — is a real error and stays loud.
-var ErrUnreachable = errors.New("namespace unreachable")
+// enforcement point being unreachable — its handle cannot be opened
+// (the nftables driver's nsfs handle, for one). The update cycle warns
+// and skips such an enforcement point for the cycle (the others still
+// enforce) and tolerates it on reset, so one dead container cannot
+// halt enforcement everywhere or spoil a clean shutdown. A failure
+// past the open — netlink privileges, a rejected batch — is a real
+// error and stays loud.
+var ErrUnreachable = errors.New("enforcement point unreachable")
+
+// Point is one enforcement point — where one driver instance enforces
+// — carrying the driver and the opaque label naming the point in the
+// engine's logs and --dry-run output (the nftables factory labels its
+// instances with their nsfs paths, "current" for the default target).
+// The engine never parses labels; it just names what it reports on.
+type Point struct {
+	Label  string
+	Driver Driver
+}
 
 // Hit is one ban rule's nonzero counter reading at the install that
 // replaces it: Rule is the ban rule's index in the ruleset handed to
@@ -84,8 +95,8 @@ type Outcome struct {
 // follows each driver instance and changing driver configuration
 // re-enforces (the effective rules changed). The port is the update
 // cycle's seam: the recording stub (firewalltest) and the nftables
-// driver (firewall/nft) implement it. A driver per target namespace
-// may wrap ErrUnreachable when that namespace cannot be reached.
+// driver (firewall/nft) implement it. A driver per enforcement point
+// may wrap ErrUnreachable when that point cannot be reached.
 type Driver interface {
 	Plan(rules []BanRule) (Plan, error)
 	Apply(rules []BanRule) (Outcome, error)

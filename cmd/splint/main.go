@@ -23,6 +23,7 @@ import (
 	"github.com/rs/zerolog"
 	flag "github.com/spf13/pflag"
 
+	"github.com/HT4w5/bandage/internal/firewall"
 	"github.com/HT4w5/bandage/internal/firewall/nft"
 	"github.com/HT4w5/bandage/internal/identity"
 	"github.com/HT4w5/bandage/internal/splint"
@@ -169,21 +170,25 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	if err != nil {
 		return fail(stderr, err), opts
 	}
-	// One driver per target namespace; without --netns the single
-	// target is the current namespace.
+	// One driver per enforcement point; without --netns the single
+	// point is the current namespace.
 	paths := opts.netns
 	if len(paths) == 0 {
 		paths = []string{""}
 	}
-	namespaces := make([]splint.Namespace, 0, len(paths))
+	points := make([]firewall.Point, 0, len(paths))
 	for _, path := range paths {
 		driver, err := nft.New(nft.Config{Hook: hook, Prefilter: scope, NetNSPath: path})
 		if err != nil {
 			return fail(stderr, err), opts
 		}
-		namespaces = append(namespaces, splint.Namespace{Path: path, Driver: driver})
+		label := path
+		if label == "" {
+			label = "current"
+		}
+		points = append(points, firewall.Point{Label: label, Driver: driver})
 	}
-	u, err := splint.NewForNamespaces(fetcher, namespaces, policy, opts.interval, logger)
+	u, err := splint.New(fetcher, points, policy, opts.interval, logger)
 	if err != nil {
 		return fail(stderr, err), opts
 	}

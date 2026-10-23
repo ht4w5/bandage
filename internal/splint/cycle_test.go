@@ -274,7 +274,11 @@ func newTestUpdaterCfg(t *testing.T, srv *docServer, p Policy) (*Updater, *firew
 	}
 	stub := &firewalltest.Stub{}
 	logs := &logCapture{}
-	return New(fetcher, stub, p, DefaultInterval, zerolog.New(logs)), stub, logs
+	u, err := New(fetcher, []firewall.Point{{Label: "current", Driver: stub}}, p, DefaultInterval, zerolog.New(logs))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return u, stub, logs
 }
 
 // The default compilation policy: the safety exclusions with the
@@ -1814,7 +1818,10 @@ func TestNewClampsTheIntervalLoudly(t *testing.T) {
 				t.Fatalf("NewFetcher: %v", err)
 			}
 			logs := &logCapture{}
-			u := New(fetcher, &firewalltest.Stub{}, defaultPolicy(), tt.interval, zerolog.New(logs))
+			u, err := New(fetcher, []firewall.Point{{Label: "current", Driver: &firewalltest.Stub{}}}, defaultPolicy(), tt.interval, zerolog.New(logs))
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
 			if u.interval != tt.wantValue {
 				t.Errorf("interval = %v, want %v", u.interval, tt.wantValue)
 			}
