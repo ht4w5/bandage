@@ -2,6 +2,7 @@ package nft
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -38,6 +39,15 @@ func TestFactoryValidations(t *testing.T) {
 		args    []string
 		wantErr string
 	}{
+		{
+			name:    "an unknown enforcement hook is refused",
+			args:    []string{"--nft-hook", "postrouting"},
+			wantErr: `hook: must be input or prerouting (got "postrouting")`,
+		},
+		{
+			name: "the prerouting enforcement hook is accepted",
+			args: []string{"--nft-hook", "prerouting"},
+		},
 		{
 			name:    "an empty namespace path is refused",
 			args:    []string{"--nft-netns", ""},
@@ -149,6 +159,23 @@ func TestFactoryOpensItsEnforcementPoints(t *testing.T) {
 			t.Errorf("Apply error %v does not name the instance's target handle", err)
 		}
 	})
+}
+
+// TestFactoryFlagGroup: the nftables driver's flag group is complete
+// — the enforcement hook, the repeatable namespace targeting and the
+// service prefilter's ports and addresses — and every flag in it is
+// the driver's own --nft-* group: the hook is a driver flag, never an
+// engine flag (the spec's Command surface).
+func TestFactoryFlagGroup(t *testing.T) {
+	f := NewFactory()
+	fs := pflag.NewFlagSet("splint", pflag.ContinueOnError)
+	f.BindFlags(fs)
+	var got []string
+	fs.VisitAll(func(fl *pflag.Flag) { got = append(got, fl.Name) })
+	want := []string{"nft-hook", "nft-netns", "nft-service-address", "nft-service-port"}
+	if !slices.Equal(got, want) {
+		t.Errorf("flag group = %q, want %q", got, want)
+	}
 }
 
 // TestFactoryName: the registry name the --firewall value selects.
