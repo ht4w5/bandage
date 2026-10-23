@@ -9,46 +9,20 @@ import "net/netip"
 
 // BanRule is one compiled ban rule (the GLOSSARY's Ban rule): the
 // report's Target prefixes and the Penalty as stated — the stance and,
-// for the limit stances, the exact rate. Nothing else. The engine
-// groups the ban rules by (family, prefix length, penalty), so every
-// rule holds one address family's equal-length prefix set and a
-// firewall driver turns one rule into exactly one enforcement rule per
-// family. A driver applies each Penalty exactly as stated or declines
-// it — never substitutes, weakens or tunes it.
+// for the limit stances, the exact rate. Nothing else. Targeting and
+// enforcement scope are deliberately not part of the ban rule: they
+// are driver configuration, because they are precisely what differs
+// between enforcement surfaces (a web-server driver needs neither
+// nsfs paths nor destination-port prefiltering). The engine groups the
+// ban rules by (family, prefix length, penalty), so every rule holds
+// one address family's equal-length prefix set and a firewall driver
+// turns one rule into exactly one enforcement rule per family. A
+// driver applies each Penalty exactly as stated or declines it — never
+// substitutes, weakens or tunes it.
 type BanRule struct {
-	Targets   []netip.Prefix `json:"targets"`
-	Prefilter Prefilter      `json:"prefilter"`
-	Stance    Stance         `json:"stance"`
-	Rate      *int64         `json:"rate,omitempty"`
-}
-
-// Prefilter is the service prefilter every ban rule leads with: the
-// protected destinations' ports and addresses. A ban rule matches only
-// traffic whose destination port is in DstPorts and whose destination
-// address is in DstAddrs — so a ban applies only to service traffic,
-// never to SSH, monitoring, or unrelated forwarded traffic. Either set
-// may be empty, meaning all; both are operator configuration.
-//
-// Transitional: enforcement scope is driver configuration, not part of
-// the ban rule (the spec is explicit). Until the nftables driver owns
-// its enforcement scope, the engine-configured prefilter travels on the
-// ban rule as the driver's configured input; the field then slims the
-// ban rule to Target prefixes plus the Penalty as stated.
-type Prefilter struct {
-	DstPorts []uint16       `json:"dst_ports"`
-	DstAddrs []netip.Prefix `json:"dst_addrs"`
-}
-
-// Normalized returns pf with non-nil set slices, so every ban rule's
-// dry-run JSON shows its sets as arrays.
-func (pf Prefilter) Normalized() Prefilter {
-	if pf.DstPorts == nil {
-		pf.DstPorts = []uint16{}
-	}
-	if pf.DstAddrs == nil {
-		pf.DstAddrs = []netip.Prefix{}
-	}
-	return pf
+	Targets []netip.Prefix `json:"targets"`
+	Stance  Stance         `json:"stance"`
+	Rate    *int64         `json:"rate,omitempty"`
 }
 
 // Stance is the enforcement stance a ban rule applies to its Targets,

@@ -45,6 +45,9 @@ type Skip struct {
 // Exclusions are subtracted compiler-side before the merge, overriding
 // every report: the driver installs Targets verbatim, and a record
 // whose Target is fully excluded compiles to no ban rule at all.
+// Enforcement scope and targeting never reach the compiler: the ban
+// rule is Target prefixes plus the Penalty as stated, and scope is
+// driver configuration (ADR 0012).
 //
 // Records with a missing or unknown Penalty, an unparseable Target or
 // a fully excluded Target are skipped and reported in the returned
@@ -60,7 +63,7 @@ func Compile(doc Document, p Policy) ([]firewall.BanRule, []Skip) {
 		}
 		entries = append(entries, e)
 	}
-	return merge(entries, p.Prefilter.Normalized()), skips
+	return merge(entries), skips
 }
 
 // entry is one compiling report record's contribution to the merge:
@@ -104,7 +107,7 @@ func compileReport(r Report, p Policy) (entry, string) {
 }
 
 // merge resolves the entries' disagreements per Target address and
-// groups the winning stances into ban rules under prefilter.
+// groups the winning stances into ban rules.
 //
 // The values a ban set draws from are the distinct residual prefixes
 // across the entries. Each value goes to the reports whose Target
@@ -115,7 +118,7 @@ func compileReport(r Report, p Policy) (entry, string) {
 // into one ban rule per group, and the rules order by prefix length
 // descending, then strictness — nftables first-match over the ordered
 // equal-length sets reproduces the per-address resolution.
-func merge(entries []entry, prefilter firewall.Prefilter) []firewall.BanRule {
+func merge(entries []entry) []firewall.BanRule {
 	var values []netip.Prefix
 	seen := map[netip.Prefix]bool{}
 	for _, e := range entries {
@@ -148,7 +151,7 @@ func merge(entries []entry, prefilter firewall.Prefilter) []firewall.BanRule {
 			r := k.rate
 			rate = &r
 		}
-		rules = append(rules, firewall.BanRule{Targets: groups[k], Prefilter: prefilter, Stance: k.stance, Rate: rate})
+		rules = append(rules, firewall.BanRule{Targets: groups[k], Stance: k.stance, Rate: rate})
 	}
 	return rules
 }

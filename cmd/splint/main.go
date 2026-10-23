@@ -23,7 +23,6 @@ import (
 	"github.com/rs/zerolog"
 	flag "github.com/spf13/pflag"
 
-	"github.com/HT4w5/bandage/internal/firewall"
 	"github.com/HT4w5/bandage/internal/firewall/nft"
 	"github.com/HT4w5/bandage/internal/identity"
 	"github.com/HT4w5/bandage/internal/splint"
@@ -155,11 +154,10 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 		return fail(stderr, err), opts
 	}
 	// Exclusions are subtracted compiler-side: the driver installs
-	// Targets verbatim. Every ban rule leads with the service prefilter.
-	policy := splint.NewPolicy(exclude, opts.excludePrivate, firewall.Prefilter{
-		DstPorts: opts.servicePort,
-		DstAddrs: dstAddrs,
-	})
+	// Targets verbatim. The service prefilter is the nftables driver's
+	// enforcement scope — driver configuration, not ban-rule content.
+	policy := splint.NewPolicy(exclude, opts.excludePrivate)
+	scope := nft.Prefilter{DstPorts: opts.servicePort, DstAddrs: dstAddrs}
 	fetcher, err := splint.NewFetcher(opts.url,
 		splint.WithTLS(opts.caFile, opts.certFile, opts.keyFile),
 		splint.WithFetchTimeout(opts.fetchTimeout),
@@ -179,7 +177,7 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	}
 	namespaces := make([]splint.Namespace, 0, len(paths))
 	for _, path := range paths {
-		driver, err := nft.NewNetNS(hook, path)
+		driver, err := nft.New(nft.Config{Hook: hook, Prefilter: scope, NetNSPath: path})
 		if err != nil {
 			return fail(stderr, err), opts
 		}

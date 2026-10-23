@@ -4,20 +4,16 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
-
-	"github.com/HT4w5/bandage/internal/firewall"
 )
 
 // Policy is the compilation policy the ban sets are compiled under:
 // the exclusion prefixes subtracted from every ban set, overriding
-// every report, and the service prefilter every ban rule leads with
-// (firewall.Prefilter — the driver's configured input until the
-// nftables driver owns its enforcement scope). NewPolicy assembles it
-// from the operator's flags; the zero Policy keeps the always-on
-// safety exclusions and an all-traffic prefilter.
+// every report. Enforcement scope is deliberately not here — it is
+// driver configuration, not engine policy (ADR 0012). NewPolicy
+// assembles it from the operator's flags; the zero Policy keeps the
+// always-on safety exclusions.
 type Policy struct {
-	Exclude   []netip.Prefix
-	Prefilter firewall.Prefilter
+	Exclude []netip.Prefix
 }
 
 // The safety exclusions, in two tiers: loopback and link-local are
@@ -40,15 +36,14 @@ var (
 )
 
 // NewPolicy assembles the compilation policy from the operator's
-// configuration: their exclusion prefixes and service prefilter, plus
-// the RFC1918 and ULA tier unless excludePrivate opts out of it. The
-// loopback and link-local tier needs no assembly — Subtract always
-// applies it.
-func NewPolicy(exclude []netip.Prefix, excludePrivate bool, prefilter firewall.Prefilter) Policy {
+// configuration: their exclusion prefixes, plus the RFC1918 and ULA
+// tier unless excludePrivate opts out of it. The loopback and
+// link-local tier needs no assembly — Subtract always applies it.
+func NewPolicy(exclude []netip.Prefix, excludePrivate bool) Policy {
 	if excludePrivate {
 		exclude = slices.Concat(privateExcluded, exclude)
 	}
-	return Policy{Exclude: exclude, Prefilter: prefilter}
+	return Policy{Exclude: exclude}
 }
 
 // ParsePrefixOrAddr parses an operator-supplied prefix flag value: a

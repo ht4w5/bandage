@@ -41,7 +41,7 @@ func TestKernelInstallReadBackReset(t *testing.T) {
 	}
 	// Whatever the test does halfway, the owned table must not outlive it.
 	t.Cleanup(func() {
-		d, err := New(HookInput)
+		d, err := New(Config{Hook: HookInput})
 		if err != nil {
 			t.Errorf("New: %v", err)
 			return
@@ -51,13 +51,11 @@ func TestKernelInstallReadBackReset(t *testing.T) {
 		}
 	})
 
-	// One ban rule per shape the compiler can emit: a mixed v4 drop, a
-	// v6 reject, a packet-rate meter, a bandwidth meter (the one egress
-	// rule, matched on destination), a drop whose range reaches the top
-	// of the space (encoded with the null end), a rule under the full
-	// service prefilter, and a rule whose family the destination
-	// prefilter cannot reach — no service traffic lives there, so it
-	// gets no kernel rule at all.
+	// Phase 1 — the unscoped encoding: one ban rule per shape the
+	// compiler can emit without an enforcement scope — a mixed v4 drop,
+	// a v6 reject, a packet-rate meter, a bandwidth meter (the one
+	// egress rule, matched on destination), and a drop whose range
+	// reaches the top of the space (encoded with the null end).
 	rules := []firewall.BanRule{
 		{Targets: []netip.Prefix{
 			netip.MustParsePrefix("203.0.113.0/24"),
@@ -67,30 +65,8 @@ func TestKernelInstallReadBackReset(t *testing.T) {
 		{Targets: []netip.Prefix{netip.MustParsePrefix("198.51.100.9/32")}, Stance: firewall.StanceLimitPktRate, Rate: ratePtr(250)},
 		{Targets: []netip.Prefix{netip.MustParsePrefix("203.0.113.9/32")}, Stance: firewall.StanceLimitBandwidth, Rate: ratePtr(1000000)},
 		{Targets: []netip.Prefix{netip.MustParsePrefix("255.255.255.0/24")}, Stance: firewall.StanceDrop},
-		{
-			Targets: []netip.Prefix{
-				netip.MustParsePrefix("203.0.113.7/32"),
-				netip.MustParsePrefix("2001:db8::7/128"),
-			},
-			Prefilter: firewall.Prefilter{
-				DstPorts: []uint16{53, 443},
-				DstAddrs: []netip.Prefix{
-					netip.MustParsePrefix("198.51.100.5/32"),
-					netip.MustParsePrefix("2001:db8::5/128"),
-				},
-			},
-			Stance: firewall.StanceDrop,
-		},
-		{
-			Targets: []netip.Prefix{netip.MustParsePrefix("2001:db8::9/128")},
-			Prefilter: firewall.Prefilter{
-				DstPorts: []uint16{443},
-				DstAddrs: []netip.Prefix{netip.MustParsePrefix("198.51.100.5/32")},
-			},
-			Stance: firewall.StanceDrop,
-		},
 	}
-	input, err := New(HookInput)
+	input, err := New(Config{Hook: HookInput})
 	if err != nil {
 		t.Fatalf("New(input): %v", err)
 	}
@@ -104,29 +80,63 @@ func TestKernelInstallReadBackReset(t *testing.T) {
 	if exists, err := tableExists(conn, ownedTable()); err != nil || !exists {
 		t.Errorf("table exists after Apply = (%v, %v), want (true, nil)", exists, err)
 	}
-	assertKernelState(t, conn, HookInput)
+	assertUnscopedKernelState(t, conn, HookInput)
 
-	// Rebuilding over the live table proves the delete and the rebuild
-	// share one atomic batch; the second apply is also the --hook
-	// prerouting case (a fresh driver instance: skip state follows the
-	// instance that installed), and it reports the replaced rules'
-	// counter readings mapped onto the ban rules they count (how many
-	// depends on what traffic met the fixture rules; the mapping is
-	// what is asserted).
-	prerouting, err := New(HookPrerouting)
+	// Phase 2 — the scoped encoding: the rule under the full service
+	// prefilter (the enforcement scope every effective rule matches
+	// under, in both families). Rebuilding over the live table proves
+	// the delete and the rebuild share one atomic batch; the second
+	// apply is also the --hook prerouting case (a fresh driver
+	// instance: skip state follows the instance that installed), and it
+	// reports the replaced rules' counter readings mapped onto the ban
+	// rules they count (how many depends on what traffic met the phase-1
+	// fixture rules; the mapping is what is asserted).
+	scope := Prefilter{
+		DstPorts: []uint16{53, 443},
+		DstAddrs: []netip.Prefix{
+			netip.MustParsePrefix("198.51.100.5/32"),
+			netip.MustParsePrefix("2001:db8::5/128"),
+		},
+	}
+	scopedRules := []firewall.BanRule{{
+		Targets: []netip.Prefix{
+			netip.MustParsePrefix("203.0.113.7/32"),
+			netip.MustParsePrefix("2001:db8::7/128"),
+		},
+		Stance: firewall.StanceDrop,
+	}}
+	prerouting, err := New(Config{Hook: HookPrerouting, Prefilter: scope})
 	if err != nil {
 		t.Fatalf("New(prerouting): %v", err)
 	}
-	rebuild, err := prerouting.Apply(rules)
+	rebuild, err := prerouting.Apply(scopedRules)
 	if err != nil {
 		t.Fatalf("rebuild Apply: %v", err)
 	}
 	for _, h := range rebuild.Hits {
 		if h.Rule < 0 || h.Rule >= len(rules) {
-			t.Errorf("counter read-back mapped to ban rule %d, want 0..%d", h.Rule, len(rules)-1)
+			t.Errorf("counter read-back mapped to ban rule %d, want 0..%d (the replaced rules)", h.Rule, len(rules)-1)
 		}
 	}
-	assertKernelState(t, conn, HookPrerouting)
+	assertScopedKernelState(t, conn, HookPrerouting)
+
+	// Phase 3 — the unreachable-family shape under a configured scope:
+	// the rule's only family has no destination in the scope — no
+	// service traffic lives there — so it gets no kernel rule at all.
+	v4Only, err := New(Config{Hook: HookInput, Prefilter: Prefilter{
+		DstPorts: []uint16{443},
+		DstAddrs: []netip.Prefix{netip.MustParsePrefix("198.51.100.5/32")},
+	}})
+	if err != nil {
+		t.Fatalf("New(v4-only scope): %v", err)
+	}
+	if _, err := v4Only.Apply([]firewall.BanRule{{
+		Targets: []netip.Prefix{netip.MustParsePrefix("2001:db8::9/128")},
+		Stance:  firewall.StanceDrop,
+	}}); err != nil {
+		t.Fatalf("unreachable-family Apply: %v", err)
+	}
+	assertEmptyKernelState(t, conn)
 
 	// Reset removes the owned table ...
 	if err := prerouting.Reset(); err != nil {
@@ -169,7 +179,7 @@ func TestKernelDeclinesInstallNothing(t *testing.T) {
 		t.Skipf("table %q exists: a splint instance may be enforcing here", tableName)
 	}
 	t.Cleanup(func() {
-		d, err := New(HookInput)
+		d, err := New(Config{Hook: HookInput})
 		if err != nil {
 			t.Errorf("New: %v", err)
 			return
@@ -183,7 +193,7 @@ func TestKernelDeclinesInstallNothing(t *testing.T) {
 		{Targets: []netip.Prefix{netip.MustParsePrefix("203.0.113.7/32")}, Stance: firewall.StanceDrop},
 		{Targets: []netip.Prefix{netip.MustParsePrefix("198.51.100.9/32")}, Stance: firewall.StanceLimitReqRate, Rate: ratePtr(300)},
 	}
-	d, err := New(HookInput)
+	d, err := New(Config{Hook: HookInput})
 	if err != nil {
 		t.Fatalf("New(input): %v", err)
 	}
@@ -226,14 +236,112 @@ func TestKernelDeclinesInstallNothing(t *testing.T) {
 // ratePtr points at a ban rule rate fixture.
 func ratePtr(n int64) *int64 { return &n }
 
-// assertKernelState reads the owned table back from the kernel and
-// asserts the driver's encoding: table, both chains at their hooks, one
-// kernel rule per ban rule and family the service prefilter can reach
-// (source-matched on the ingress chain, the bandwidth meter
-// destination-matched on the egress chain) with the stance's verdict
-// tail, and the sets behind them. Expectations are hand-written from
-// the test's fixtures, never computed the way the implementation does.
-func assertKernelState(t *testing.T, conn *nftables.Conn, hook Hook) {
+// assertUnscopedKernelState reads the owned table back from the kernel
+// and asserts the unscoped fixture's encoding: table, both chains at
+// their hooks, one kernel rule per ban rule and family (source-matched
+// on the ingress chain, the bandwidth meter destination-matched on the
+// egress chain) with the stance's verdict tail, and the sets behind
+// them. Expectations are hand-written from the test's fixtures, never
+// computed the way the implementation does.
+func assertUnscopedKernelState(t *testing.T, conn *nftables.Conn, hook Hook) {
+	t.Helper()
+	// The kernel rules, in install order. The verdict tails are
+	// hand-written from the fixtures: the silent drop, the inet-family
+	// reject with icmpx admin-prohibited, the packet-rate meter over
+	// 250/second with its derived burst 250 then drop, and the byte-rate
+	// meter over 1000000 bytes/second with its derived burst 1000000
+	// then drop.
+	ingressRules := []wantRule{
+		{proto: unix.NFPROTO_IPV4, off: 12, length: 4, setName: "v4_0", tail: dropTail},                                // 203.0.113.0/24 + 198.51.100.7/32
+		{proto: unix.NFPROTO_IPV6, off: 8, length: 16, setName: "v6_1", tail: rejectTail},                              // 2001:db8::/32
+		{proto: unix.NFPROTO_IPV4, off: 12, length: 4, setName: "v4_2", tail: limitTail(expr.LimitTypePkts, 250, 250)}, // 198.51.100.9/32
+		{proto: unix.NFPROTO_IPV4, off: 12, length: 4, setName: "v4_4", tail: dropTail},                                // 255.255.255.0/24
+	}
+	egressRules := []wantRule{
+		{proto: unix.NFPROTO_IPV4, off: 16, length: 4, setName: "v4_3", tail: limitTail(expr.LimitTypePktBytes, 1000000, 1000000)}, // 203.0.113.9/32
+	}
+	// The sets behind the rules: every address range is [start, end)
+	// with end the first address after it; the top-touching range gets
+	// the null end.
+	wantSets := map[string]wantSet{
+		"v4_0": {interval: true, elems: []string{"end 198.51.100.8", "end 203.0.114.0", "start 198.51.100.7", "start 203.0.113.0"}},
+		"v6_1": {interval: true, elems: []string{"end 2001:db9::", "start 2001:db8::"}},
+		"v4_2": {interval: true, elems: []string{"end 198.51.100.10", "start 198.51.100.9"}},
+		"v4_3": {interval: true, elems: []string{"end 203.0.113.10", "start 203.0.113.9"}},
+		"v4_4": {interval: true, elems: []string{"end 0.0.0.0", "start 255.255.255.0"}},
+	}
+	assertKernelState(t, conn, hook, ingressRules, egressRules, wantSets)
+}
+
+// assertScopedKernelState reads the owned table back and asserts the
+// scoped fixture's encoding: the ban rule under the full service
+// prefilter — every effective rule leads with the scope's
+// destination-port set behind its l4 gate, then its destination-address
+// set — in both families. Hand-written from the test's fixtures.
+func assertScopedKernelState(t *testing.T, conn *nftables.Conn, hook Hook) {
+	t.Helper()
+	ingressRules := []wantRule{
+		{
+			proto: unix.NFPROTO_IPV4, off: 12, length: 4, setName: "v4_0",
+			l4Set: "l4_0", portSet: "port_0",
+			dstSet: "dp4_0", dstOff: 16, dstLen: 4,
+			tail: dropTail, // 203.0.113.7/32 under the full service prefilter
+		},
+		{
+			proto: unix.NFPROTO_IPV6, off: 8, length: 16, setName: "v6_0",
+			l4Set: "l4_0", portSet: "port_0",
+			dstSet: "dp6_0", dstOff: 24, dstLen: 16,
+			tail: dropTail, // 2001:db8::7/128 under the full service prefilter
+		},
+	}
+	wantSets := map[string]wantSet{
+		"v4_0":   {interval: true, elems: []string{"end 203.0.113.8", "start 203.0.113.7"}},
+		"dp4_0":  {interval: true, elems: []string{"end 198.51.100.6", "start 198.51.100.5"}},
+		"v6_0":   {interval: true, elems: []string{"end 2001:db8::8", "start 2001:db8::7"}},
+		"dp6_0":  {interval: true, elems: []string{"end 2001:db8::6", "start 2001:db8::5"}},
+		"port_0": {elems: []string{"443", "53"}}, // udp and tcp dports; sorted as strings
+		"l4_0":   {elems: []string{"17", "6"}},   // udp and tcp; sorted as strings
+	}
+	assertKernelState(t, conn, hook, ingressRules, nil, wantSets)
+}
+
+// assertEmptyKernelState asserts a rebuilt table whose ruleset
+// installed nothing — the ban rule the configured scope cannot reach:
+// both chains carry no kernel rules and there are no sets at all.
+func assertEmptyKernelState(t *testing.T, conn *nftables.Conn) {
+	t.Helper()
+	table, err := conn.ListTableOfFamily(tableName, nftables.TableFamilyINet)
+	if err != nil {
+		t.Fatalf("read table back: %v", err)
+	}
+	for _, name := range []string{ingressName, egressName} {
+		chain, err := conn.ListChain(table, name)
+		if err != nil {
+			t.Fatalf("read chain %s back: %v", name, err)
+		}
+		krules, err := conn.GetRules(table, chain)
+		if err != nil {
+			t.Fatalf("read rules of %s back: %v", name, err)
+		}
+		if len(krules) != 0 {
+			t.Errorf("chain %s carries %d kernel rules, want 0 (the unreachable ban rule installs nothing)", name, len(krules))
+		}
+	}
+	sets, err := conn.GetSets(table)
+	if err != nil {
+		t.Fatalf("read sets back: %v", err)
+	}
+	if len(sets) != 0 {
+		t.Errorf("kernel sets = %d, want 0 (the unreachable ban rule installs nothing)", len(sets))
+	}
+}
+
+// assertKernelState asserts the shared encoding shape the wrappers
+// above hand-write their wants for: table, both chains at their hooks,
+// one kernel rule per wanted rule — the family gate, the service
+// prefilter in match order, the target load and lookup, the counter
+// and the stance's verdict tail — and the sets behind them.
+func assertKernelState(t *testing.T, conn *nftables.Conn, hook Hook, ingressRules, egressRules []wantRule, wantSets map[string]wantSet) {
 	t.Helper()
 	table, err := conn.ListTableOfFamily(tableName, nftables.TableFamilyINet)
 	if err != nil {
@@ -255,36 +363,6 @@ func assertKernelState(t *testing.T, conn *nftables.Conn, hook Hook) {
 	ingress := assertChain(t, conn, table, ingressName, ingressHook, ingressPrio)
 	egress := assertChain(t, conn, table, egressName, egressHook, nftables.ChainPriorityFilter)
 
-	// The kernel rules, in install order: one per ban rule and family
-	// the prefilter can reach. The verdict tails are hand-written from
-	// the fixtures: the silent drop, the inet-family reject with icmpx
-	// admin-prohibited, the packet-rate meter over 250/second with its
-	// derived burst 250 then drop, and the byte-rate meter over
-	// 1000000 bytes/second with its derived burst 1000000 then drop.
-	// Rule 5 leads with its destination-port and destination-address
-	// sets in both families; rule 6's v6 family is unreachable through
-	// the v4-only destination set and gets no kernel rule at all.
-	ingressRules := []wantRule{
-		{proto: unix.NFPROTO_IPV4, off: 12, length: 4, setName: "v4_0", tail: dropTail},                                // 203.0.113.0/24 + 198.51.100.7/32
-		{proto: unix.NFPROTO_IPV6, off: 8, length: 16, setName: "v6_1", tail: rejectTail},                              // 2001:db8::/32
-		{proto: unix.NFPROTO_IPV4, off: 12, length: 4, setName: "v4_2", tail: limitTail(expr.LimitTypePkts, 250, 250)}, // 198.51.100.9/32
-		{proto: unix.NFPROTO_IPV4, off: 12, length: 4, setName: "v4_4", tail: dropTail},                                // 255.255.255.0/24
-		{
-			proto: unix.NFPROTO_IPV4, off: 12, length: 4, setName: "v4_5",
-			l4Set: "l4_5", portSet: "port_5",
-			dstSet: "dp4_5", dstOff: 16, dstLen: 4,
-			tail: dropTail, // 203.0.113.7/32 under the full service prefilter
-		},
-		{
-			proto: unix.NFPROTO_IPV6, off: 8, length: 16, setName: "v6_5",
-			l4Set: "l4_5", portSet: "port_5",
-			dstSet: "dp6_5", dstOff: 24, dstLen: 16,
-			tail: dropTail, // 2001:db8::7/128 under the full service prefilter
-		},
-	}
-	egressRules := []wantRule{
-		{proto: unix.NFPROTO_IPV4, off: 16, length: 4, setName: "v4_3", tail: limitTail(expr.LimitTypePktBytes, 1000000, 1000000)}, // 203.0.113.9/32
-	}
 	assertRules := func(t *testing.T, chain *nftables.Chain, want []wantRule) {
 		t.Helper()
 		krules, err := conn.GetRules(table, chain)
@@ -302,22 +380,6 @@ func assertKernelState(t *testing.T, conn *nftables.Conn, hook Hook) {
 	assertRules(t, ingress, ingressRules)
 	assertRules(t, egress, egressRules)
 
-	// The sets behind the rules: every address range is [start, end)
-	// with end the first address after it; the top-touching range gets
-	// the null end. The port and l4 prefilter sets hold exact keys.
-	wantSets := map[string]wantSet{
-		"v4_0":   {interval: true, elems: []string{"end 198.51.100.8", "end 203.0.114.0", "start 198.51.100.7", "start 203.0.113.0"}},
-		"v6_1":   {interval: true, elems: []string{"end 2001:db9::", "start 2001:db8::"}},
-		"v4_2":   {interval: true, elems: []string{"end 198.51.100.10", "start 198.51.100.9"}},
-		"v4_3":   {interval: true, elems: []string{"end 203.0.113.10", "start 203.0.113.9"}},
-		"v4_4":   {interval: true, elems: []string{"end 0.0.0.0", "start 255.255.255.0"}},
-		"v4_5":   {interval: true, elems: []string{"end 203.0.113.8", "start 203.0.113.7"}},
-		"dp4_5":  {interval: true, elems: []string{"end 198.51.100.6", "start 198.51.100.5"}},
-		"v6_5":   {interval: true, elems: []string{"end 2001:db8::8", "start 2001:db8::7"}},
-		"dp6_5":  {interval: true, elems: []string{"end 2001:db8::6", "start 2001:db8::5"}},
-		"port_5": {elems: []string{"443", "53"}}, // udp and tcp dports; sorted as strings
-		"l4_5":   {elems: []string{"17", "6"}},   // udp and tcp; sorted as strings
-	}
 	sets, err := conn.GetSets(table)
 	if err != nil {
 		t.Fatalf("read sets back: %v", err)

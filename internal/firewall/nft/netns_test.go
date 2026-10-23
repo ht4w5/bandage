@@ -15,17 +15,18 @@ import (
 	"github.com/HT4w5/bandage/internal/firewall"
 )
 
-// The netns targeting surface: the per-namespace constructor without
-// privileges, and the root-gated scratch-namespace integration test —
-// install through an nsfs handle into a fresh network namespace, read
-// the state back there, reset there, then watch the handle vanish. The
-// scratch namespace is born empty and dies with the test, so the run
-// is safe next to a live deployment: the current namespace is only
-// ever probed, never modified.
+// The netns targeting surface: construction without privileges, and
+// the root-gated scratch-namespace integration test — install through
+// an nsfs handle into a fresh network namespace, read the state back
+// there, reset there, then watch the handle vanish. The scratch
+// namespace is born empty and dies with the test, so the run is safe
+// next to a live deployment: the current namespace is only ever
+// probed, never modified.
 
-// TestNewNetNSValidatesTheHook: the namespace-targeting constructor
-// shares the hook validation — a failing and a passing case.
-func TestNewNetNSValidatesTheHook(t *testing.T) {
+// TestNewValidatesTheHookForANamespaceTarget: a namespace-targeted
+// construction shares the hook validation — a failing and a passing
+// case.
+func TestNewValidatesTheHookForANamespaceTarget(t *testing.T) {
 	tests := []struct {
 		name    string
 		hook    string
@@ -43,21 +44,21 @@ func TestNewNetNSValidatesTheHook(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d, err := NewNetNS(Hook(tt.hook), "/var/run/netns/x")
+			d, err := New(Config{Hook: Hook(tt.hook), NetNSPath: "/var/run/netns/x"})
 			if tt.wantErr != "" {
 				if err == nil {
-					t.Fatalf("NewNetNS(%q) succeeded, want error containing %q", tt.hook, tt.wantErr)
+					t.Fatalf("New(%q) succeeded, want error containing %q", tt.hook, tt.wantErr)
 				}
 				if !strings.Contains(err.Error(), tt.wantErr) {
-					t.Errorf("NewNetNS(%q) error %q does not contain %q", tt.hook, err, tt.wantErr)
+					t.Errorf("New(%q) error %q does not contain %q", tt.hook, err, tt.wantErr)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("NewNetNS(%q): %v", tt.hook, err)
+				t.Fatalf("New(%q): %v", tt.hook, err)
 			}
 			if d == nil {
-				t.Fatalf("NewNetNS(%q) = nil driver", tt.hook)
+				t.Fatalf("New(%q) = nil driver", tt.hook)
 			}
 		})
 	}
@@ -95,8 +96,10 @@ func TestKernelInstallInAScratchNetNS(t *testing.T) {
 		t.Fatalf("probe current namespace: %v", err)
 	}
 
-	// The encoding fixture of TestKernelInstallReadBackReset, copied
-	// deliberately so both kernel tests pin their own expectations.
+	// The encoding fixtures of TestKernelInstallReadBackReset, copied
+	// deliberately so both kernel tests pin their own expectations —
+	// the unscoped shapes and the scoped shape, one per driver
+	// configuration.
 	rules := []firewall.BanRule{
 		{Targets: []netip.Prefix{
 			netip.MustParsePrefix("203.0.113.0/24"),
@@ -106,39 +109,41 @@ func TestKernelInstallInAScratchNetNS(t *testing.T) {
 		{Targets: []netip.Prefix{netip.MustParsePrefix("198.51.100.9/32")}, Stance: firewall.StanceLimitPktRate, Rate: ratePtr(250)},
 		{Targets: []netip.Prefix{netip.MustParsePrefix("203.0.113.9/32")}, Stance: firewall.StanceLimitBandwidth, Rate: ratePtr(1000000)},
 		{Targets: []netip.Prefix{netip.MustParsePrefix("255.255.255.0/24")}, Stance: firewall.StanceDrop},
-		{
-			Targets: []netip.Prefix{
-				netip.MustParsePrefix("203.0.113.7/32"),
-				netip.MustParsePrefix("2001:db8::7/128"),
-			},
-			Prefilter: firewall.Prefilter{
-				DstPorts: []uint16{53, 443},
-				DstAddrs: []netip.Prefix{
-					netip.MustParsePrefix("198.51.100.5/32"),
-					netip.MustParsePrefix("2001:db8::5/128"),
-				},
-			},
-			Stance: firewall.StanceDrop,
-		},
-		{
-			Targets: []netip.Prefix{netip.MustParsePrefix("2001:db8::9/128")},
-			Prefilter: firewall.Prefilter{
-				DstPorts: []uint16{443},
-				DstAddrs: []netip.Prefix{netip.MustParsePrefix("198.51.100.5/32")},
-			},
-			Stance: firewall.StanceDrop,
-		},
 	}
-	d, err := NewNetNS(HookInput, path)
+	scopedRules := []firewall.BanRule{{
+		Targets: []netip.Prefix{
+			netip.MustParsePrefix("203.0.113.7/32"),
+			netip.MustParsePrefix("2001:db8::7/128"),
+		},
+		Stance: firewall.StanceDrop,
+	}}
+	d, err := New(Config{Hook: HookInput, NetNSPath: path})
 	if err != nil {
-		t.Fatalf("NewNetNS: %v", err)
+		t.Fatalf("New: %v", err)
 	}
 	if _, err := d.Apply(rules); err != nil {
 		t.Fatalf("Apply into the scratch namespace: %v", err)
 	}
 
 	nsConn := scratchConn(t, path)
-	assertKernelState(t, nsConn, HookInput)
+	assertUnscopedKernelState(t, nsConn, HookInput)
+
+	// Rebuilding through the same handle under the full service
+	// prefilter — the scoped encoding, one driver configuration later.
+	scoped, err := New(Config{Hook: HookInput, NetNSPath: path, Prefilter: Prefilter{
+		DstPorts: []uint16{53, 443},
+		DstAddrs: []netip.Prefix{
+			netip.MustParsePrefix("198.51.100.5/32"),
+			netip.MustParsePrefix("2001:db8::5/128"),
+		},
+	}})
+	if err != nil {
+		t.Fatalf("New scoped: %v", err)
+	}
+	if _, err := scoped.Apply(scopedRules); err != nil {
+		t.Fatalf("scoped Apply into the scratch namespace: %v", err)
+	}
+	assertScopedKernelState(t, nsConn, HookInput)
 
 	existsAfter, err := tableExists(conn, ownedTable())
 	if err != nil {

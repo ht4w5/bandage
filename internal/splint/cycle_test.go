@@ -265,7 +265,7 @@ func newTestUpdater(t *testing.T, srv *docServer) (*Updater, *firewalltest.Stub,
 }
 
 // newTestUpdaterCfg wires the seam under a specific compilation
-// policy, for the cases that configure exclusions or the prefilter.
+// policy, for the cases that configure exclusions.
 func newTestUpdaterCfg(t *testing.T, srv *docServer, p Policy) (*Updater, *firewalltest.Stub, *logCapture) {
 	t.Helper()
 	fetcher, err := NewFetcher(srv.URL)
@@ -278,10 +278,9 @@ func newTestUpdaterCfg(t *testing.T, srv *docServer, p Policy) (*Updater, *firew
 }
 
 // The default compilation policy: the safety exclusions with the
-// RFC1918 and ULA tier on (the shipped --exclude-private default) and
-// an empty service prefilter (all traffic is service traffic).
+// RFC1918 and ULA tier on (the shipped --exclude-private default).
 func defaultPolicy() Policy {
-	return NewPolicy(nil, true, firewall.Prefilter{})
+	return NewPolicy(nil, true)
 }
 
 // assertApplies checks which ban rules the stub driver was handed to
@@ -311,8 +310,6 @@ func equalRules(got, want []firewall.BanRule) bool {
 	}
 	for i := range got {
 		if !slices.Equal(got[i].Targets, want[i].Targets) ||
-			!slices.Equal(got[i].Prefilter.DstPorts, want[i].Prefilter.DstPorts) ||
-			!slices.Equal(got[i].Prefilter.DstAddrs, want[i].Prefilter.DstAddrs) ||
 			got[i].Stance != want[i].Stance ||
 			!equalRate(got[i].Rate, want[i].Rate) {
 			return false
@@ -1215,14 +1212,14 @@ func TestUpdateCycleSafetyExclusions(t *testing.T) {
 		target string
 		wantOK bool // true: the Target compiles to a ban rule
 	}{
-		{"a loopback Target is excluded and cannot be re-included", NewPolicy(nil, false, firewall.Prefilter{}), "127.0.0.1/32", false},
-		{"the IPv6 loopback Target is excluded and cannot be re-included", NewPolicy(nil, false, firewall.Prefilter{}), "::1/128", false},
-		{"a link-local Target is excluded and cannot be re-included", NewPolicy(nil, false, firewall.Prefilter{}), "169.254.5.6/32", false},
-		{"the IPv6 link-local Target is excluded and cannot be re-included", NewPolicy(nil, false, firewall.Prefilter{}), "fe80::1/128", false},
-		{"a public Target compiles under the safety exclusions", NewPolicy(nil, true, firewall.Prefilter{}), "203.0.113.7/32", true},
-		{"an RFC1918 Target is excluded by default", NewPolicy(nil, true, firewall.Prefilter{}), "10.1.2.3/32", false},
-		{"a ULA Target is excluded by default", NewPolicy(nil, true, firewall.Prefilter{}), "fd00::1/128", false},
-		{"a private Target compiles when the default exclusions are opted out", NewPolicy(nil, false, firewall.Prefilter{}), "10.1.2.3/32", true},
+		{"a loopback Target is excluded and cannot be re-included", NewPolicy(nil, false), "127.0.0.1/32", false},
+		{"the IPv6 loopback Target is excluded and cannot be re-included", NewPolicy(nil, false), "::1/128", false},
+		{"a link-local Target is excluded and cannot be re-included", NewPolicy(nil, false), "169.254.5.6/32", false},
+		{"the IPv6 link-local Target is excluded and cannot be re-included", NewPolicy(nil, false), "fe80::1/128", false},
+		{"a public Target compiles under the safety exclusions", NewPolicy(nil, true), "203.0.113.7/32", true},
+		{"an RFC1918 Target is excluded by default", NewPolicy(nil, true), "10.1.2.3/32", false},
+		{"a ULA Target is excluded by default", NewPolicy(nil, true), "fd00::1/128", false},
+		{"a private Target compiles when the default exclusions are opted out", NewPolicy(nil, false), "10.1.2.3/32", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1247,54 +1244,6 @@ func TestUpdateCycleSafetyExclusions(t *testing.T) {
 				t.Errorf("skipped %d report records, want 1", len(skips))
 			}
 			assertApplies(t, stub, []firewall.BanRule{})
-		})
-	}
-}
-
-// TestUpdateCycleConstructsTheServicePrefilter: every ban rule leads
-// with the service prefilter — the destination-port and
-// destination-address sets of the protected service. Either set may
-// be empty, meaning all; both are operator configuration.
-func TestUpdateCycleConstructsTheServicePrefilter(t *testing.T) {
-	tests := []struct {
-		name      string
-		prefilter firewall.Prefilter
-	}{
-		{
-			name:      "a ban rule carries the configured destination-port set",
-			prefilter: firewall.Prefilter{DstPorts: []uint16{53, 80, 443}},
-		},
-		{
-			name: "a ban rule carries an empty destination-port set when none is configured",
-		},
-		{
-			name:      "a ban rule carries the configured destination-address set",
-			prefilter: firewall.Prefilter{DstAddrs: mustPrefixes(t, "203.0.113.5/32", "2001:db8::5/128")},
-		},
-		{
-			name: "a ban rule carries an empty destination-address set when none is configured",
-		},
-		{
-			name:      "a ban rule carries both prefilter sets",
-			prefilter: firewall.Prefilter{DstPorts: []uint16{443}, DstAddrs: mustPrefixes(t, "203.0.113.5/32")},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			srv := newDocServer(t)
-			srv.serve(http.StatusOK, canonicalDoc(t))
-			u, stub, _ := newTestUpdaterCfg(t, srv, NewPolicy(nil, true, tt.prefilter))
-
-			if _, err := u.Update(context.Background()); err != nil {
-				t.Fatalf("Update: %v", err)
-			}
-			want := []firewall.BanRule{{
-				Targets:   mustPrefixes(t, "203.0.113.7/32"),
-				Prefilter: tt.prefilter,
-				Stance:    firewall.StanceLimitBandwidth,
-				Rate:      ratePtr(1000000),
-			}}
-			assertApplies(t, stub, want)
 		})
 	}
 }
@@ -1701,10 +1650,6 @@ func TestDryRunPrintsTheDriverPlan(t *testing.T) {
     "targets": [
       "203.0.113.7/32"
     ],
-    "prefilter": {
-      "dst_ports": [],
-      "dst_addrs": []
-    },
     "stance": "limit-bandwidth",
     "rate": 1000000
   }
@@ -1793,8 +1738,7 @@ stance=limit-bandwidth rate=1000000 placement=test
 }
 
 // TestDryRunShowsTheEffectiveSets: --dry-run shows each ban rule's
-// effective sets after exclusion subtraction, leading with the service
-// prefilter.
+// effective sets after exclusion subtraction.
 func TestDryRunShowsTheEffectiveSets(t *testing.T) {
 	srv := newDocServer(t)
 	srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
@@ -1802,7 +1746,6 @@ func TestDryRunShowsTheEffectiveSets(t *testing.T) {
 	}))
 	u, stub, _ := newTestUpdaterCfg(t, srv, NewPolicy(
 		mustPrefixes(t, "203.0.113.0/25"), true,
-		firewall.Prefilter{DstPorts: []uint16{53, 443}, DstAddrs: mustPrefixes(t, "203.0.113.5/32")},
 	))
 	stub.Placement = "test"
 
@@ -1815,15 +1758,6 @@ func TestDryRunShowsTheEffectiveSets(t *testing.T) {
     "targets": [
       "203.0.113.128/25"
     ],
-    "prefilter": {
-      "dst_ports": [
-        53,
-        443
-      ],
-      "dst_addrs": [
-        "203.0.113.5/32"
-      ]
-    },
     "stance": "limit-bandwidth",
     "rate": 1000000
   }

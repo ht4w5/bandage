@@ -93,7 +93,7 @@ func TestNewValidatesTheHook(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d, err := New(tt.hook)
+			d, err := New(Config{Hook: tt.hook})
 			if tt.wantErr != "" {
 				if err == nil {
 					t.Fatalf("New(%q) succeeded, want error containing %q", tt.hook, tt.wantErr)
@@ -122,7 +122,7 @@ func TestApplyWithoutNetlinkPrivilegesFailsLoudly(t *testing.T) {
 	if reason := netlinkUnusable(); reason == "" {
 		t.Skip("nftables is available here; the root-gated integration test covers the driver")
 	}
-	d, err := New(HookInput)
+	d, err := New(Config{Hook: HookInput})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

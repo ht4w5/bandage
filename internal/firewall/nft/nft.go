@@ -76,7 +76,8 @@ func (h Hook) valid() bool {
 // Driver targets one namespace: netns is its nsfs handle path, "" the
 // current namespace.
 type Driver struct {
-	hook  Hook
+	hook      Hook
+	prefilter Prefilter
 	netns string
 
 	// open dials the netlink surface of the target namespace —
@@ -92,6 +93,31 @@ type Driver struct {
 }
 
 var _ firewall.Driver = (*Driver)(nil)
+
+// Prefilter is this driver's enforcement scope — the service
+// prefilter of the protected destinations every effective rule
+// matches first: a ban reaches only traffic whose destination port is
+// in DstPorts and whose destination address is in DstAddrs — service
+// traffic only, never SSH, monitoring, or unrelated forwarded
+// traffic. Either set may be empty, meaning all; both are operator
+// configuration (--nft-service-port, --nft-service-address).
+// Enforcement scope is driver configuration, not part of the ban rule
+// (ADR 0012): it is folded into this driver's effective rules and
+// therefore its ruleset hash, so changing it re-enforces.
+type Prefilter struct {
+	DstPorts []uint16
+	DstAddrs []netip.Prefix
+}
+
+// Config is one enforcement point's configuration — everything this
+// driver's own flags bind: the enforcement hook, the enforcement scope
+// (the service prefilter), and the target namespace's nsfs handle path
+// ("" is the current namespace).
+type Config struct {
+	Hook      Hook
+	Prefilter Prefilter
+	NetNSPath string
+}
 
 // kernelConn is the netlink surface the driver flushes through —
 // *nftables.Conn in production, the fake kernel stand-in in the
@@ -112,21 +138,15 @@ type kernelConn interface {
 
 var _ kernelConn = (*nftables.Conn)(nil)
 
-// New builds a driver whose ingress chain attaches at hook in the
-// current namespace.
-func New(hook Hook) (*Driver, error) {
-	return NewNetNS(hook, "")
-}
-
-// NewNetNS builds a driver targeting the network namespace at the
-// nsfs handle path ("" is the current namespace). The handle is
-// re-opened on every apply and reset — a recreated container is
-// picked up through its stable handle.
-func NewNetNS(hook Hook, netnsPath string) (*Driver, error) {
-	if !hook.valid() {
-		return nil, fmt.Errorf("hook: must be input or prerouting (got %q)", hook)
+// New builds a driver for one enforcement point — one target
+// namespace, one enforcement hook and one enforcement scope. The nsfs
+// handle is re-opened on every apply and reset — a recreated container
+// is picked up through its stable handle.
+func New(cfg Config) (*Driver, error) {
+	if !cfg.Hook.valid() {
+		return nil, fmt.Errorf("hook: must be input or prerouting (got %q)", cfg.Hook)
 	}
-	d := &Driver{hook: hook, netns: netnsPath}
+	d := &Driver{hook: cfg.Hook, prefilter: cfg.Prefilter, netns: cfg.NetNSPath}
 	d.open = d.openNetlink
 	return d, nil
 }
@@ -217,9 +237,9 @@ func (d *Driver) Plan(rules []firewall.BanRule) (firewall.Plan, error) {
 		if err := checkRate(r); err != nil {
 			return firewall.Plan{}, fmt.Errorf("ban rule %d: %w", i, err)
 		}
-		fams := ruleFamilies(r)
+		fams := d.ruleFamilies(r)
 		if len(fams) == 0 {
-			continue // the service prefilter cannot reach it: it installs nothing
+			continue // the configured enforcement scope cannot reach it: it installs nothing
 		}
 		effective := r
 		effective.Targets = nil
@@ -228,8 +248,37 @@ func (d *Driver) Plan(rules []firewall.BanRule) (firewall.Plan, error) {
 		}
 		plan.Rules = append(plan.Rules, firewall.PlannedRule{BanRule: effective, Placement: placement})
 	}
-	plan.Hash = firewall.Hash(plan.Rules)
+	plan.Hash = d.hashEffective(plan.Rules)
 	return plan, nil
+}
+
+// hashEffective folds the driver's effective rules into the ruleset
+// hash with the seam's rolling-hash helpers: every effective rule's
+// step carries its targets, the configured enforcement scope it
+// matches under — the destination ports and addresses, so changing
+// the scope changes the hash and re-enforces — its stance, its rate
+// and its placement label.
+func (d *Driver) hashEffective(rules []firewall.PlannedRule) uint32 {
+	h := firewall.NewHasher()
+	for _, r := range rules {
+		fields := make([][]byte, 0, len(r.Targets)+len(d.prefilter.DstPorts)+len(d.prefilter.DstAddrs)+3)
+		for _, t := range r.Targets {
+			fields = append(fields, firewall.PrefixField(t))
+		}
+		for _, p := range d.prefilter.DstPorts {
+			fields = append(fields, firewall.Uint16Field(p))
+		}
+		for _, a := range d.prefilter.DstAddrs {
+			fields = append(fields, firewall.PrefixField(a))
+		}
+		fields = append(fields, firewall.StringField(string(r.Stance)))
+		if r.Rate != nil {
+			fields = append(fields, firewall.Uint64Field(uint64(*r.Rate)))
+		}
+		fields = append(fields, firewall.StringField(r.Placement))
+		h.Step(fields...)
+	}
+	return h.Sum()
 }
 
 // placement reports the ban rule's placement label — the chain it
@@ -294,7 +343,7 @@ func checkRate(r firewall.BanRule) error {
 // whether the delete joins the batch; the replaced rules' counters
 // are read back first; then the table, both chains and one kernel rule
 // per honoureable ban rule and address family — each leading with the
-// service prefilter and carrying its packet/byte counter immediately
+// configured enforcement scope and carrying its packet/byte counter immediately
 // before the verdict — are buffered and flushed together. The table is
 // never absent while the new one applies — there is no
 // delete-then-rebuild window. A declined ban rule keeps its input
@@ -346,7 +395,7 @@ func (d *Driver) Apply(rules []firewall.BanRule) (firewall.Outcome, error) {
 		if declined[i] {
 			continue // a declined ban rule installs nothing, keeping its input index
 		}
-		if err := addBanRule(conn, table, ingress, egress, i, r); err != nil {
+		if err := d.addBanRule(conn, table, ingress, egress, i, r); err != nil {
 			return firewall.Outcome{}, fmt.Errorf("apply: ban rule %d: %w", i, err)
 		}
 	}
@@ -546,21 +595,21 @@ type familyRule struct {
 	dstAddrs []netip.Prefix
 }
 
-// ruleFamilies splits one ban rule per address family the service
-// prefilter can reach: a family with no target prefix is out, and when
-// the operator configured destination addresses and none is in the
-// family, nothing there is service traffic and the family is out too
-// — it gets no kernel rule at all. All families out means the ban rule
-// installs nothing — the drop the planning step folds away.
-func ruleFamilies(r firewall.BanRule) []familyRule {
+// ruleFamilies splits one ban rule per address family the configured
+// enforcement scope can reach: a family with no target prefix is out,
+// and when the operator configured destination addresses and none is
+// in the family, nothing there is service traffic and the family is
+// out too — it gets no kernel rule at all. All families out means the
+// ban rule installs nothing — the drop the planning step folds away.
+func (d *Driver) ruleFamilies(r firewall.BanRule) []familyRule {
 	var fams []familyRule
 	for _, fam := range families {
 		targets := familyPrefixes(r.Targets, fam)
 		if len(targets) == 0 {
 			continue
 		}
-		dstAddrs := familyPrefixes(r.Prefilter.DstAddrs, fam)
-		if len(r.Prefilter.DstAddrs) > 0 && len(dstAddrs) == 0 {
+		dstAddrs := familyPrefixes(d.prefilter.DstAddrs, fam)
+		if len(d.prefilter.DstAddrs) > 0 && len(dstAddrs) == 0 {
 			continue
 		}
 		fams = append(fams, familyRule{fam, targets, dstAddrs})
@@ -569,15 +618,15 @@ func ruleFamilies(r firewall.BanRule) []familyRule {
 }
 
 // addBanRule buffers one ban rule's sets and kernel rules: every
-// address family the service prefilter can reach gets one interval set
-// of the rule's Target prefixes and one kernel rule that leads with the
-// service prefilter — the destination-port set first, then the
-// destination-address set, either empty meaning all — before the
-// target match, the packet/byte counter and the stance's verdict. The
-// direction split of the penalty mapping: bandwidth meters the response direction on the
+// address family the configured enforcement scope can reach gets one
+// interval set of the rule's Target prefixes and one kernel rule that
+// leads with the enforcement scope — the destination-port set first,
+// then the destination-address set, either empty meaning all — before
+// the target match, the packet/byte counter and the stance's verdict.
+// The direction split of the penalty mapping: bandwidth meters the response direction on the
 // egress chain, matched on destination ∈ Target; every other stance
 // matches source on the ingress chain.
-func addBanRule(conn kernelConn, table *nftables.Table, ingress, egress *nftables.Chain, i int, r firewall.BanRule) error {
+func (d *Driver) addBanRule(conn kernelConn, table *nftables.Table, ingress, egress *nftables.Chain, i int, r firewall.BanRule) error {
 	verdict, err := verdictExprs(r)
 	if err != nil {
 		return err
@@ -594,14 +643,14 @@ func addBanRule(conn kernelConn, table *nftables.Table, ingress, egress *nftable
 	if matchDst {
 		chain, matchOff = egress, func(f addrFamily) uint32 { return f.dstOff }
 	}
-	familyRules := ruleFamilies(r)
+	familyRules := d.ruleFamilies(r)
 	if len(familyRules) == 0 {
 		return nil
 	}
 	// The destination-port prefilter is family-independent: its sets
 	// are built once per rule and lead every family's kernel rule.
 	var portExprs []expr.Any
-	if len(r.Prefilter.DstPorts) > 0 {
+	if len(d.prefilter.DstPorts) > 0 {
 		if err := conn.AddSet(&nftables.Set{
 			Table:   table,
 			KeyType: nftables.TypeInetProto,
@@ -613,7 +662,7 @@ func addBanRule(conn kernelConn, table *nftables.Table, ingress, egress *nftable
 			Table:   table,
 			KeyType: nftables.TypeInetService,
 			Name:    portSetName(i),
-		}, portElements(r.Prefilter.DstPorts)); err != nil {
+		}, portElements(d.prefilter.DstPorts)); err != nil {
 			return err
 		}
 		// Ports are transport-header bytes: gate on tcp and udp so no

@@ -220,7 +220,15 @@ func counterRule(setName string, packets, bytes uint64) *nftables.Rule {
 // open swapped for the stand-in.
 func newFakeDriver(t *testing.T, hook Hook, kernel *fakeKernel) *Driver {
 	t.Helper()
-	d, err := New(hook)
+	return newFakeScopedDriver(t, hook, Prefilter{}, kernel)
+}
+
+// newFakeScopedDriver builds a driver enforcing under a configured
+// enforcement scope — the service prefilter of destination ports and
+// addresses, driver configuration rather than part of the ban rule.
+func newFakeScopedDriver(t *testing.T, hook Hook, scope Prefilter, kernel *fakeKernel) *Driver {
+	t.Helper()
+	d, err := New(Config{Hook: hook, Prefilter: scope})
 	if err != nil {
 		t.Fatalf("New(%q): %v", hook, err)
 	}
@@ -241,6 +249,15 @@ func bandwidthFixture(rate int64, prefixes ...string) firewall.BanRule {
 	r := dropFixture(prefixes...)
 	r.Stance, r.Rate = firewall.StanceLimitBandwidth, &rate
 	return r
+}
+
+// mustPrefixes parses prefix literals for scope fixtures.
+func mustPrefixes(prefixes ...string) []netip.Prefix {
+	out := make([]netip.Prefix, 0, len(prefixes))
+	for _, s := range prefixes {
+		out = append(out, netip.MustParsePrefix(s))
+	}
+	return out
 }
 
 func reqRateFixture(rate int64, prefixes ...string) firewall.BanRule {
@@ -316,24 +333,23 @@ func TestPlanDerivesTheEffectiveRules(t *testing.T) {
 		}
 	})
 
-	t.Run("the service prefilter narrows the targets to the families it can reach", func(t *testing.T) {
+	t.Run("the configured enforcement scope narrows the targets to the families it can reach", func(t *testing.T) {
 		rules := []firewall.BanRule{{
 			Targets: []netip.Prefix{
 				netip.MustParsePrefix("203.0.113.7/32"),
 				netip.MustParsePrefix("2001:db8::7/128"),
 			},
-			Prefilter: firewall.Prefilter{DstAddrs: []netip.Prefix{netip.MustParsePrefix("2001:db8::5/128")}},
-			Stance:    firewall.StanceDrop,
+			Stance: firewall.StanceDrop,
 		}}
-		plan, err := newFakeDriver(t, HookInput, kernel).Plan(rules)
+		scope := Prefilter{DstAddrs: []netip.Prefix{netip.MustParsePrefix("2001:db8::5/128")}}
+		plan, err := newFakeScopedDriver(t, HookInput, scope, kernel).Plan(rules)
 		if err != nil {
 			t.Fatalf("Plan: %v", err)
 		}
 		want := []firewall.PlannedRule{{
 			BanRule: firewall.BanRule{
-				Targets:   []netip.Prefix{netip.MustParsePrefix("2001:db8::7/128")},
-				Prefilter: rules[0].Prefilter,
-				Stance:    firewall.StanceDrop,
+				Targets: []netip.Prefix{netip.MustParsePrefix("2001:db8::7/128")},
+				Stance:  firewall.StanceDrop,
 			},
 			Placement: "ingress@input",
 		}}
@@ -344,11 +360,11 @@ func TestPlanDerivesTheEffectiveRules(t *testing.T) {
 
 	t.Run("a ban rule no family can reach installs nothing and is not effective", func(t *testing.T) {
 		rules := []firewall.BanRule{{
-			Targets:   []netip.Prefix{netip.MustParsePrefix("203.0.113.7/32")},
-			Prefilter: firewall.Prefilter{DstAddrs: []netip.Prefix{netip.MustParsePrefix("2001:db8::5/128")}},
-			Stance:    firewall.StanceDrop,
+			Targets: []netip.Prefix{netip.MustParsePrefix("203.0.113.7/32")},
+			Stance:  firewall.StanceDrop,
 		}}
-		plan, err := newFakeDriver(t, HookInput, kernel).Plan(rules)
+		scope := Prefilter{DstAddrs: []netip.Prefix{netip.MustParsePrefix("2001:db8::5/128")}}
+		plan, err := newFakeScopedDriver(t, HookInput, scope, kernel).Plan(rules)
 		if err != nil {
 			t.Fatalf("Plan: %v", err)
 		}
@@ -399,15 +415,10 @@ func TestPlanFoldsTheEffectiveRules(t *testing.T) {
 		}
 	})
 
-	t.Run("changing a ban rule the prefilter cannot reach keeps the hash", func(t *testing.T) {
-		reach := firewall.Prefilter{DstAddrs: []netip.Prefix{netip.MustParsePrefix("2001:db8::5/128")}}
-		unreachable := func(target string) firewall.BanRule {
-			r := dropFixture(target)
-			r.Prefilter = reach
-			return r
-		}
-		before := hashOf(t, newFakeDriver(t, HookInput, kernel), []firewall.BanRule{unreachable("203.0.113.7/32")})
-		after := hashOf(t, newFakeDriver(t, HookInput, kernel), []firewall.BanRule{unreachable("198.51.100.7/32")})
+	t.Run("changing a ban rule the scope cannot reach keeps the hash", func(t *testing.T) {
+		reach := Prefilter{DstAddrs: []netip.Prefix{netip.MustParsePrefix("2001:db8::5/128")}}
+		before := hashOf(t, newFakeScopedDriver(t, HookInput, reach, kernel), []firewall.BanRule{dropFixture("203.0.113.7/32")})
+		after := hashOf(t, newFakeScopedDriver(t, HookInput, reach, kernel), []firewall.BanRule{dropFixture("198.51.100.7/32")})
 		if before != after {
 			t.Errorf("dropped rules changed the hash (%x vs %x): the fold must drop what installs nothing", before, after)
 		}
@@ -419,6 +430,16 @@ func TestPlanFoldsTheEffectiveRules(t *testing.T) {
 		prerouting := hashOf(t, newFakeDriver(t, HookPrerouting, kernel), rules)
 		if input == prerouting {
 			t.Errorf("input and prerouting hash identically (%x): configuration must shape the identity", input)
+		}
+	})
+
+	t.Run("changing the enforcement scope changes the hash", func(t *testing.T) {
+		rules := []firewall.BanRule{dropFixture("203.0.113.7/32")}
+		all := hashOf(t, newFakeScopedDriver(t, HookInput, Prefilter{}, kernel), rules)
+		ports := hashOf(t, newFakeScopedDriver(t, HookInput, Prefilter{DstPorts: []uint16{443}}, kernel), rules)
+		addrs := hashOf(t, newFakeScopedDriver(t, HookInput, Prefilter{DstAddrs: mustPrefixes("203.0.113.5/32")}, kernel), rules)
+		if all == ports || all == addrs || ports == addrs {
+			t.Errorf("scopes hash all=%x ports=%x addrs=%x: the scope folds into the identity", all, ports, addrs)
 		}
 	})
 }
@@ -674,6 +695,25 @@ func TestApplyBuildsOneAtomicBatch(t *testing.T) {
 		}
 		if kernel.probeCount() != 1 {
 			t.Errorf("probed %d times, want 1 (the pre-delete existence probe)", kernel.probeCount())
+		}
+	})
+
+	t.Run("the configured scope's sets join the batch ahead of the rule's matches", func(t *testing.T) {
+		kernel := newFakeKernel()
+		scope := Prefilter{DstPorts: []uint16{443}, DstAddrs: []netip.Prefix{netip.MustParsePrefix("203.0.113.5/32")}}
+		d := newFakeScopedDriver(t, HookInput, scope, kernel)
+		if _, err := d.Apply([]firewall.BanRule{dropFixture("203.0.113.7/32")}); err != nil {
+			t.Fatalf("Apply: %v", err)
+		}
+		var kinds []string
+		for _, op := range kernel.lastFlush() {
+			kinds = append(kinds, op.kind)
+		}
+		// The scope's l4 gate and port sets, then the target and
+		// destination sets, then the kernel rule — one atomic batch.
+		want := []string{"add-table", "add-chain", "add-chain", "add-set", "add-set", "add-set", "add-set", "add-rule"}
+		if !reflect.DeepEqual(kinds, want) {
+			t.Errorf("batch = %v, want %v", kinds, want)
 		}
 	})
 }

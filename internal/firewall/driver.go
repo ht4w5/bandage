@@ -47,9 +47,10 @@ type PlannedRule struct {
 
 // Plan is the pure planning step's answer — no I/O, no privileges: the
 // effective rules the driver would install (with their placement
-// labels), the ruleset hash identifying them (Hash folds the effective
-// rules — see Hash), and the ban-rule features it declines with
-// reasons. --dry-run prints exactly this.
+// labels), the ruleset hash identifying them (each driver folds its
+// own effective rules with the shared rolling-hash helpers — see
+// Hasher), and the ban-rule features it declines with reasons.
+// --dry-run prints exactly this.
 type Plan struct {
 	Rules    []PlannedRule
 	Hash     uint32
