@@ -284,13 +284,13 @@ func defaultPolicy() Policy {
 	return NewPolicy(nil, true, firewall.Prefilter{})
 }
 
-// assertInstalls checks which ban rules the stub driver was asked to
-// install: want is the ruleset of exactly one install call; a refused
-// cycle passes nil and asserts nothing was installed. want may be an
-// empty (non-nil) slice for a cycle that installs an empty ruleset.
-func assertInstalls(t *testing.T, stub *firewalltest.Stub, want []firewall.BanRule) {
+// assertApplies checks which ban rules the stub driver was handed to
+// apply: want is the ruleset of exactly one apply call; a refused
+// cycle passes nil and asserts nothing reached the driver. want may be
+// an empty (non-nil) slice for a cycle that applies an empty ruleset.
+func assertApplies(t *testing.T, stub *firewalltest.Stub, want []firewall.BanRule) {
 	t.Helper()
-	calls := stub.InstallCalls()
+	calls := stub.ApplyCalls()
 	if want == nil {
 		if len(calls) != 0 {
 			t.Errorf("installed %d rulesets, want none", len(calls))
@@ -345,7 +345,7 @@ func TestUpdateCycleCompilesTheCanonicalExample(t *testing.T) {
 	if len(skips) != 0 {
 		t.Errorf("skipped %d report records, want 0", len(skips))
 	}
-	assertInstalls(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+	assertApplies(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 }
 
 // TestUpdateCycleValidations drives one update cycle per fixture
@@ -527,7 +527,7 @@ func TestUpdateCycleValidations(t *testing.T) {
 				if !strings.Contains(err.Error(), tt.wantErr) {
 					t.Errorf("Update error %q does not contain %q", err, tt.wantErr)
 				}
-				assertInstalls(t, stub, nil)
+				assertApplies(t, stub, nil)
 				return
 			}
 			if err != nil {
@@ -536,7 +536,7 @@ func TestUpdateCycleValidations(t *testing.T) {
 			if len(skips) != tt.wantSkipped {
 				t.Errorf("skipped %d report records, want %d", len(skips), tt.wantSkipped)
 			}
-			assertInstalls(t, stub, tt.wantRules)
+			assertApplies(t, stub, tt.wantRules)
 		})
 	}
 }
@@ -647,7 +647,7 @@ func TestUpdateCyclePenaltyMapping(t *testing.T) {
 					t.Errorf("logs do not contain %q: %s", want, logs.String())
 				}
 			}
-			assertInstalls(t, stub, tt.wantRules)
+			assertApplies(t, stub, tt.wantRules)
 		})
 	}
 }
@@ -671,7 +671,7 @@ func TestUpdateCycleLogsAndCountsSkippedReports(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	assertInstalls(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+	assertApplies(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 
 	if len(skips) != 2 {
 		t.Fatalf("skipped %d report records, want 2", len(skips))
@@ -708,7 +708,7 @@ func TestUpdateCycleLogsAndCountsDeclinedFeatures(t *testing.T) {
 		srv := newDocServer(t)
 		srv.serve(http.StatusOK, doc)
 		u, stub, logs := newTestUpdater(t, srv)
-		stub.InstallDeclines = []firewall.Decline{
+		stub.ApplyDeclined = []firewall.Decline{
 			{Rule: 0, Feature: "limit-req-rate", Reason: "application-layer intent; never faked at the packet layer"},
 			{Rule: 1, Feature: "limit-req-rate", Reason: "application-layer intent; never faked at the packet layer"},
 		}
@@ -1010,7 +1010,7 @@ func TestUpdateCycleMergePolicy(t *testing.T) {
 			if _, err := u.Update(context.Background()); err != nil {
 				t.Fatalf("Update: %v", err)
 			}
-			assertInstalls(t, stub, tt.wantRules)
+			assertApplies(t, stub, tt.wantRules)
 		})
 	}
 }
@@ -1046,7 +1046,7 @@ func TestUpdateCycleMergePolicyIsOrderIndependent(t *testing.T) {
 			if _, err := u.Update(context.Background()); err != nil {
 				t.Fatalf("Update: %v", err)
 			}
-			assertInstalls(t, stub, want)
+			assertApplies(t, stub, want)
 		})
 	}
 }
@@ -1108,7 +1108,7 @@ func TestUpdateCycleMergePolicyWithExclusions(t *testing.T) {
 			if len(skips) != tt.wantSkipped {
 				t.Errorf("skipped %d report records, want %d", len(skips), tt.wantSkipped)
 			}
-			assertInstalls(t, stub, tt.wantRules)
+			assertApplies(t, stub, tt.wantRules)
 		})
 	}
 }
@@ -1199,7 +1199,7 @@ func TestUpdateCycleSubtractsExclusions(t *testing.T) {
 			if len(skips) != tt.wantSkipped {
 				t.Errorf("skipped %d report records, want %d", len(skips), tt.wantSkipped)
 			}
-			assertInstalls(t, stub, tt.wantRules)
+			assertApplies(t, stub, tt.wantRules)
 		})
 	}
 }
@@ -1240,13 +1240,13 @@ func TestUpdateCycleSafetyExclusions(t *testing.T) {
 				if len(skips) != 0 {
 					t.Errorf("skipped %d report records, want 0", len(skips))
 				}
-				assertInstalls(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), tt.target)})
+				assertApplies(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), tt.target)})
 				return
 			}
 			if len(skips) != 1 {
 				t.Errorf("skipped %d report records, want 1", len(skips))
 			}
-			assertInstalls(t, stub, []firewall.BanRule{})
+			assertApplies(t, stub, []firewall.BanRule{})
 		})
 	}
 }
@@ -1294,121 +1294,62 @@ func TestUpdateCycleConstructsTheServicePrefilter(t *testing.T) {
 				Stance:    firewall.StanceLimitBandwidth,
 				Rate:      ratePtr(1000000),
 			}}
-			assertInstalls(t, stub, want)
+			assertApplies(t, stub, want)
 		})
 	}
 }
 
-// TestUpdateCycleSkipIfUnchanged: the skip-if-unchanged seam — the
-// install is skipped exactly when the compiled ruleset is the one last
-// installed in that namespace and its table is still in place
-// (probed fresh every cycle). Every case is observed as the stub
-// driver's install call count; the rolling hash behind the comparison
-// is never asserted directly.
-func TestUpdateCycleSkipIfUnchanged(t *testing.T) {
-	t.Run("an identical document installs once and then skips", func(t *testing.T) {
+// TestUpdateCycleLogsTheDriversSkip: skip-if-unchanged is the
+// driver's own — the skip matrix lives at the nftables driver's fake
+// kernel — and the engine carries no hash, probe or skip logic: every
+// cycle hands the ruleset to the driver and logs what it reports. A
+// skipped cycle is logged as the unchanged-skip with the hash.
+func TestUpdateCycleLogsTheDriversSkip(t *testing.T) {
+	t.Run("every cycle hands the ruleset to the driver", func(t *testing.T) {
 		srv := newDocServer(t)
+		srv.serve(http.StatusOK, canonicalDoc(t))
 		srv.serve(http.StatusOK, canonicalDoc(t))
 		u, stub, logs := newTestUpdater(t, srv)
+		stub.Skip = true
 
-		if _, err := u.Update(context.Background()); err != nil {
-			t.Fatalf("first Update: %v", err)
-		}
-		if _, err := u.Update(context.Background()); err != nil {
-			t.Fatalf("second Update: %v", err)
-		}
-		assertInstalls(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
-		if !strings.Contains(logs.String(), "ban rules unchanged; skipping install") {
-			t.Errorf("the skipped install is not logged: %s", logs.String())
-		}
-	})
-
-	changed := func(t *testing.T, mutate func(t *testing.T, doc map[string]any)) int {
-		t.Helper()
-		srv := newDocServer(t)
-		srv.serve(http.StatusOK, canonicalDoc(t))
-		srv.serve(http.StatusOK, fixture(t, mutate))
-		u, stub, _ := newTestUpdater(t, srv)
-		if _, err := u.Update(context.Background()); err != nil {
-			t.Fatalf("first Update: %v", err)
-		}
-		if _, err := u.Update(context.Background()); err != nil {
-			t.Fatalf("second Update: %v", err)
-		}
-		return len(stub.InstallCalls())
-	}
-
-	t.Run("a new Target reinstalls", func(t *testing.T) {
-		if n := changed(t, func(t *testing.T, doc map[string]any) {
-			report(t, doc, 0)["target"] = "198.51.100.9/32"
-		}); n != 2 {
-			t.Errorf("installed %d rulesets, want 2 (a new Target is a change)", n)
-		}
-	})
-
-	t.Run("an expired report disappearing reinstalls", func(t *testing.T) {
-		if n := changed(t, func(t *testing.T, doc map[string]any) {
-			setReports(t, doc, []reportSpec{
-				{target: "203.0.113.7/32", action: PenaltyLimitBandwidth, rate: json.Number("1000000")},
-				{target: "198.51.100.9/32", action: PenaltyDrop},
-			})
-		}); n != 2 {
-			t.Errorf("installed %d rulesets, want 2 (an expired report disappearing is a change)", n)
-		}
-	})
-
-	t.Run("a stance change reinstalls", func(t *testing.T) {
-		if n := changed(t, func(t *testing.T, doc map[string]any) {
-			penalty(t, report(t, doc, 0))["action"] = string(PenaltyLimitPktRate)
-		}); n != 2 {
-			t.Errorf("installed %d rulesets, want 2 (a stance change is a change)", n)
-		}
-	})
-
-	t.Run("a matching hash with a missing table reinstalls", func(t *testing.T) {
-		srv := newDocServer(t)
-		srv.serve(http.StatusOK, canonicalDoc(t))
-		u, stub, _ := newTestUpdater(t, srv)
-		if _, err := u.Update(context.Background()); err != nil {
-			t.Fatalf("first Update: %v", err)
-		}
-		// The table is gone behind our back — an external reset, a
-		// recreated container — while the ruleset is unchanged.
-		stub.TableGone = true
-		if _, err := u.Update(context.Background()); err != nil {
-			t.Fatalf("second Update: %v", err)
-		}
-		if n := len(stub.InstallCalls()); n != 2 {
-			t.Errorf("installed %d rulesets, want 2 (a missing table must not hide behind an unchanged hash)", n)
-		}
-	})
-
-	t.Run("the skip probes for the table every cycle", func(t *testing.T) {
-		srv := newDocServer(t)
-		srv.serve(http.StatusOK, canonicalDoc(t))
-		u, stub, _ := newTestUpdater(t, srv)
-		if _, err := u.Update(context.Background()); err != nil {
-			t.Fatalf("first Update: %v", err)
-		}
 		for range 2 {
 			if _, err := u.Update(context.Background()); err != nil {
 				t.Fatalf("Update: %v", err)
 			}
 		}
-		if n := len(stub.InstallCalls()); n != 1 {
-			t.Errorf("installed %d rulesets, want 1", n)
+		if n := len(stub.ApplyCalls()); n != 2 {
+			t.Errorf("the driver was handed %d rulesets, want 2 (the engine never skips on its own)", n)
 		}
-		if n := stub.TableProbes(); n != 2 {
-			t.Errorf("probed for the table %d times, want 2 (freshly probed every skip, never cached)", n)
+		if n := strings.Count(logs.String(), "ban rules unchanged; skipping install"); n != 2 {
+			t.Errorf("logged %d skips, want 2 (one per driver report): %s", n, logs.String())
+		}
+	})
+
+	t.Run("a skipped cycle is logged with the hash", func(t *testing.T) {
+		srv := newDocServer(t)
+		srv.serve(http.StatusOK, canonicalDoc(t))
+		u, stub, logs := newTestUpdater(t, srv)
+		stub.Skip = true
+
+		if _, err := u.Update(context.Background()); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		if !strings.Contains(logs.String(), "ban rules unchanged; skipping install") {
+			t.Errorf("the skipped install is not logged: %s", logs.String())
+		}
+		hashes := loggedHashes(logs.String())
+		if len(hashes) != 1 {
+			t.Errorf("logged hashes %v, want the skipped cycle's hash", hashes)
 		}
 	})
 }
 
-// TestUpdateCycleLogsTheRulesetHash: the ruleset hash is logged every
-// cycle and is deterministic — the same document hashes identically in
-// every run, so installs can be correlated across runs, and a changed
-// ruleset hashes differently. The hash's value is public output; its
-// construction is never pinned in tests.
+// TestUpdateCycleLogsTheRulesetHash: the ruleset hash the driver
+// reports is logged every cycle and is deterministic — the same
+// document hashes identically in every run, so installs can be
+// correlated across runs, and a changed ruleset hashes differently.
+// The hash's value is public output; its construction is never pinned
+// in tests.
 func TestUpdateCycleLogsTheRulesetHash(t *testing.T) {
 	t.Run("every cycle logs the hash, identical across runs", func(t *testing.T) {
 		srv := newDocServer(t)
@@ -1481,7 +1422,7 @@ func TestDryRunPrintsTheRulesetHash(t *testing.T) {
 			t.Fatalf("DryRun: %v", err)
 		}
 		_, hash := splitDryRunHash(t, out.String())
-		assertInstalls(t, stub, nil)
+		assertApplies(t, stub, nil)
 		return hash
 	}
 	hash := printHash(t, canonicalDoc(t))
@@ -1543,7 +1484,7 @@ func TestUpdateCycleLogsTheBanRuleHits(t *testing.T) {
 	srv := newDocServer(t)
 	srv.serve(http.StatusOK, canonicalDoc(t))
 	u, stub, logs := newTestUpdater(t, srv)
-	stub.InstallHits = []firewall.Hit{{Rule: 0, Packets: 5, Bytes: 100}}
+	stub.ApplyHits = []firewall.Hit{{Rule: 0, Packets: 5, Bytes: 100}}
 
 	if _, err := u.Update(context.Background()); err != nil {
 		t.Fatalf("first Update: %v", err)
@@ -1556,7 +1497,9 @@ func TestUpdateCycleLogsTheBanRuleHits(t *testing.T) {
 		t.Errorf("the ban rule hit does not carry its rule, packets and bytes: %s", logText)
 	}
 
-	// A skipped cycle logs the skip and no hits.
+	// A skipped cycle — the driver reports the unchanged-skip — logs
+	// the skip and no hits.
+	stub.Skip = true
 	if _, err := u.Update(context.Background()); err != nil {
 		t.Fatalf("second Update: %v", err)
 	}
@@ -1583,7 +1526,7 @@ func TestUpdateKeepsTheLastInstalledRules(t *testing.T) {
 		if _, err := u.Update(context.Background()); err == nil {
 			t.Fatal("second Update succeeded, want an error")
 		}
-		assertInstalls(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+		assertApplies(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 		if stub.ResetCalls() != 0 {
 			t.Errorf("Reset ran %d times, want 0", stub.ResetCalls())
 		}
@@ -1608,19 +1551,19 @@ func TestUpdateFailsLoudlyWhenTheDriverRefusesTheInstall(t *testing.T) {
 		srv := newDocServer(t)
 		srv.serve(http.StatusOK, canonicalDoc(t))
 		u, stub, _ := newTestUpdater(t, srv)
-		stub.InstallErr = errors.New("netlink: permission denied")
+		stub.ApplyErr = errors.New("netlink: permission denied")
 
 		if _, err := u.Update(context.Background()); err == nil || !strings.Contains(err.Error(), "install") {
 			t.Fatalf("Update error = %v, want an install failure", err)
 		}
-		assertInstalls(t, stub, nil)
+		assertApplies(t, stub, nil)
 	})
 
 	t.Run("a refused install at startup exits with an error", func(t *testing.T) {
 		srv := newDocServer(t)
 		srv.serve(http.StatusOK, canonicalDoc(t))
 		u, stub, _ := newTestUpdater(t, srv)
-		stub.InstallErr = errors.New("netlink: permission denied")
+		stub.ApplyErr = errors.New("netlink: permission denied")
 
 		err := u.Run(context.Background())
 		if err == nil || !strings.Contains(err.Error(), "startup test install") {
@@ -1646,7 +1589,7 @@ func TestUpdaterRun(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "startup test install") {
 			t.Fatalf("Run error = %v, want a startup test install failure", err)
 		}
-		assertInstalls(t, stub, nil)
+		assertApplies(t, stub, nil)
 		if stub.ResetCalls() != 1 {
 			t.Errorf("Reset ran %d times, want 1 (reset before exiting non-zero)", stub.ResetCalls())
 		}
@@ -1676,7 +1619,7 @@ func TestUpdaterRun(t *testing.T) {
 			t.Fatalf("Run: %v", err)
 		}
 
-		calls := stub.InstallCalls()
+		calls := stub.ApplyCalls()
 		want := [][]firewall.BanRule{
 			{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")},
 			{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "198.51.100.9/32")},
@@ -1686,7 +1629,7 @@ func TestUpdaterRun(t *testing.T) {
 		}
 		for i := range want {
 			if !equalRules(calls[i], want[i]) {
-				t.Errorf("install call %d = %v, want %v", i, calls[i], want[i])
+				t.Errorf("apply call %d = %v, want %v", i, calls[i], want[i])
 			}
 		}
 		if stub.ResetCalls() != 1 {
@@ -1736,15 +1679,18 @@ func sendTick(t *testing.T, ticks chan<- time.Time, runDone <-chan error) {
 	}
 }
 
-// TestDryRunPrintsTheCompiledBanRules: --dry-run prints the compiled
-// ban rules and one mapping line per ban rule — stance, rate and chain,
-// the penalty → nftables mapping — and installs nothing: no driver
-// call, no netlink, no privileges.
-func TestDryRunPrintsTheCompiledBanRules(t *testing.T) {
-	t.Run("the canonical example prints its ban rule and one mapping line", func(t *testing.T) {
+// TestDryRunPrintsTheDriverPlan: --dry-run prints the engine's
+// compiled ban rules and the selected driver's plan — the effective
+// rules with their placement and rate lines, the declines with
+// reasons, and the ruleset hash — from the pure planning step only,
+// and installs nothing: no enforcement surface is touched, no netlink,
+// no privileges.
+func TestDryRunPrintsTheDriverPlan(t *testing.T) {
+	t.Run("the canonical example prints its ban rule and one placement line", func(t *testing.T) {
 		srv := newDocServer(t)
 		srv.serve(http.StatusOK, canonicalDoc(t))
 		u, stub, _ := newTestUpdater(t, srv)
+		stub.Placement = "test"
 
 		var out bytes.Buffer
 		if err := u.DryRun(context.Background(), &out); err != nil {
@@ -1763,47 +1709,86 @@ func TestDryRunPrintsTheCompiledBanRules(t *testing.T) {
     "rate": 1000000
   }
 ]
-stance=limit-bandwidth rate=1000000 chain=egress
+stance=limit-bandwidth rate=1000000 placement=test
 `
 		body, _ := splitDryRunHash(t, out.String())
 		if body != want {
 			t.Errorf("DryRun output = %q, want %q", body, want)
 		}
-		assertInstalls(t, stub, nil)
+		assertApplies(t, stub, nil)
 	})
 
-	t.Run("every ban rule prints one mapping line with its stance, rate and chain", func(t *testing.T) {
-		srv := newDocServer(t)
-		srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
+	planDoc := func(t *testing.T) string {
+		t.Helper()
+		return fixture(t, func(t *testing.T, doc map[string]any) {
 			setReports(t, doc, []reportSpec{
 				{target: "203.0.113.7/32", action: PenaltyLimitBandwidth, rate: json.Number("1000000")},
 				{target: "198.51.100.9/32", action: PenaltyDrop},
 				{target: "192.0.2.5/32", action: PenaltyLimitPktRate, rate: json.Number("250")},
 				{target: "192.0.2.6/32", action: PenaltyLimitReqRate, rate: json.Number("300")},
 			})
-		}))
+		})
+	}
+
+	t.Run("every effective rule prints one line with its stance, rate and placement", func(t *testing.T) {
+		srv := newDocServer(t)
+		srv.serve(http.StatusOK, planDoc(t))
 		u, stub, _ := newTestUpdater(t, srv)
+		stub.Placement = "test"
 
 		var out bytes.Buffer
 		if err := u.DryRun(context.Background(), &out); err != nil {
 			t.Fatalf("DryRun: %v", err)
 		}
-		var mapping []string
+		var plan []string
 		for _, line := range strings.Split(out.String(), "\n") {
 			if strings.HasPrefix(line, "stance=") {
-				mapping = append(mapping, line)
+				plan = append(plan, line)
 			}
 		}
 		want := []string{
-			"stance=drop rate=- chain=ingress",
-			"stance=limit-pkt-rate rate=250 chain=ingress",
-			"stance=limit-bandwidth rate=1000000 chain=egress",
-			"stance=limit-req-rate rate=300 chain=-",
+			"stance=drop rate=- placement=test",
+			"stance=limit-pkt-rate rate=250 placement=test",
+			"stance=limit-bandwidth rate=1000000 placement=test",
+			"stance=limit-req-rate rate=300 placement=test",
 		}
-		if !slices.Equal(mapping, want) {
-			t.Errorf("mapping lines = %q, want %q", mapping, want)
+		if !slices.Equal(plan, want) {
+			t.Errorf("plan lines = %q, want %q", plan, want)
 		}
-		assertInstalls(t, stub, nil)
+		assertApplies(t, stub, nil)
+	})
+
+	t.Run("declined features print with their rule, feature and reason", func(t *testing.T) {
+		srv := newDocServer(t)
+		srv.serve(http.StatusOK, planDoc(t))
+		u, stub, _ := newTestUpdater(t, srv)
+		stub.Placement = "test"
+		stub.ApplyDeclined = []firewall.Decline{{
+			Rule:    3,
+			Feature: "limit-req-rate",
+			Reason:  "application-layer intent; never faked at the packet layer",
+		}}
+
+		var out bytes.Buffer
+		if err := u.DryRun(context.Background(), &out); err != nil {
+			t.Fatalf("DryRun: %v", err)
+		}
+		var plan []string
+		for _, line := range strings.Split(out.String(), "\n") {
+			if strings.HasPrefix(line, "stance=") || strings.HasPrefix(line, "declined ") {
+				plan = append(plan, line)
+			}
+		}
+		want := []string{
+			"stance=drop rate=- placement=test",
+			"stance=limit-pkt-rate rate=250 placement=test",
+			"stance=limit-bandwidth rate=1000000 placement=test",
+			"declined rule=3 feature=limit-req-rate reason=application-layer intent; never faked at the packet layer",
+		}
+		if !slices.Equal(plan, want) {
+			t.Errorf("plan lines = %q, want %q", plan, want)
+		}
+		assertApplies(t, stub, nil)
 	})
 }
 
@@ -1819,6 +1804,7 @@ func TestDryRunShowsTheEffectiveSets(t *testing.T) {
 		mustPrefixes(t, "203.0.113.0/25"), true,
 		firewall.Prefilter{DstPorts: []uint16{53, 443}, DstAddrs: mustPrefixes(t, "203.0.113.5/32")},
 	))
+	stub.Placement = "test"
 
 	var out bytes.Buffer
 	if err := u.DryRun(context.Background(), &out); err != nil {
@@ -1842,13 +1828,13 @@ func TestDryRunShowsTheEffectiveSets(t *testing.T) {
     "rate": 1000000
   }
 ]
-stance=limit-bandwidth rate=1000000 chain=egress
+stance=limit-bandwidth rate=1000000 placement=test
 `
 	body, _ := splitDryRunHash(t, out.String())
 	if body != want {
 		t.Errorf("DryRun output = %q, want %q", body, want)
 	}
-	assertInstalls(t, stub, nil)
+	assertApplies(t, stub, nil)
 }
 
 // TestClampInterval: the update interval's one-minute floor, failing

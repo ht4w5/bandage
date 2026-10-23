@@ -2,15 +2,21 @@
 // firewall seam's ban rules through netlink
 // (github.com/google/nftables) — one wholly-owned inet table named
 // splint in the target namespace, rebuilt wholesale in a single
-// atomic batch per install (fluxc's delete-then-rebuild gap is
+// atomic batch per apply (fluxc's delete-then-rebuild gap is
 // deliberately not copied), removed on reset. It applies each Penalty
 // exactly as stated or declines it: limit-req-rate is application-layer
 // intent and is never faked at the packet layer (ADR 0012).
+//
+// The driver owns its identity: the rolling hash over its effective
+// rules, the skip-if-unchanged decision with its existence probe and
+// the counter read-back live here, because only this driver knows
+// which ban rules are actually effective and which it drops.
 package nft
 
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"math"
 	"net/netip"
@@ -29,12 +35,12 @@ import (
 // The wholly-owned nftables objects: one inet table per target
 // namespace, carrying the ingress chain at the configured hook and the
 // egress chain behind the bandwidth limits. The chain names are the
-// ones firewall.Stance.Chain() reports (the --dry-run mapping lines
-// name these chains).
+// placement labels the driver's plan reports (the --dry-run mapping
+// lines name these chains).
 const (
 	tableName   = "splint"
-	ingressName = string(firewall.ChainIngress)
-	egressName  = string(firewall.ChainEgress)
+	ingressName = "ingress"
+	egressName  = "egress"
 )
 
 // Hook is the enforcement hook the ingress chain attaches to: input
@@ -63,16 +69,48 @@ func (h Hook) valid() bool {
 }
 
 // Driver is the nftables implementation of the firewall.Driver port.
-// It owns nothing but one table per target namespace: Install
-// rebuilds that table wholesale, Reset removes it. One Driver targets
-// one namespace: netns is its nsfs handle path, "" the current
-// namespace.
+// It owns one table per target namespace and its identity: plan is
+// pure, apply rebuilds that table wholesale in one atomic batch —
+// skipping the install when the plan's hash matches the ruleset it
+// last applied and the table still exists — reset removes it. One
+// Driver targets one namespace: netns is its nsfs handle path, "" the
+// current namespace.
 type Driver struct {
 	hook  Hook
 	netns string
+
+	// open dials the netlink surface of the target namespace —
+	// openNetlink in production, the fake kernel stand-in in the
+	// driver's tests.
+	open func() (kernelConn, io.Closer, error)
+
+	// The skip-if-unchanged state, per driver instance: the ruleset
+	// hash last applied here (installed marks that an apply has
+	// succeeded — the zero hash is a legal hash).
+	hash      uint32
+	installed bool
 }
 
 var _ firewall.Driver = (*Driver)(nil)
+
+// kernelConn is the netlink surface the driver flushes through —
+// *nftables.Conn in production, the fake kernel stand-in in the
+// driver's tests. The driver's plan/apply logic is verified against
+// the stand-in without privileges (fakekernel_test.go); the real
+// encoding is verified by the root-gated kernel test.
+type kernelConn interface {
+	AddTable(*nftables.Table) *nftables.Table
+	AddChain(*nftables.Chain) *nftables.Chain
+	AddSet(*nftables.Set, []nftables.SetElement) error
+	AddRule(*nftables.Rule) *nftables.Rule
+	DelTable(*nftables.Table)
+	Flush() error
+	ListTableOfFamily(name string, family nftables.TableFamily) (*nftables.Table, error)
+	ListChain(table *nftables.Table, chain string) (*nftables.Chain, error)
+	GetRules(table *nftables.Table, chain *nftables.Chain) ([]*nftables.Rule, error)
+}
+
+var _ kernelConn = (*nftables.Conn)(nil)
 
 // New builds a driver whose ingress chain attaches at hook in the
 // current namespace.
@@ -82,25 +120,28 @@ func New(hook Hook) (*Driver, error) {
 
 // NewNetNS builds a driver targeting the network namespace at the
 // nsfs handle path ("" is the current namespace). The handle is
-// re-opened on every install and reset — a recreated container is
+// re-opened on every apply and reset — a recreated container is
 // picked up through its stable handle.
 func NewNetNS(hook Hook, netnsPath string) (*Driver, error) {
 	if !hook.valid() {
 		return nil, fmt.Errorf("hook: must be input or prerouting (got %q)", hook)
 	}
-	return &Driver{hook: hook, netns: netnsPath}, nil
+	d := &Driver{hook: hook, netns: netnsPath}
+	d.open = d.openNetlink
+	return d, nil
 }
 
-// connect opens the netlink connection to this driver's target
-// namespace — the current one for an empty path. The per-namespace
-// connection is created through the library's namespace-fd option
-// (no setns, no thread locking in application code), and the nsfs
-// handle is re-opened on every call and kept open until the
-// connection's Flush returns: the library dials lazily at flush time
-// and the open handle is what keeps the namespace alive meanwhile. A
-// handle that cannot be opened is a vanished namespace: it wraps
-// firewall.ErrUnreachable, which the update cycle warns and skips.
-func (d *Driver) connect() (*nftables.Conn, *os.File, error) {
+// openNetlink dials the real netlink connection to this driver's
+// target namespace — the current one for an empty path. The
+// per-namespace connection is created through the library's
+// namespace-fd option (no setns, no thread locking in application
+// code), and the nsfs handle is re-opened on every call and kept open
+// until the connection's Flush returns: the library dials lazily at
+// flush time and the open handle is what keeps the namespace alive
+// meanwhile. A handle that cannot be opened is a vanished namespace:
+// it wraps firewall.ErrUnreachable, which the update cycle warns and
+// skips.
+func (d *Driver) openNetlink() (kernelConn, io.Closer, error) {
 	if d.netns == "" {
 		conn, err := nftables.New()
 		if err != nil {
@@ -125,11 +166,12 @@ func ownedTable() *nftables.Table {
 	return &nftables.Table{Family: nftables.TableFamilyINet, Name: tableName}
 }
 
-// tableExists probes for the owned table: a cheap existence check the
-// rebuild consults before batching its delete (a delete of a missing
-// table aborts the whole batch with ENOENT) and the skip-if-unchanged
-// check reaches through the port's TableExists.
-func tableExists(conn *nftables.Conn, table *nftables.Table) (bool, error) {
+// tableExists probes for the owned table: the cheap existence check
+// every apply consults before anything is decided (only a table known
+// to exist may skip, and only a present table's delete may join the
+// batch — a delete of a missing table aborts the whole batch with
+// ENOENT).
+func tableExists(conn kernelConn, table *nftables.Table) (bool, error) {
 	if _, err := conn.ListTableOfFamily(table.Name, table.Family); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return false, nil
@@ -139,99 +181,180 @@ func tableExists(conn *nftables.Conn, table *nftables.Table) (bool, error) {
 	return true, nil
 }
 
-// TableExists probes for the owned table in the target namespace —
-// the port's cheap existence probe (story 21), the same probe the
-// rebuild consults before batching its delete.
-func (d *Driver) TableExists() (bool, error) {
-	conn, nsFile, err := d.connect()
-	if err != nil {
-		return false, fmt.Errorf("probe: %w", err)
+// Plan is the pure planning step — no I/O, no privileges: it derives
+// the effective rules this driver would install (the ban rules it can
+// honour, after the declines and the drops, narrowed to the target
+// prefixes that reach their address families), their placement labels
+// (the chain each rule installs in at the hook that chain attaches to
+// — so a change of --hook is a change of effective rules), the
+// ruleset hash folding those effective rules, and the declines with
+// reasons. --dry-run prints exactly this. A ban rule the driver can
+// neither honour nor decline — an unknown stance, a limit without a
+// usable rate — refuses the plan loudly.
+func (d *Driver) Plan(rules []firewall.BanRule) (firewall.Plan, error) {
+	plan := firewall.Plan{}
+	for i, r := range rules {
+		if r.Stance == firewall.StanceLimitReqRate {
+			// A limit-req-rate Penalty throttles requests per second —
+			// application-layer intent the packet layer cannot count —
+			// so this driver declines it with a reason and installs
+			// nothing for it, never faking the request rate as a packet
+			// or byte meter (ADR 0012 narrows ADR 0011: non-application
+			// is this driver's decision, not a blanket policy). The
+			// decline references the ban rule by its index in the
+			// ruleset handed to the driver.
+			plan.Declined = append(plan.Declined, firewall.Decline{
+				Rule:    i,
+				Feature: string(r.Stance),
+				Reason:  "application-layer intent; never faked at the packet layer",
+			})
+			continue
+		}
+		placement, err := d.placement(r.Stance)
+		if err != nil {
+			return firewall.Plan{}, fmt.Errorf("ban rule %d: %w", i, err)
+		}
+		if err := checkRate(r); err != nil {
+			return firewall.Plan{}, fmt.Errorf("ban rule %d: %w", i, err)
+		}
+		fams := ruleFamilies(r)
+		if len(fams) == 0 {
+			continue // the service prefilter cannot reach it: it installs nothing
+		}
+		effective := r
+		effective.Targets = nil
+		for _, f := range fams {
+			effective.Targets = append(effective.Targets, f.targets...)
+		}
+		plan.Rules = append(plan.Rules, firewall.PlannedRule{BanRule: effective, Placement: placement})
 	}
-	if nsFile != nil {
-		// The handle stays open through the query (see connect).
-		defer nsFile.Close()
-	}
-	exists, err := tableExists(conn, ownedTable())
-	if err != nil {
-		return false, fmt.Errorf("probe owned table: %w", err)
-	}
-	return exists, nil
+	plan.Hash = firewall.Hash(plan.Rules)
+	return plan, nil
 }
 
-// Install rebuilds the owned table wholesale in one atomic batch and
-// reports the nonzero packet/byte counters of the rules it replaced —
-// the hits covering the period since the last change (the rebuild
-// resets the counters) — together with the ban-rule features it
-// declines: a probe decides whether the delete joins the batch, the
-// replaced rules' counters are read back first, then the table, both
-// chains and one kernel rule per honoureable ban rule and address
-// family — each leading with the service prefilter and carrying its
-// packet/byte counter immediately before the verdict — are buffered
-// and flushed together. The table is never absent while the new one
-// applies — there is no delete-then-rebuild window. A declined ban
-// rule keeps its input index (the correlation the decline and the
-// counter read-back share) and installs nothing.
-func (d *Driver) Install(rules []firewall.BanRule) (firewall.Outcome, error) {
-	conn, nsFile, err := d.connect()
+// placement reports the ban rule's placement label — the chain it
+// installs in at the hook that chain attaches to — and refuses a
+// stance this driver cannot enforce at the packet layer.
+func (d *Driver) placement(s firewall.Stance) (string, error) {
+	name, matchDst, err := directionOf(s)
 	if err != nil {
-		return firewall.Outcome{}, fmt.Errorf("install: %w", err)
+		return "", err
 	}
-	if nsFile != nil {
-		// The handle stays open through Flush (see connect).
-		defer nsFile.Close()
+	hook := string(d.hook) // the ingress chain attaches at the configured hook
+	if matchDst {
+		// The egress chain carries the response direction: locally
+		// generated responses at output in input mode, transit
+		// responses at forward in prerouting mode.
+		hook = "output"
+		if d.hook == HookPrerouting {
+			hook = "forward"
+		}
+	}
+	return name + "@" + hook, nil
+}
+
+// directionOf reports the chain a stance installs in and where its
+// target match looks: source on the ingress chain for the
+// source-facing stances, destination on the egress chain for the
+// bandwidth meter (the response direction its unit names). Unknown
+// stances are refused loudly.
+func directionOf(s firewall.Stance) (name string, matchDst bool, err error) {
+	switch s {
+	case firewall.StanceDrop, firewall.StanceReject, firewall.StanceLimitPktRate:
+		return ingressName, false, nil
+	case firewall.StanceLimitBandwidth:
+		return egressName, true, nil
+	}
+	return "", false, fmt.Errorf("stance %q: not supported", s)
+}
+
+// checkRate refuses a limit stance without a rate the kernel meter
+// can honour exactly as stated — no rate means nothing to meter, and
+// the driver never tunes a stated rate.
+func checkRate(r firewall.BanRule) error {
+	switch r.Stance {
+	case firewall.StanceLimitPktRate, firewall.StanceLimitBandwidth:
+		if r.Rate == nil {
+			return fmt.Errorf("stance %q: rate required", r.Stance)
+		}
+		if *r.Rate < 1 {
+			return fmt.Errorf("stance %q: rate must be at least 1 (got %d)", r.Stance, *r.Rate)
+		}
+	}
+	return nil
+}
+
+// Apply replaces the owned table wholesale in one atomic batch — or
+// skips the install when the plan's hash matches the ruleset it last
+// applied here and the owned table still exists (probed fresh every
+// apply) — and reports what happened: the ruleset hash, the nonzero
+// packet/byte counters of the rules it replaced (the hits covering
+// the period since the last change; none on a skipped cycle) and the
+// ban-rule features it declines. The probe decides both the skip and
+// whether the delete joins the batch; the replaced rules' counters
+// are read back first; then the table, both chains and one kernel rule
+// per honoureable ban rule and address family — each leading with the
+// service prefilter and carrying its packet/byte counter immediately
+// before the verdict — are buffered and flushed together. The table is
+// never absent while the new one applies — there is no
+// delete-then-rebuild window. A declined ban rule keeps its input
+// index (the correlation the decline and the counter read-back share)
+// and installs nothing.
+func (d *Driver) Apply(rules []firewall.BanRule) (firewall.Outcome, error) {
+	plan, err := d.Plan(rules)
+	if err != nil {
+		return firewall.Outcome{}, fmt.Errorf("apply: %w", err)
+	}
+	conn, closer, err := d.open()
+	if err != nil {
+		return firewall.Outcome{}, fmt.Errorf("apply: %w", err)
+	}
+	if closer != nil {
+		// The handle stays open through Flush (see openNetlink).
+		defer closer.Close()
 	}
 	table := ownedTable()
+	// The existence probe — fresh every apply. Known limit: it is
+	// existence, not rule bodies — tampering under a surviving table is
+	// undetected. Only a table known to exist may skip (an unchanged
+	// ruleset must not hide behind a vanished enforcement point), and
+	// only a present table's delete may join the batch (deleting a
+	// missing one aborts the whole transaction with ENOENT).
 	exists, err := tableExists(conn, table)
 	if err != nil {
-		return firewall.Outcome{}, fmt.Errorf("install: probe owned table: %w", err)
+		return firewall.Outcome{}, fmt.Errorf("apply: probe owned table: %w", err)
+	}
+	if d.installed && plan.Hash == d.hash && exists {
+		return firewall.Outcome{Skipped: true, Hash: plan.Hash, Declined: plan.Declined}, nil
 	}
 	var hits []firewall.Hit
 	if exists {
-		// The replaced rules' counters are read before the batch resets
-		// them. Only a present table may join the batch: deleting a
-		// missing one aborts the whole transaction with ENOENT.
 		hits, err = ruleHits(conn, table)
 		if err != nil {
-			return firewall.Outcome{}, fmt.Errorf("install: read rule counters: %w", err)
+			return firewall.Outcome{}, fmt.Errorf("apply: read rule counters: %w", err)
 		}
 		conn.DelTable(table)
 	}
 	table = conn.AddTable(table)
 	ingress := conn.AddChain(d.ingress(table))
 	egress := conn.AddChain(d.egress(table))
-	var declines []firewall.Decline
+	declined := map[int]bool{}
+	for _, decline := range plan.Declined {
+		declined[decline.Rule] = true
+	}
 	for i, r := range rules {
-		if decline, ok := declineRule(i, r); ok {
-			declines = append(declines, decline)
-			continue
+		if declined[i] {
+			continue // a declined ban rule installs nothing, keeping its input index
 		}
 		if err := addBanRule(conn, table, ingress, egress, i, r); err != nil {
-			return firewall.Outcome{}, fmt.Errorf("install: ban rule %d: %w", i, err)
+			return firewall.Outcome{}, fmt.Errorf("apply: ban rule %d: %w", i, err)
 		}
 	}
 	if err := conn.Flush(); err != nil {
-		return firewall.Outcome{}, fmt.Errorf("install: %w", err)
+		return firewall.Outcome{}, fmt.Errorf("apply: %w", err)
 	}
-	return firewall.Outcome{Hits: hits, Declined: declines}, nil
-}
-
-// declineRule reports one ban rule's declined feature: a limit-req-rate
-// Penalty throttles requests per second — application-layer intent the
-// packet layer cannot count — so this driver declines it with a reason
-// and installs nothing for it, never faking the request rate as a
-// packet or byte meter (ADR 0012 narrows ADR 0011: non-application is
-// this driver's decision, not a blanket policy). Every other Penalty
-// installs exactly as stated. The decline references the ban rule by
-// its index in the ruleset handed to Install.
-func declineRule(i int, r firewall.BanRule) (firewall.Decline, bool) {
-	if r.Stance != firewall.StanceLimitReqRate {
-		return firewall.Decline{}, false
-	}
-	return firewall.Decline{
-		Rule:    i,
-		Feature: string(r.Stance),
-		Reason:  "application-layer intent; never faked at the packet layer",
-	}, true
+	d.hash, d.installed = plan.Hash, true
+	return firewall.Outcome{Hash: plan.Hash, Hits: hits, Declined: plan.Declined}, nil
 }
 
 // ruleHits reads the owned table's per-rule counters back, one hit per
@@ -240,7 +363,7 @@ func declineRule(i int, r firewall.BanRule) (firewall.Decline, bool) {
 // so every reading maps onto the ban rule it counts — the index in the
 // ruleset being replaced. Only the nonzero readings come back: they
 // are the hits worth logging.
-func ruleHits(conn *nftables.Conn, table *nftables.Table) ([]firewall.Hit, error) {
+func ruleHits(conn kernelConn, table *nftables.Table) ([]firewall.Hit, error) {
 	byRule := map[int]firewall.Hit{}
 	for _, name := range []string{ingressName, egressName} {
 		chain, err := conn.ListChain(table, name)
@@ -305,20 +428,22 @@ func ruleIndex(r *nftables.Rule) (int, bool) {
 }
 
 // Reset removes the owned table with everything in it, tolerating the
-// table being already absent.
+// table being already absent, and ends the skip state: after a reset
+// the same ruleset installs again.
 func (d *Driver) Reset() error {
-	conn, nsFile, err := d.connect()
+	conn, closer, err := d.open()
 	if err != nil {
 		return fmt.Errorf("reset: %w", err)
 	}
-	if nsFile != nil {
-		// The handle stays open through Flush (see connect).
-		defer nsFile.Close()
+	if closer != nil {
+		// The handle stays open through Flush (see openNetlink).
+		defer closer.Close()
 	}
 	conn.DelTable(ownedTable())
 	if err := conn.Flush(); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("reset: %w", err)
 	}
+	d.installed = false
 	return nil
 }
 
@@ -413,41 +538,22 @@ var (
 	portSetName = func(i int) string { return fmt.Sprintf("port_%d", i) }
 )
 
-// addBanRule buffers one ban rule's sets and kernel rules: every
-// address family the service prefilter can reach gets one interval set
-// of the rule's Target prefixes and one kernel rule that leads with the
-// service prefilter — the destination-port set first, then the
-// destination-address set, either empty meaning all — before the
-// target match, the packet/byte counter and the stance's verdict. The
-// direction split of the penalty mapping: bandwidth meters the response direction on the
-// egress chain, matched on destination ∈ Target; every other stance
-// matches source on the ingress chain.
-func addBanRule(conn *nftables.Conn, table *nftables.Table, ingress, egress *nftables.Chain, i int, r firewall.BanRule) error {
-	verdict, err := verdictExprs(r)
-	if err != nil {
-		return err
-	}
-	// The direction split of the penalty mapping: bandwidth meters the
-	// response direction on the egress chain, matched on destination ∈
-	// Target; every other stance matches source on the ingress chain.
-	chain, matchOff := ingress, func(f addrFamily) uint32 { return f.srcOff }
-	switch r.Stance.Chain() {
-	case firewall.ChainIngress:
-	case firewall.ChainEgress:
-		chain, matchOff = egress, func(f addrFamily) uint32 { return f.dstOff }
-	default:
-		return fmt.Errorf("stance %q: not supported", r.Stance)
-	}
-	// The families this rule covers. A ban applies only to service
-	// traffic: when the operator configured destination addresses and
-	// none is in this family, nothing here is service traffic and the
-	// family gets no kernel rule at all.
-	type familyRule struct {
-		family   addrFamily
-		targets  []netip.Prefix
-		dstAddrs []netip.Prefix
-	}
-	var familyRules []familyRule
+// familyRule is one ban rule's per-family slice: the family and the
+// target and destination-address prefixes it installs there.
+type familyRule struct {
+	family   addrFamily
+	targets  []netip.Prefix
+	dstAddrs []netip.Prefix
+}
+
+// ruleFamilies splits one ban rule per address family the service
+// prefilter can reach: a family with no target prefix is out, and when
+// the operator configured destination addresses and none is in the
+// family, nothing there is service traffic and the family is out too
+// — it gets no kernel rule at all. All families out means the ban rule
+// installs nothing — the drop the planning step folds away.
+func ruleFamilies(r firewall.BanRule) []familyRule {
+	var fams []familyRule
 	for _, fam := range families {
 		targets := familyPrefixes(r.Targets, fam)
 		if len(targets) == 0 {
@@ -457,8 +563,38 @@ func addBanRule(conn *nftables.Conn, table *nftables.Table, ingress, egress *nft
 		if len(r.Prefilter.DstAddrs) > 0 && len(dstAddrs) == 0 {
 			continue
 		}
-		familyRules = append(familyRules, familyRule{fam, targets, dstAddrs})
+		fams = append(fams, familyRule{fam, targets, dstAddrs})
 	}
+	return fams
+}
+
+// addBanRule buffers one ban rule's sets and kernel rules: every
+// address family the service prefilter can reach gets one interval set
+// of the rule's Target prefixes and one kernel rule that leads with the
+// service prefilter — the destination-port set first, then the
+// destination-address set, either empty meaning all — before the
+// target match, the packet/byte counter and the stance's verdict. The
+// direction split of the penalty mapping: bandwidth meters the response direction on the
+// egress chain, matched on destination ∈ Target; every other stance
+// matches source on the ingress chain.
+func addBanRule(conn kernelConn, table *nftables.Table, ingress, egress *nftables.Chain, i int, r firewall.BanRule) error {
+	verdict, err := verdictExprs(r)
+	if err != nil {
+		return err
+	}
+	// The direction split of the penalty mapping (directionOf):
+	// bandwidth meters the response direction on the egress chain,
+	// matched on destination ∈ Target; every other stance matches
+	// source on the ingress chain.
+	_, matchDst, err := directionOf(r.Stance)
+	if err != nil {
+		return err
+	}
+	chain, matchOff := ingress, func(f addrFamily) uint32 { return f.srcOff }
+	if matchDst {
+		chain, matchOff = egress, func(f addrFamily) uint32 { return f.dstOff }
+	}
+	familyRules := ruleFamilies(r)
 	if len(familyRules) == 0 {
 		return nil
 	}
@@ -592,11 +728,8 @@ func verdictExprs(r firewall.BanRule) ([]expr.Any, error) {
 			Code: unix.NFT_REJECT_ICMPX_ADMIN_PROHIBITED,
 		}}, nil
 	case firewall.StanceLimitPktRate, firewall.StanceLimitBandwidth:
-		if r.Rate == nil {
-			return nil, fmt.Errorf("stance %q: rate required", r.Stance)
-		}
-		if *r.Rate < 1 {
-			return nil, fmt.Errorf("stance %q: rate must be at least 1 (got %d)", r.Stance, *r.Rate)
+		if err := checkRate(r); err != nil {
+			return nil, err
 		}
 		limitType := expr.LimitTypePkts
 		if r.Stance == firewall.StanceLimitBandwidth {

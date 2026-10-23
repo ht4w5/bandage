@@ -133,8 +133,8 @@ func TestKernelInstallInAScratchNetNS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewNetNS: %v", err)
 	}
-	if _, err := d.Install(rules); err != nil {
-		t.Fatalf("Install into the scratch namespace: %v", err)
+	if _, err := d.Apply(rules); err != nil {
+		t.Fatalf("Apply into the scratch namespace: %v", err)
 	}
 
 	nsConn := scratchConn(t, path)
@@ -170,8 +170,8 @@ func TestKernelInstallInAScratchNetNS(t *testing.T) {
 	if err := d.Reset(); !errors.Is(err, firewall.ErrUnreachable) {
 		t.Errorf("Reset on a vanished namespace = %v, want a firewall.ErrUnreachable", err)
 	}
-	if _, err := d.Install(rules); !errors.Is(err, firewall.ErrUnreachable) {
-		t.Errorf("Install into a vanished namespace = %v, want a firewall.ErrUnreachable", err)
+	if _, err := d.Apply(rules); !errors.Is(err, firewall.ErrUnreachable) {
+		t.Errorf("Apply into a vanished namespace = %v, want a firewall.ErrUnreachable", err)
 	}
 }
 

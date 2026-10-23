@@ -3,8 +3,9 @@
 // splint fetches the report document from a bandage API on a timer,
 // compiles the document's live reports into ban rules and installs them
 // through a firewall-driver port; --dry-run prints the compiled ban
-// rules once and exits without installing anything. SIGINT/SIGTERM
-// reset the installed ruleset before the clean exit.
+// rules and the driver's plan once and exits without installing
+// anything. SIGINT/SIGTERM reset the installed ruleset before the clean
+// exit.
 package main
 
 import (
@@ -194,7 +195,8 @@ func run(args []string, stdout, stderr io.Writer) (int, options) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if opts.dryRun {
-		// --dry-run never reaches the driver: no netlink, no privileges.
+		// --dry-run only plans: the pure planning step, no netlink, no
+		// privileges.
 		if err := u.DryRun(ctx, stdout); err != nil {
 			return fail(stderr, err), opts
 		}

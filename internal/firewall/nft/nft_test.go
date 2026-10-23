@@ -113,11 +113,12 @@ func TestNewValidatesTheHook(t *testing.T) {
 	}
 }
 
-// TestInstallWithoutNetlinkPrivilegesFailsLoudly: where the kernel
-// test surface is unavailable there is no silent success — installing
-// and resetting fail loudly, which is what surfaces at the startup
-// install. It is the exact complement of the root gate below.
-func TestInstallWithoutNetlinkPrivilegesFailsLoudly(t *testing.T) {
+// TestApplyWithoutNetlinkPrivilegesFailsLoudly: where the kernel
+// test surface is unavailable there is no silent success — applying
+// (probe included) and resetting fail loudly, which is what surfaces
+// at the startup test install. It is the exact complement of the root
+// gate below.
+func TestApplyWithoutNetlinkPrivilegesFailsLoudly(t *testing.T) {
 	if reason := netlinkUnusable(); reason == "" {
 		t.Skip("nftables is available here; the root-gated integration test covers the driver")
 	}
@@ -125,11 +126,8 @@ func TestInstallWithoutNetlinkPrivilegesFailsLoudly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := d.Install(nil); err == nil {
-		t.Error("Install succeeded without netlink, want a loud failure")
-	}
-	if _, err := d.TableExists(); err == nil {
-		t.Error("TableExists succeeded without netlink, want a loud failure")
+	if _, err := d.Apply(nil); err == nil {
+		t.Error("Apply succeeded without netlink, want a loud failure")
 	}
 	if err := d.Reset(); err == nil {
 		t.Error("Reset succeeded without netlink, want a loud failure")

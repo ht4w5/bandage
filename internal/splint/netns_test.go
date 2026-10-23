@@ -19,10 +19,9 @@ import (
 // observed at the same firewall-driver boundary as cycle_test.go — one
 // stub driver per target namespace. Which namespace installs what and
 // when: one fetch-compile serves every namespace, an unreachable
-// namespace is warned and skipped while the others still install, the
-// per-namespace installed state lets quiet cycles skip the reinstall
-// independently per namespace, and reset on exit tolerates vanished
-// namespaces.
+// namespace is warned and skipped while the others still install, each
+// namespace's outcome is logged on its own, and reset on exit tolerates
+// vanished namespaces.
 
 // newTestNamespaces wires the seam over one stub driver per namespace
 // path ("" is the current namespace).
@@ -66,7 +65,7 @@ func TestUpdateCycleInstallsIntoEveryTargetNamespace(t *testing.T) {
 		t.Fatalf("Update: %v", err)
 	}
 	for _, stub := range stubs {
-		assertInstalls(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+		assertApplies(t, stub, []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 	}
 	if got := srv.Hits(); got != 1 {
 		t.Errorf("report endpoint fetched %d times, want 1 (one fetch-compile serves every namespace)", got)
@@ -83,13 +82,13 @@ func TestUpdateCycleSkipsAnUnreachableNamespace(t *testing.T) {
 		srv := newDocServer(t)
 		srv.serve(http.StatusOK, canonicalDoc(t))
 		u, stubs, logs := newTestNamespaces(t, srv, "/gone", "/alive")
-		stubs[0].InstallErr = unreachable("/gone")
+		stubs[0].ApplyErr = unreachable("/gone")
 
 		if _, err := u.Update(context.Background()); err != nil {
 			t.Fatalf("Update: %v", err)
 		}
-		assertInstalls(t, stubs[0], nil)
-		assertInstalls(t, stubs[1], []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+		assertApplies(t, stubs[0], nil)
+		assertApplies(t, stubs[1], []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 		logText := logs.String()
 		if !strings.Contains(logText, "namespace unreachable") || !strings.Contains(logText, "/gone") {
 			t.Errorf("the skipped namespace is not warned about: %s", logText)
@@ -100,83 +99,69 @@ func TestUpdateCycleSkipsAnUnreachableNamespace(t *testing.T) {
 		srv := newDocServer(t)
 		srv.serve(http.StatusOK, canonicalDoc(t))
 		u, stubs, _ := newTestNamespaces(t, srv, "/broken", "/alive")
-		stubs[0].InstallErr = errors.New("netlink: permission denied")
+		stubs[0].ApplyErr = errors.New("netlink: permission denied")
 
 		if _, err := u.Update(context.Background()); err == nil || !strings.Contains(err.Error(), "install") {
 			t.Fatalf("Update error = %v, want a loud install failure", err)
 		}
-		assertInstalls(t, stubs[0], nil)
-		assertInstalls(t, stubs[1], []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
+		assertApplies(t, stubs[0], nil)
+		assertApplies(t, stubs[1], []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 	})
 }
 
-// TestUpdateCycleSkipsUnchangedRulesPerNamespace: the
-// skip-if-unchanged state is per namespace — a quiet cycle reinstalls
-// nothing anywhere, a changed ruleset reinstalls everywhere, and a
-// namespace that comes back installs even while the unchanged ones
-// skip. (The installed-state slot holds the compiled ruleset's rolling
-// hash, probed for its table's existence every cycle.)
-func TestUpdateCycleSkipsUnchangedRulesPerNamespace(t *testing.T) {
-	t.Run("an unchanged ruleset is not reinstalled into any namespace", func(t *testing.T) {
+// TestUpdateCycleReportsEachNamespacesOutcome: skip-if-unchanged is
+// each driver's own (the skip state follows the driver instance), and
+// the engine logs every target's report independently — one
+// namespace's unchanged-skip never silences another's install, and a
+// namespace that failed is handed the ruleset again next cycle.
+func TestUpdateCycleReportsEachNamespacesOutcome(t *testing.T) {
+	t.Run("one namespace's skip does not change another's install", func(t *testing.T) {
 		srv := newDocServer(t)
 		srv.serve(http.StatusOK, canonicalDoc(t))
 		u, stubs, logs := newTestNamespaces(t, srv, "/a", "/b")
+		// /a's driver reports the unchanged ruleset; /b's installs.
+		stubs[0].Skip = true
 
 		if _, err := u.Update(context.Background()); err != nil {
-			t.Fatalf("first Update: %v", err)
+			t.Fatalf("Update: %v", err)
 		}
-		if _, err := u.Update(context.Background()); err != nil {
-			t.Fatalf("second Update: %v", err)
+		rules := []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")}
+		assertApplies(t, stubs[0], rules)
+		assertApplies(t, stubs[1], rules)
+		logText := logs.String()
+		if !strings.Contains(logText, "ban rules unchanged") || !strings.Contains(logText, "/a") {
+			t.Errorf("the skipped namespace is not logged: %s", logText)
 		}
-		assertInstalls(t, stubs[0], []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
-		assertInstalls(t, stubs[1], []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
-		if n := strings.Count(logs.String(), "ban rules unchanged"); n != 2 {
-			t.Errorf("logged %d unchanged skips, want 2 (one per namespace): %s", n, logs.String())
+		if !strings.Contains(logText, "installed ban rules") || !strings.Contains(logText, "/b") {
+			t.Errorf("the installing namespace is not logged: %s", logText)
 		}
 	})
 
-	t.Run("a changed ruleset reinstalls into every namespace", func(t *testing.T) {
+	t.Run("a namespace that comes back is handed the ruleset again", func(t *testing.T) {
 		srv := newDocServer(t)
 		srv.serve(http.StatusOK, canonicalDoc(t))
-		srv.serve(http.StatusOK, fixture(t, func(t *testing.T, doc map[string]any) {
-			report(t, doc, 0)["target"] = "198.51.100.9/32"
-		}))
 		u, stubs, _ := newTestNamespaces(t, srv, "/a", "/b")
+		stubs[1].ApplyErr = unreachable("/b")
 
 		if _, err := u.Update(context.Background()); err != nil {
 			t.Fatalf("first Update: %v", err)
 		}
+		// /b comes back with the very same document: the engine hands
+		// both drivers the ruleset again — its own skip state is each
+		// driver's to keep.
+		stubs[1].ApplyErr = nil
 		if _, err := u.Update(context.Background()); err != nil {
 			t.Fatalf("second Update: %v", err)
 		}
-		for _, stub := range stubs {
-			calls := stub.InstallCalls()
-			if len(calls) != 2 {
-				t.Fatalf("installed %d rulesets, want 2", len(calls))
-			}
-			if !equalRules(calls[1], []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "198.51.100.9/32")}) {
-				t.Errorf("second installed ruleset = %v, want the changed rules", calls[1])
-			}
+		rules := []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")}
+		if n := len(stubs[0].ApplyCalls()); n != 2 {
+			t.Errorf("/a's driver was handed %d rulesets, want 2 (every cycle, every namespace)", n)
 		}
-	})
-
-	t.Run("the installed state follows each namespace", func(t *testing.T) {
-		srv := newDocServer(t)
-		srv.serve(http.StatusOK, canonicalDoc(t))
-		u, stubs, _ := newTestNamespaces(t, srv, "/a", "/b")
-		stubs[1].InstallErr = unreachable("/b")
-
-		if _, err := u.Update(context.Background()); err != nil {
-			t.Fatalf("first Update: %v", err)
+		if calls := stubs[1].ApplyCalls(); len(calls) != 1 {
+			t.Errorf("/b's driver was handed %d rulesets, want 1 (the cycle after it came back)", len(calls))
+		} else if !equalRules(calls[0], rules) {
+			t.Errorf("/b's ruleset = %v, want %v", calls[0], rules)
 		}
-		// /b comes back with the very same document: /a is unchanged
-		// and skips, /b has no installed state yet and installs.
-		stubs[1].InstallErr = nil
-		if _, err := u.Update(context.Background()); err != nil {
-			t.Fatalf("second Update: %v", err)
-		}
-		assertInstalls(t, stubs[0], []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
-		assertInstalls(t, stubs[1], []firewall.BanRule{banRule(firewall.StanceLimitBandwidth, ratePtr(1000000), "203.0.113.7/32")})
 	})
 }
 

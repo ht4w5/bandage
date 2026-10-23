@@ -12,46 +12,85 @@ import (
 )
 
 // Stub is a recording firewall.Driver: the test double the
-// update-cycle seam observes. It never touches netlink, so lifecycle
-// behavior is testable without privileges.
+// update-cycle seam observes. It never touches an enforcement surface,
+// so lifecycle behavior is testable without privileges. Its plan puts
+// every input ban rule it does not decline in effect under the
+// Placement label it is configured with, and hashes those effective
+// rules with the seam's shared helper — so the ruleset hash the engine
+// logs is deterministic across runs. What it applies, skips and
+// reports is scripted per test.
 type Stub struct {
-	// InstallErr, when set before use, makes Install fail.
-	InstallErr error
+	// ApplyErr, when set before use, makes Apply fail.
+	ApplyErr error
 
 	// ResetErr, when set before use, makes Reset fail.
 	ResetErr error
 
-	// TableGone, when set before use, makes TableExists report the
-	// wholly-owned ruleset missing — an external reset or a recreated
-	// container hiding behind an unchanged hash.
-	TableGone bool
+	// Skip, when set before use, makes every Apply report the cycle as
+	// skipped — the unchanged ruleset the driver leaves alone — with
+	// no hits.
+	Skip bool
 
-	// InstallHits, when set before use, are the nonzero counter
-	// readings every Install reports — the hits the update cycle
+	// ApplyHits, when set before use, are the nonzero counter readings
+	// every installing Apply reports — the hits the update cycle
 	// logs.
-	InstallHits []firewall.Hit
+	ApplyHits []firewall.Hit
 
-	// InstallDeclines, when set before use, are the ban-rule features
-	// every Install reports declined — the declines the update cycle
-	// logs and counts.
-	InstallDeclines []firewall.Decline
+	// ApplyDeclines, when set before use, are the ban-rule features
+	// Plan and Apply report declined — the declines the update cycle
+	// logs and counts. A declined ban rule is not effective.
+	ApplyDeclined []firewall.Decline
 
-	mu       sync.Mutex
-	installs [][]firewall.BanRule
-	resets   int
-	probes   int
+	// Placement is the placement label every planned rule carries.
+	Placement string
+
+	mu      sync.Mutex
+	applies [][]firewall.BanRule
+	resets  int
 }
 
-// Install records rules and returns InstallHits and InstallDeclines,
-// or InstallErr.
-func (s *Stub) Install(rules []firewall.BanRule) (firewall.Outcome, error) {
+// Plan reports every input ban rule in effect — the declined ones
+// dropped — under the configured placement label, with the ruleset
+// hash folding those effective rules.
+func (s *Stub) Plan(rules []firewall.BanRule) (firewall.Plan, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.InstallErr != nil {
-		return firewall.Outcome{}, s.InstallErr
+	return s.planOf(rules), nil
+}
+
+// planOf derives the scripted plan over rules.
+func (s *Stub) planOf(rules []firewall.BanRule) firewall.Plan {
+	plan := firewall.Plan{Declined: slices.Clone(s.ApplyDeclined)}
+	declined := map[int]bool{}
+	for _, d := range plan.Declined {
+		declined[d.Rule] = true
 	}
-	s.installs = append(s.installs, slices.Clone(rules))
-	return firewall.Outcome{Hits: slices.Clone(s.InstallHits), Declined: slices.Clone(s.InstallDeclines)}, nil
+	for i, r := range rules {
+		if declined[i] {
+			continue
+		}
+		plan.Rules = append(plan.Rules, firewall.PlannedRule{BanRule: r, Placement: s.Placement})
+	}
+	plan.Hash = firewall.Hash(plan.Rules)
+	return plan
+}
+
+// Apply records the ruleset and reports the scripted outcome: ApplyErr
+// fails the call; otherwise Skip reports the cycle as skipped with no
+// hits, and an installing cycle carries ApplyHits and the plan's
+// declines.
+func (s *Stub) Apply(rules []firewall.BanRule) (firewall.Outcome, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ApplyErr != nil {
+		return firewall.Outcome{}, s.ApplyErr
+	}
+	s.applies = append(s.applies, slices.Clone(rules))
+	plan := s.planOf(rules)
+	if s.Skip {
+		return firewall.Outcome{Skipped: true, Hash: plan.Hash, Declined: plan.Declined}, nil
+	}
+	return firewall.Outcome{Hash: plan.Hash, Hits: slices.Clone(s.ApplyHits), Declined: plan.Declined}, nil
 }
 
 // Reset records the call and returns ResetErr.
@@ -62,20 +101,11 @@ func (s *Stub) Reset() error {
 	return s.ResetErr
 }
 
-// TableExists counts the probe and reports the ruleset present unless
-// TableGone is set.
-func (s *Stub) TableExists() (bool, error) {
+// ApplyCalls returns the rulesets passed to Apply, in order.
+func (s *Stub) ApplyCalls() [][]firewall.BanRule {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.probes++
-	return !s.TableGone, nil
-}
-
-// InstallCalls returns the rulesets passed to Install, in order.
-func (s *Stub) InstallCalls() [][]firewall.BanRule {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return slices.Clone(s.installs)
+	return slices.Clone(s.applies)
 }
 
 // ResetCalls returns how many times Reset ran.
@@ -83,11 +113,4 @@ func (s *Stub) ResetCalls() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.resets
-}
-
-// TableProbes returns how many times TableExists ran.
-func (s *Stub) TableProbes() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.probes
 }

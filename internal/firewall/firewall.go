@@ -76,36 +76,3 @@ const (
 	// the application layer may apply it as stated.
 	StanceLimitReqRate Stance = "limit-req-rate"
 )
-
-// Chain names the two chains of the spec's nftables shape: the ingress
-// chain at the configured hook carries drop, reject and packet-rate
-// stances; the egress chain (output in input mode, forward in
-// prerouting mode) carries bandwidth meters matched on destination ∈
-// Target — the response direction the contract's unit names.
-//
-// Transitional placement vocabulary: direction placement is the
-// nftables driver's own shape and leaves the seam when the driver's
-// plan carries placement labels.
-type Chain string
-
-const (
-	// ChainIngress carries the source-facing stances.
-	ChainIngress Chain = "ingress"
-	// ChainEgress carries the response-direction bandwidth meters.
-	ChainEgress Chain = "egress"
-)
-
-// Chain reports the chain the stance installs in — the direction split
-// of the penalty mapping. limit-req-rate has no packet-layer chain (it
-// is application-layer intent) and maps to the zero Chain; the
-// firewall driver declines it. Unknown stances map to "" too and the
-// firewall driver refuses them loudly.
-func (s Stance) Chain() Chain {
-	switch s {
-	case StanceDrop, StanceReject, StanceLimitPktRate:
-		return ChainIngress
-	case StanceLimitBandwidth:
-		return ChainEgress
-	}
-	return ""
-}

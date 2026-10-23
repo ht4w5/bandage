@@ -94,31 +94,32 @@ func TestKernelInstallReadBackReset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New(input): %v", err)
 	}
-	first, err := input.Install(rules)
+	first, err := input.Apply(rules)
 	if err != nil {
-		t.Fatalf("first Install: %v", err)
+		t.Fatalf("first Apply: %v", err)
 	}
 	if len(first.Hits) != 0 {
-		t.Errorf("first Install reported %d hits, want none (nothing was installed to count)", len(first.Hits))
+		t.Errorf("first Apply reported %d hits, want none (nothing was installed to count)", len(first.Hits))
 	}
-	if exists, err := input.TableExists(); err != nil || !exists {
-		t.Errorf("TableExists after Install = (%v, %v), want (true, nil)", exists, err)
+	if exists, err := tableExists(conn, ownedTable()); err != nil || !exists {
+		t.Errorf("table exists after Apply = (%v, %v), want (true, nil)", exists, err)
 	}
 	assertKernelState(t, conn, HookInput)
 
 	// Rebuilding over the live table proves the delete and the rebuild
-	// share one atomic batch; the second install is also the --hook
-	// prerouting case, and it reports the replaced rules' counter
-	// readings mapped onto the ban rules they count (how many depends
-	// on what traffic met the fixture rules; the mapping is what is
-	// asserted).
+	// share one atomic batch; the second apply is also the --hook
+	// prerouting case (a fresh driver instance: skip state follows the
+	// instance that installed), and it reports the replaced rules'
+	// counter readings mapped onto the ban rules they count (how many
+	// depends on what traffic met the fixture rules; the mapping is
+	// what is asserted).
 	prerouting, err := New(HookPrerouting)
 	if err != nil {
 		t.Fatalf("New(prerouting): %v", err)
 	}
-	rebuild, err := prerouting.Install(rules)
+	rebuild, err := prerouting.Apply(rules)
 	if err != nil {
-		t.Fatalf("rebuild Install: %v", err)
+		t.Fatalf("rebuild Apply: %v", err)
 	}
 	for _, h := range rebuild.Hits {
 		if h.Rule < 0 || h.Rule >= len(rules) {
@@ -131,8 +132,8 @@ func TestKernelInstallReadBackReset(t *testing.T) {
 	if err := prerouting.Reset(); err != nil {
 		t.Fatalf("Reset: %v", err)
 	}
-	if exists, err := prerouting.TableExists(); err != nil || exists {
-		t.Errorf("TableExists after Reset = (%v, %v), want (false, nil)", exists, err)
+	if exists, err := tableExists(conn, ownedTable()); err != nil || exists {
+		t.Errorf("table exists after Reset = (%v, %v), want (false, nil)", exists, err)
 	}
 	if exists, err := tableExists(conn, ownedTable()); err != nil {
 		t.Fatalf("probe after Reset: %v", err)
@@ -186,9 +187,9 @@ func TestKernelDeclinesInstallNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New(input): %v", err)
 	}
-	out, err := d.Install(rules)
+	out, err := d.Apply(rules)
 	if err != nil {
-		t.Fatalf("Install: %v", err)
+		t.Fatalf("Apply: %v", err)
 	}
 	if len(out.Declined) != 1 {
 		t.Fatalf("Install reported %d declines, want 1: %+v", len(out.Declined), out.Declined)

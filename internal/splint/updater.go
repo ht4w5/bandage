@@ -32,14 +32,17 @@ func ClampInterval(d time.Duration) (time.Duration, bool) {
 	return d, false
 }
 
-// Updater runs the fetch-compile-install update cycle against one
+// Updater runs the fetch-compile-apply update cycle against one
 // firewall driver per target namespace — fluxc's lifecycle: one
 // startup test install before the loop, the last installed rules kept
 // on a failed cycle, and a reset on clean exit. One fetch-compile
-// serves every namespace.
+// serves every namespace. The engine carries no hash, probe, skip or
+// counter logic: each driver owns its identity and the engine just
+// logs what the driver reports — applied, or unchanged-skip with the
+// hash, the nonzero hits since the last change, and declines.
 type Updater struct {
 	fetcher  *Fetcher
-	targets  []*nsState
+	targets  []Namespace
 	policy   Policy
 	log      zerolog.Logger
 	interval time.Duration
@@ -67,36 +70,6 @@ func (n Namespace) name() string {
 	return n.Path
 }
 
-// nsState is one namespace's cycle state: where to install, plus the
-// identity of the ruleset last installed there — the compiled
-// ruleset's rolling hash. The skip compares that hash per namespace
-// and still probes that the table exists (freshly, every cycle), so a
-// recreated container or an external reset cannot hide behind an
-// unchanged hash.
-type nsState struct {
-	Namespace
-
-	// hash is the rolling hash of the ruleset last installed here;
-	// installed marks that an install has succeeded (the zero hash is
-	// a legal hash, so presence is its own flag).
-	hash      uint32
-	installed bool
-}
-
-// unchanged reports whether hash is the rolling hash of the ruleset
-// last installed for this namespace — the skip-if-unchanged
-// comparison. (The ruleset-equality stand-in is gone: the rolling hash
-// is the compiled ruleset's identity.)
-func (s *nsState) unchanged(hash uint32) bool {
-	return s.installed && s.hash == hash
-}
-
-// setInstalled records hash as this namespace's last installed
-// ruleset identity.
-func (s *nsState) setInstalled(hash uint32) {
-	s.hash, s.installed = hash, true
-}
-
 // New assembles an Updater over a single driver — the default shape,
 // enforcing in one namespace. The update interval is clamped to
 // MinInterval, warning the operator when it is.
@@ -122,61 +95,52 @@ func newUpdater(f *Fetcher, namespaces []Namespace, p Policy, interval time.Dura
 	if clamped {
 		log.Warn().Dur("interval", interval).Msg("update interval clamped to the one-minute floor")
 	}
-	targets := make([]*nsState, 0, len(namespaces))
-	for _, ns := range namespaces {
-		targets = append(targets, &nsState{Namespace: ns})
-	}
-	return &Updater{fetcher: f, targets: targets, policy: p, log: log, interval: interval}
+	return &Updater{fetcher: f, targets: namespaces, policy: p, log: log, interval: interval}
 }
 
 // Update runs one update cycle: fetch the report document, compile its
-// live reports into ban rules and install them into every target
-// namespace — one fetch-compile serves them all. Each namespace is
-// reached and failed independently; on error the last installed rules
-// stay and nothing more installs, and the returned skips are the
-// report records left out of the compilation.
+// live reports into ban rules and hand them to every target's driver —
+// one fetch-compile serves them all. Each namespace is reached and
+// failed independently; on error the last installed rules stay and
+// nothing more installs, and the returned skips are the report records
+// left out of the compilation.
 func (u *Updater) Update(ctx context.Context) ([]Skip, error) {
-	rules, skips, hash, err := u.load(ctx)
+	rules, skips, err := u.load(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if err := u.installAll(rules, hash); err != nil {
+	if err := u.applyAll(rules); err != nil {
 		return skips, fmt.Errorf("install: %w", err)
 	}
 	return skips, nil
 }
 
-// installAll installs one compiled ruleset into every target
-// namespace. Every namespace is independent: an unreachable one is
-// warned and skipped for the cycle while the others still install —
-// one dead container cannot halt enforcement everywhere — and a real
-// install failure is loud after every namespace has been tried, so
-// missing netlink privileges surface at the startup install.
-// Unchanged rules skip the reinstall per namespace, provided the
-// namespace's table still exists (probed fresh every cycle).
-func (u *Updater) installAll(rules []firewall.BanRule, hash uint32) error {
+// applyAll hands the compiled ruleset to every target's driver and
+// logs what each reports. Every namespace is independent: an
+// unreachable one is warned and skipped for the cycle while the others
+// still install — one dead container cannot halt enforcement
+// everywhere — and a real failure is loud after every namespace has
+// been tried, so missing netlink privileges surface at the startup
+// install. Whether an unchanged ruleset skips is each driver's own
+// decision; the engine only reports it.
+func (u *Updater) applyAll(rules []firewall.BanRule) error {
 	var failed []error
 	for _, target := range u.targets {
 		name := target.name()
-		if target.unchanged(hash) {
-			exists, err := target.Driver.TableExists()
-			switch {
-			case errors.Is(err, firewall.ErrUnreachable):
-				u.log.Warn().Err(err).Str("netns", name).Msg("namespace unreachable; skipping for the cycle")
-				continue
-			case err == nil && exists:
-				// Known limit: the probe is existence, not rule bodies
-				// — tampering with the rules under a surviving table is
-				// undetected.
-				u.log.Info().Str("netns", name).Str("hash", fmt.Sprintf("%x", hash)).Msg("ban rules unchanged; skipping install")
-				continue
-			}
-			// A probe that could not decide is answered by installing:
-			// only a table known to exist may skip.
+		out, err := target.Driver.Apply(rules)
+		switch {
+		case errors.Is(err, firewall.ErrUnreachable):
+			u.log.Warn().Err(err).Str("netns", name).Msg("namespace unreachable; skipping for the cycle")
+			continue
+		case err != nil:
+			failed = append(failed, fmt.Errorf("netns %s: %w", name, err))
+			continue
 		}
-		out, err := target.Driver.Install(rules)
-		if err == nil {
-			target.setInstalled(hash)
+		hash := fmt.Sprintf("%x", out.Hash)
+		if out.Skipped {
+			// A skipped cycle logs the skip and no hits.
+			u.log.Info().Str("netns", name).Str("hash", hash).Msg("ban rules unchanged; skipping install")
+		} else {
 			// The nonzero counters of the rules just replaced — what the
 			// enforcement did since the last change.
 			for _, h := range out.Hits {
@@ -187,24 +151,18 @@ func (u *Updater) installAll(rules []firewall.BanRule, hash uint32) error {
 					Uint64("bytes", h.Bytes).
 					Msg("ban rule hit")
 			}
-			// Declined features are lost enforcement — logged and counted
-			// per rule and feature, never silently dropped.
-			for _, d := range out.Declined {
-				u.log.Warn().
-					Str("netns", name).
-					Int("rule", d.Rule).
-					Str("feature", d.Feature).
-					Str("reason", d.Reason).
-					Msg("declined ban rule feature")
-			}
-			u.log.Info().Str("netns", name).Int("rules", len(rules)).Int("declined", len(out.Declined)).Msg("installed ban rules")
-			continue
+			u.log.Info().Str("netns", name).Int("rules", len(rules)).Int("declined", len(out.Declined)).Str("hash", hash).Msg("installed ban rules")
 		}
-		if errors.Is(err, firewall.ErrUnreachable) {
-			u.log.Warn().Err(err).Str("netns", name).Msg("namespace unreachable; skipping for the cycle")
-			continue
+		// Declined features are lost enforcement — logged and counted
+		// per rule and feature, never silently dropped.
+		for _, d := range out.Declined {
+			u.log.Warn().
+				Str("netns", name).
+				Int("rule", d.Rule).
+				Str("feature", d.Feature).
+				Str("reason", d.Reason).
+				Msg("declined ban rule feature")
 		}
-		failed = append(failed, fmt.Errorf("netns %s: %w", name, err))
 	}
 	return errors.Join(failed...)
 }
@@ -230,13 +188,15 @@ func (u *Updater) resetAll() error {
 	return errors.Join(failed...)
 }
 
-// DryRun runs one fetch-compile cycle and writes the compiled ban rules
-// to w as indented JSON, then one mapping line per ban rule — stance,
-// rate and chain (the contract's penalty → nftables mapping) — and the
-// ruleset hash line, instead of installing them: no firewall driver, no
-// netlink, no privileges. Skipped records are logged like any cycle.
+// DryRun runs one fetch-compile cycle and writes the engine's compiled
+// ban rules to w as indented JSON, then the selected driver's plan —
+// one line per effective rule with its placement and rate, the
+// declines with reasons, and the ruleset hash line — instead of
+// installing them: the plan comes from the pure planning step only, no
+// enforcement surface is touched and no privileges are needed.
+// Skipped records are logged like any cycle.
 func (u *Updater) DryRun(ctx context.Context, w io.Writer) error {
-	rules, _, hash, err := u.load(ctx)
+	rules, _, err := u.load(ctx)
 	if err != nil {
 		return err
 	}
@@ -245,34 +205,63 @@ func (u *Updater) DryRun(ctx context.Context, w io.Writer) error {
 	if err := enc.Encode(rules); err != nil {
 		return err
 	}
-	for _, r := range rules {
-		rate := "-"
-		if r.Rate != nil {
-			rate = strconv.FormatInt(*r.Rate, 10)
+	for _, target := range u.targets {
+		plan, err := target.Driver.Plan(rules)
+		if err != nil {
+			return fmt.Errorf("plan: %w", err)
 		}
-		chain := "-" // limit-req-rate maps to no packet-layer chain (the driver declines it)
-		if c := r.Stance.Chain(); c != "" {
-			chain = string(c)
+		if len(u.targets) > 1 {
+			// One plan per target driver; with a single target the
+			// plan stands bare.
+			if _, err := fmt.Fprintf(w, "netns=%s\n", target.name()); err != nil {
+				return err
+			}
 		}
-		if _, err := fmt.Fprintf(w, "stance=%s rate=%s chain=%s\n", r.Stance, rate, chain); err != nil {
+		if err := writePlan(w, plan); err != nil {
 			return err
 		}
 	}
-	_, err = fmt.Fprintf(w, "hash=%x\n", hash)
+	return nil
+}
+
+// writePlan renders one driver's plan: one line per effective rule —
+// its stance, rate and placement — then the declines with reasons,
+// then the ruleset hash line.
+func writePlan(w io.Writer, plan firewall.Plan) error {
+	for _, pr := range plan.Rules {
+		rate := "-"
+		if pr.Rate != nil {
+			rate = strconv.FormatInt(*pr.Rate, 10)
+		}
+		placement := pr.Placement
+		if placement == "" {
+			placement = "-"
+		}
+		if _, err := fmt.Fprintf(w, "stance=%s rate=%s placement=%s\n", pr.Stance, rate, placement); err != nil {
+			return err
+		}
+	}
+	for _, d := range plan.Declined {
+		if _, err := fmt.Fprintf(w, "declined rule=%d feature=%s reason=%s\n", d.Rule, d.Feature, d.Reason); err != nil {
+			return err
+		}
+	}
+	_, err := fmt.Fprintf(w, "hash=%x\n", plan.Hash)
 	return err
 }
 
-// load fetches and compiles one report document, logging the ruleset
-// hash (every cycle), every skipped report record and the cycle's
-// counts, and returning the compiled ruleset with its rolling hash.
-func (u *Updater) load(ctx context.Context) ([]firewall.BanRule, []Skip, uint32, error) {
+// load fetches and compiles one report document, logging every skipped
+// report record and the cycle's counts, and returning the compiled
+// ruleset. The ruleset hash is the driver's own — each driver folds its
+// effective rules — so the engine computes none.
+func (u *Updater) load(ctx context.Context) ([]firewall.BanRule, []Skip, error) {
 	data, err := u.fetcher.Fetch(ctx)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, err
 	}
 	doc, err := ParseDocument(data)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, err
 	}
 	rules, skips := Compile(doc, u.policy)
 	for _, s := range skips {
@@ -282,14 +271,12 @@ func (u *Updater) load(ctx context.Context) ([]firewall.BanRule, []Skip, uint32,
 			Str("reason", s.Reason).
 			Msg("skipped report record")
 	}
-	hash := Hash(rules)
 	u.log.Info().
 		Int("reports", len(doc.Reports)).
 		Int("rules", len(rules)).
 		Int("skipped", len(skips)).
-		Str("hash", fmt.Sprintf("%x", hash)).
 		Msg("compiled ban rules")
-	return rules, skips, hash, nil
+	return rules, skips, nil
 }
 
 // Run performs the startup test install and then one update per tick
