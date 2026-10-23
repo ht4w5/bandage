@@ -78,7 +78,7 @@ func (h Hook) valid() bool {
 type Driver struct {
 	hook      Hook
 	prefilter Prefilter
-	netns string
+	netns     string
 
 	// open dials the netlink surface of the target namespace —
 	// openNetlink in production, the fake kernel stand-in in the

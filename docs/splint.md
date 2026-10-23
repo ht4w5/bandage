@@ -21,8 +21,8 @@ floodgates:
   bandage outage never opens the floodgates;
 - **SIGINT/SIGTERM** reset the owned table before exit, so a clean
   shutdown leaves no stale rules;
-- **`--dry-run`** prints the compiled ban rules without touching netlink
-  and without privileges.
+- **`--dry-run`** prints the compiled ban rules and the driver's plan
+  without touching netlink and without privileges.
 
 The report document is consumed as published: `splint` parses the
 contract, ignores unknown fields, refuses a document `version` it does
@@ -34,8 +34,8 @@ malformed Reports with a log and a counter instead of failing the cycle.
 | flag | default | meaning |
 |---|---|---|
 | `--url`, `-u` | (required) | URL of the report document — bandage's `GET /reports`, e.g. `http://127.0.0.1:8080/reports`. `http` or `https` with a host. |
-| `--hook` | `input` | Enforcement hook: `input` (a web server host) or `prerouting` (a routing box). Anything else is refused at startup. |
-| `--netns` | (current namespace) | Target network namespace as a literal nsfs path, repeatable. **Replaces** the default target rather than adding to it. Empty values and duplicates are refused at startup. |
+| `--nft-hook` | `input` | Enforcement hook: `input` (a web server host) or `prerouting` (a routing box). Anything else is refused at startup. |
+| `--nft-netns` | (current namespace) | Target network namespace as a literal nsfs path, repeatable. **Replaces** the default target rather than adding to it. Empty values and duplicates are refused at startup. |
 | `--cacert` | — | CA certificate file used to verify the bandage server's certificate (HTTPS). |
 | `--cert` | — | Client certificate file presented to the server (mutual TLS). Must be given together with `--key`. |
 | `--key` | — | Client key file. Must be given together with `--cert`. |
@@ -43,9 +43,9 @@ malformed Reports with a log and a counter instead of failing the cycle.
 | `--update-interval`, `-i` | `5m` | How often the report document is refetched and the ruleset rebuilt. Values below 1m are clamped up to the 1m floor (with a warning). |
 | `--exclude-prefix`, `-x` | — | Prefix excluded from every ban set, repeatable. A bare address counts as its host prefix. |
 | `--exclude-private`, `-p` | `true` | Also exclude RFC1918 and ULA Targets. `--exclude-private=false` opts out. |
-| `--service-port` | (all ports) | Service destination port the ban prefilter matches, repeatable; values 1–65535. |
-| `--service-address` | (all addresses) | Service destination address or prefix the ban prefilter matches, repeatable. |
-| `--dry-run`, `-d` | `false` | Fetch once, print the compiled ban rules and ruleset hash, exit — no netlink, no privileges. |
+| `--nft-service-port` | (all ports) | Service destination port the ban prefilter matches, repeatable; values 1–65535. |
+| `--nft-service-address` | (all addresses) | Service destination address or prefix the ban prefilter matches, repeatable. |
+| `--dry-run`, `-d` | `false` | Fetch once, print the compiled ban rules, the driver's plan and its hash, exit — no netlink, no privileges. |
 | `--log-level`, `-l` | `info` | Log level: `debug`, `info`, `warn` or `error`. |
 | `--version`, `-v` | — | Print build identity and exit. |
 
@@ -81,7 +81,7 @@ Every limit is an aggregate over the Report's whole Target prefix, not
 each host inside it. Rate limits carry a derived burst of one second's
 worth of the rate (floored), so legitimate micro-bursts survive
 enforcement. Every ban rule carries a packet/byte counter on the
-traffic the rule matches — never the traffic its prefilter or Target
+traffic the rule matches — never the traffic the prefilter or Target
 match lets past; nonzero hits are logged at each install — "since the
 last change" (see the cycle logs below).
 
@@ -121,28 +121,32 @@ Report is skipped with a log and a counter. A partially covered Target
 keeps only its residual prefixes.
 
 The **service prefilter** is the protected destination surface every
-ban rule matches first: a ban rule applies only to traffic whose
-destination port is in `--service-port` and whose destination address
-is in `--service-address`. Either set may be empty, meaning all. The
-prefilter is what keeps enforcement away from SSH, monitoring, and
-unrelated forwarded traffic even when a Report targets a broad prefix.
+effective rule matches first: a ban applies only to traffic whose
+destination port is in `--nft-service-port` and whose destination
+address is in `--nft-service-address`. Either set may be empty,
+meaning all. It is nftables driver configuration — the driver's
+enforcement scope, folded into its effective rules and therefore its
+ruleset hash, so changing it re-enforces — and it is what keeps
+enforcement away from SSH, monitoring, and unrelated forwarded
+traffic even when a Report targets a broad prefix.
 
 ## Auditing with --dry-run
 
 Preview and verify a ruleset before enforcing it: run `splint` with
 `--dry-run` and **the same flags the service will run with** — the
-exclusion and prefilter flags change the compiled ruleset, so audit
-exactly what you will deploy:
+exclusion flags change the compiled ruleset and the prefilter flags
+change the driver's effective rules and hash, so audit exactly what
+you will deploy:
 
 ```console
 $ bin/splint --dry-run --url http://127.0.0.1:8080/reports \
-    --service-port 443 --service-address 203.0.113.10/32
+    --nft-service-port 443 --nft-service-address 203.0.113.10/32
 ```
 
 The output on stdout has three parts: the compiled ban rules as
-indented JSON, one mapping line per ban rule (`stance=… rate=…
-chain=…` — the penalty → nftables mapping preview, with `rate=-` for
-non-limits), and the ruleset's rolling hash as `hash=<hex>`. Skipped
+indented JSON, one plan line per effective rule (`stance=… rate=…
+placement=…` — with `rate=-` for non-limits) plus the declines with
+reasons, and the ruleset's rolling hash as `hash=<hex>`. Skipped
 Reports are logged on stderr. The same run with no policy flags
 against the report document's canonical example (docs/reports.md)
 prints:
@@ -153,30 +157,27 @@ prints:
     "targets": [
       "203.0.113.7/32"
     ],
-    "prefilter": {
-      "dst_ports": [],
-      "dst_addrs": []
-    },
     "stance": "limit-bandwidth",
     "rate": 1000000
   }
 ]
-stance=limit-bandwidth rate=1000000 chain=egress
-hash=42c6bdd2
+stance=limit-bandwidth rate=1000000 placement=egress@output
+hash=7312084a
 ```
 
 Reading the output:
 
 - **`targets`** are the ban set's prefixes after exclusion subtraction;
-  `prefilter` shows the effective destination sets (empty = all).
-- **`stance` and `rate`** name the compiled Penalty; the mapping line's
-  `chain` is the chain it installs in (`ingress` or `egress`, or `-`
-  when no packet-layer chain installs it — `limit-req-rate`, which the
-  driver declines).
-- **`hash=<hex>`** is the compiled ruleset's rolling hash. The same
-  hash appears in every cycle's `compiled ban rules` log line, so an
-  audited dry-run correlates with what the running installer later
-  installs — and unchanged hashes mean the install is skipped.
+  the service prefilter is nftables driver configuration, not part of
+  the ban rule — it shapes the plan's effective rules and the hash.
+- **`stance` and `rate`** name the compiled Penalty; the plan line's
+  `placement` names where the driver puts it (an opaque label like
+  `egress@output`), and a Penalty the driver declines prints as a
+  `declined rule=… feature=… reason=…` line instead of a plan line.
+- **`hash=<hex>`** is the ruleset's rolling hash. The same hash appears
+  in every cycle's `installed ban rules` log line, so an audited
+  dry-run correlates with what the running installer later installs —
+  and unchanged hashes mean the install is skipped.
 
 Verify before enforcing: check that every Penalty in the document
 resolves to the stance you expect, that no Target in `targets` is one
@@ -224,34 +225,34 @@ cannot reset — see the caveats.)
 One update cycle, as captured (timestamps omitted):
 
 ```text
-INF compiled ban rules hash=42c6bdd2 reports=1 rules=1 skipped=0
-INF installed ban rules netns=current rules=1
+INF compiled ban rules reports=1 rules=1 skipped=0
+INF installed ban rules declined=0 hash=42c6bdd2 point=current rules=1
 INF startup test install ok
-INF compiled ban rules hash=524f7991 reports=1 rules=1 skipped=0
-INF ban rule hit bytes=2555 netns=current packets=22 rule=0
-INF installed ban rules netns=current rules=1
-INF compiled ban rules hash=524f7991 reports=1 rules=1 skipped=0
-INF ban rules unchanged; skipping install hash=524f7991 netns=current
+INF compiled ban rules reports=1 rules=1 skipped=0
+INF ban rule hit bytes=2555 point=current packets=22 rule=0
+INF installed ban rules declined=0 hash=524f7991 point=current rules=1
+INF compiled ban rules reports=1 rules=1 skipped=0
+INF ban rules unchanged; skipping install hash=524f7991 point=current
 INF reset and exit
 ```
 
-`compiled ban rules` logs every cycle's counts and the ruleset hash;
-`installed ban rules` a changed install; `ban rule hit` the nonzero
+`compiled ban rules` logs every cycle's counts; `installed ban rules` a
+changed install with its ruleset hash; `ban rule hit` the nonzero
 counters of the rules just replaced (what enforcement did since the
 last change); `ban rules unchanged; skipping install` the
 skip-if-unchanged path; `reset and exit` the clean shutdown. A skipped
 Report looks like `WRN skipped report record …` with its rule, Target
 and reason; a failed fetch logs `update failed; keeping last installed
 rules` and enforcement continues with the previous ruleset; an
-unreachable namespace logs `namespace unreachable; skipping for the
-cycle` while the others still install.
+unreachable enforcement point logs `enforcement point unreachable;
+skipping for the cycle` while the others still install.
 
 ## Network namespaces
 
-`--netns` targets one network namespace per flag value; the flags are
-repeatable so one instance can enforce the same compiled ban rules
+`--nft-netns` targets one network namespace per flag value; the flags
+are repeatable so one instance can enforce the same compiled ban rules
 across several containers and the host (addressed by its own nsfs
-path). `--netns` **replaces** the default target — the current
+path). `--nft-netns` **replaces** the default target — the current
 namespace is only included if you pass its path too. One fetch-compile
 serves every namespace. The nsfs path is re-opened every cycle, so a
 recreated container is picked up through a stable handle; a namespace
@@ -263,7 +264,7 @@ namespace PID lives in (root required):
 
 ```console
 $ ip netns attach splint-web "$(pgrep -n nginx)"
-$ splint --url http://127.0.0.1:8080/reports --netns /run/netns/splint-web
+$ splint --url http://127.0.0.1:8080/reports --nft-netns /run/netns/splint-web
 ```
 
 When the process is recreated, re-attach the name to its new pid
@@ -281,7 +282,7 @@ host:
 ```console
 $ docker inspect -f '{{.State.Pid}}' web
 23456
-$ splint --url http://127.0.0.1:8080/reports --netns /proc/23456/ns/net
+$ splint --url http://127.0.0.1:8080/reports --nft-netns /proc/23456/ns/net
 ```
 
 This handle dies with the container: a recreated container has a new
@@ -291,13 +292,13 @@ restart:
 
 ```console
 $ ip netns attach splint-web "$(docker inspect -f '{{.State.Pid}}' web)"
-$ splint --url http://127.0.0.1:8080/reports --netns /run/netns/splint-web
+$ splint --url http://127.0.0.1:8080/reports --nft-netns /run/netns/splint-web
 ```
 
 ## Caveats
 
 - **Kernel floor: reject at prerouting needs roughly Linux 5.9.** On
-  older kernels pick `--hook input`; the startup test install is the
+  older kernels pick `--nft-hook input`; the startup test install is the
   guard — an unsupported hook fails at deploy time, not at ban time.
 - **TLS terminates at whatever fronts bandage.** Bandage itself serves
   plain HTTP; when a proxy fronts it with HTTPS (or mutual TLS), point
@@ -309,7 +310,7 @@ $ splint --url http://127.0.0.1:8080/reports --netns /run/netns/splint-web
   to five minutes; a shorter `--update-interval` tightens it (1m floor).
 - **One instance per namespace.** Each instance wholly owns one
   `splint` table; two instances in one namespace fight over it. Use
-  `--netns` fan-out inside one instance instead.
+  `--nft-netns` fan-out inside one instance instead.
 - **The skip-if-unchanged probe is table existence, not rule bodies.**
   When the compiled ruleset hash is unchanged and the table exists, the
   install is skipped; tampering with rules under a surviving table is
@@ -317,8 +318,8 @@ $ splint --url http://127.0.0.1:8080/reports --netns /run/netns/splint-web
 - **A crashed installer leaves its table installed** until reboot or a
   manual `nft delete table inet splint`: only a clean exit resets the
   owned table.
-- **An unreachable namespace only warns.** A wrong `--netns` path is
-  warned and skipped every cycle — including at the startup test
-  install, which can still report `ok`. After enabling the service,
-  check the journal for `installed ban rules` on every target you
-  intended.
+- **An unreachable enforcement point only warns.** A wrong
+  `--nft-netns` path is warned and skipped every cycle — including at
+  the startup test install, which can still report `ok`. After
+  enabling the service, check the journal for `installed ban rules` on
+  every target you intended.
