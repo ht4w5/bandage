@@ -94,23 +94,23 @@ func TestRegistryRefusesFlagsOfUnselectedDrivers(t *testing.T) {
 	tests := []struct {
 		name    string
 		args    []string
-		driver string
+		driver  string
 		wantErr string
 	}{
 		{
 			name:    "a flag of the unselected driver is refused",
 			args:    []string{"--beta-one", "set"},
-			driver: "alpha",
+			driver:  "alpha",
 			wantErr: "flag --beta-one belongs to the beta driver",
 		},
 		{
-			name:    "a flag of the selected driver is accepted",
-			args:    []string{"--alpha-one", "set"},
+			name:   "a flag of the selected driver is accepted",
+			args:   []string{"--alpha-one", "set"},
 			driver: "alpha",
 		},
 		{
-			name:    "unset flags of the unselected driver are inert",
-			args:    nil,
+			name:   "unset flags of the unselected driver are inert",
+			args:   nil,
 			driver: "alpha",
 		},
 	}
