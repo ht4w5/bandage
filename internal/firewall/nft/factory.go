@@ -17,8 +17,9 @@ import (
 // enforce (the repeatable nsfs targeting) and what to police (the
 // service prefilter's destination ports and addresses) — because
 // targeting and enforcement scope are driver configuration, not engine
-// flags (ADR 0012). The registry that selects one factory per run is
-// the command's; this factory binds and opens its own surface.
+// flags (ADR 0012). The registry that selects one factory per run
+// (firewall.Registry) is wired by the command; this factory binds and
+// opens its own surface.
 type Factory struct {
 	// The bound flag values, resolved by Validate.
 	hook      string
