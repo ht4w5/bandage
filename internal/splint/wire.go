@@ -1,4 +1,4 @@
-// Package splint is splint-nft's engine: it pulls the bandage report
+// Package splint is splint's engine: it pulls the bandage report
 // document, compiles ban rules from the document's reports and installs
 // them through a firewall-driver port. It is a strict consumer of the
 // published contract (docs/reports.md): the document is parsed into

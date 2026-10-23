@@ -85,7 +85,7 @@ func TestKernelInstallInAScratchNetNS(t *testing.T) {
 
 	// Whatever happens in the scratch namespace, the current one must
 	// come out exactly as it went in — possibly under a live
-	// splint-nft. Its table is probed, never touched.
+	// splint. Its table is probed, never touched.
 	conn, err := nftables.New()
 	if err != nil {
 		t.Fatalf("nftables.New: %v", err)

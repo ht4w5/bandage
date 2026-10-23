@@ -1,21 +1,21 @@
-# Sample systemd unit for splint-nft, the ban-rule installer: it pulls
+# Sample systemd unit for splint, the ban-rule installer: it pulls
 # bandage's report document and installs ban rules into the splint
-# nftables table (docs/splint-nft.md).
+# nftables table (docs/splint.md).
 #
 # Install and enable:
 #   make build
-#   install -m 0755 bin/splint-nft /usr/local/bin/splint-nft
-#   install -m 0644 configs/splint-nft.service /etc/systemd/system/splint-nft.service
+#   install -m 0755 bin/splint /usr/local/bin/splint
+#   install -m 0644 configs/splint.service /etc/systemd/system/splint.service
 #   # point ExecStart's --url at your bandage endpoint first
 #   systemctl daemon-reload
-#   systemctl enable --now splint-nft
+#   systemctl enable --now splint
 #
 # One instance per network namespace. A clean stop (systemctl stop) is
 # SIGTERM, which resets the splint table before exit — stopping the
 # service removes its ban rules.
 
 [Unit]
-Description=bandage ban-rule installer (splint-nft)
+Description=bandage ban-rule installer (splint)
 After=network-online.target
 Wants=network-online.target
 # A startup test install that keeps failing (broken flags, endpoint or
@@ -25,7 +25,7 @@ StartLimitBurst=10
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/splint-nft --url http://127.0.0.1:8080/reports
+ExecStart=/usr/local/bin/splint --url http://127.0.0.1:8080/reports
 Restart=on-failure
 RestartSec=10s
 # Installing nftables rules needs CAP_NET_ADMIN. With the default

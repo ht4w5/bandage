@@ -12,14 +12,14 @@ tooling turns into ban rules.
   envelope, record fields and penalty, evolution policy
 - [docs/rules.md](docs/rules.md) — writing rules, Match/Trigger
   semantics, and the tracker-less tripwire pattern
-- [docs/splint-nft.md](docs/splint-nft.md) — splint-nft, the companion
+- [docs/splint.md](docs/splint.md) — splint, the companion
   binary that installs ban rules from reports: flag reference, penalty
   mapping, deployment and caveats
 - [docs/storage.md](docs/storage.md) — the report store on sqlite WAL:
   the files beside the database and backing them up
 
 Example configuration lives in [configs/](configs/) (`bandage.yml`,
-`rules.yml`, and the sample `splint-nft.service` systemd unit). The
+`rules.yml`, and the sample `splint.service` systemd unit). The
 vocabulary of record is [GLOSSARY.md](GLOSSARY.md); the design plan is
 [PLAN.md](PLAN.md); accepted decisions are recorded
 as ADRs in [docs/adr/](docs/adr/) — [0008](docs/adr/0008-trigger-semantics-one-live-report.md)
@@ -30,6 +30,6 @@ describe.
 ## Development
 
 `make build`, `make test` (race detector), `make bench`. `make build`
-produces `bin/bandage` and `bin/splint-nft`, the companion binary that
+produces `bin/bandage` and `bin/splint`, the companion binary that
 derives ban rules from reports. Agent-facing
 process docs live in [docs/agents/](docs/agents/) and in [AGENTS.md](AGENTS.md).

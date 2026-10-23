@@ -62,7 +62,7 @@ func newTestPKI(t *testing.T) *testPKI {
 	})
 	clientTmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(3),
-		Subject:      pkix.Name{CommonName: "splint-nft client"},
+		Subject:      pkix.Name{CommonName: "splint client"},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature,

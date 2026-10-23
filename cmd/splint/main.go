@@ -1,6 +1,6 @@
-// Command splint-nft installs ban rules derived from bandage reports.
+// Command splint installs ban rules derived from bandage reports.
 //
-// splint-nft fetches the report document from a bandage API on a timer,
+// splint fetches the report document from a bandage API on a timer,
 // compiles the document's live reports into ban rules and installs them
 // through a firewall-driver port; --dry-run prints the compiled ban
 // rules once and exits without installing anything. SIGINT/SIGTERM
@@ -37,7 +37,7 @@ const (
 
 // progName is the program name in the build identity; the version,
 // commit and build date are the shared linker-injected stamp.
-const progName = "splint-nft"
+const progName = "splint"
 
 // options is the resolved command line.
 type options struct {
@@ -62,9 +62,11 @@ func main() {
 	os.Exit(code)
 }
 
-// run is the command's testable seam: operator output goes to stdout,
-// errors and usage to stderr; it returns the exit code and the resolved
-// options.
+// run holds the whole command: operator output goes to stdout, errors
+// and usage to stderr; it returns the exit code and the resolved
+// options. The run seam is deliberately untested — command behaviour
+// is not frozen by tests; each validation is verified at the module
+// that owns it.
 func run(args []string, stdout, stderr io.Writer) (int, options) {
 	fs := flag.NewFlagSet(progName, flag.ContinueOnError)
 	// pflag renders the usage itself; only the streams and exit codes

@@ -63,7 +63,7 @@ func String() string { return summary }
 
 // Summary is the one-line identity summary for a named program sharing
 // these linker-injected values: the second command prints
-// Summary("splint-nft") off the same stamp.
+// Summary("splint") off the same stamp.
 func Summary(name string) string { return buildSummary(name) }
 
 // Header is the short identity (name, version, commit) for `--test` and `-h`.

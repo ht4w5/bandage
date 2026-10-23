@@ -3,8 +3,8 @@ PKG_INFO    := $(MODULE)/internal/identity
 BIN_DIR     := bin
 CMD         := ./cmd/bandage
 BIN         := $(BIN_DIR)/bandage
-CMD_SPLINT  := ./cmd/splint-nft
-BIN_SPLINT  := $(BIN_DIR)/splint-nft
+CMD_SPLINT  := ./cmd/splint
+BIN_SPLINT  := $(BIN_DIR)/splint
 
 GO          ?= go
 
