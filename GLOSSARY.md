@@ -102,8 +102,18 @@ _Avoid_: sanction, remedy, enforcement action
 The most recent event that created a report.
 _Avoid_: example, evidence
 
+### Enforcement
+
 **Ban rule**:
-An enforcement rule derived from reports by downstream tooling. The
-bandage daemon produces reports and never enforces; `splint-nft` is the
-tool that derives ban rules from reports and installs them.
+An enforcement rule derived from reports by downstream tooling: the
+report's Target prefixes and the Penalty stance a firewall driver applies
+to them. The bandage daemon produces reports and never enforces;
+`splint` is the tool that derives ban rules from reports and installs
+them.
 _Avoid_: ban
+
+**Firewall driver**:
+The pluggable backend that enforces ban rules at its enforcement
+surface — a kernel firewall like nftables, or another surface such as a
+web server or a WAF; it applies each Penalty as stated or declines it.
+_Avoid_: backend, adapter

@@ -22,3 +22,9 @@ the repo boundary, and keeping the consumer in-repo makes the report
 contract load-bearing). Recorded because "this repo never enforces" is
 now false at repo level and true at daemon level, which future readers
 will trip over.
+
+Superseded in part by ADR 0012: the consumer enforces through a
+pluggable **firewall driver** selected by `--firewall`, not a binding to
+a dedicated nftables table, and `limit-req-rate`'s non-application is
+the nftables driver's decline rather than a blanket policy — a driver
+whose enforcement surface is the application layer may apply it.
